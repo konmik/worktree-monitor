@@ -16,9 +16,9 @@ cargo build --locked
 if ($LASTEXITCODE -ne 0) { throw 'WTS build failed' }
 ```
 
-Use `target/debug/wts.exe`, not an installed copy from PATH. Each harness creates its own repositories and overrides HOME and USERPROFILE for its child processes. Each starts and closes its own app instances. A visible window with a title starting with `WTS`, owned by the launched host PID, is the GUI readiness signal. Harnesses also wait for their fixture counts before interacting.
+Use `target/debug/wts.exe` for CLI commands and `target/debug/wts-ui.exe` for direct GUI checks, not installed copies from PATH. Both are built by `cargo build`. Each harness creates its own repositories and overrides HOME and USERPROFILE for its child processes. Each starts and closes its own app instances. A visible window with a title starting with `WTS`, owned by the launched UI PID, is the GUI readiness signal. Harnesses also wait for their fixture counts before interacting.
 
-Public `wts --live` exits before its detached window host. Its launcher PID is not the window PID. The resize and capture harnesses use the hidden `--live --live-child` host entry to retain direct ownership. Those checks do not prove public launcher behavior.
+`wts-ui` directly owns its window and uses the Windows GUI subsystem. Public `wts --live` starts the sibling UI executable and exits. Its launcher PID is not the window PID. Direct GUI checks do not prove compatibility-launcher behavior. The old hidden `--live-child` flag no longer exists.
 
 Run GUI checks serially. They share the Windows desktop, topmost stacking, focus, and input even with isolated profiles. Keep each target visible. Leave the user's windows alone. CLI fixtures can coexist with separate profiles.
 
@@ -30,11 +30,12 @@ Run this read-only check before driving and whenever the binary or environment l
 & ./target/debug/wts.exe --version
 if ($LASTEXITCODE -ne 0) { throw 'WTS version check failed' }
 Get-FileHash -LiteralPath ./target/debug/wts.exe -Algorithm SHA256
+Get-FileHash -LiteralPath ./target/debug/wts-ui.exe -Algorithm SHA256
 git rev-parse HEAD
 git status --short
 ```
 
-Require the checkout's expected version from `Cargo.toml`, a readable executable hash, and a recorded source revision and working-tree state. Build first to establish which source produced the binary. Version and hash alone do not establish freshness. A missing binary or failed build blocks verification.
+Require the checkout's expected CLI version from `Cargo.toml`, readable hashes for both executables, and a recorded source revision and working-tree state. Build first to establish which source produced the binaries. Version and hashes alone do not establish freshness. A missing binary or failed build blocks verification. Do not run `wts-ui --version`; the UI entry point is not the CLI.
 
 The fixture Git commands expect no inherited repository overrides such as GIT_DIR or GIT_WORK_TREE. If fixture initialization fails, inspect those variables in the verification shell. Preserve the user's global environment.
 
@@ -42,24 +43,25 @@ The fixture Git commands expect no inherited repository overrides such as GIT_DI
 
 Choose the exact command from the feature map. A script's nonzero exit is a failed check, even if earlier lines say PASS. Preserve the full output and the artifact directory it prints. Use a fresh PowerShell process for each harness because its native probe types have fixed names.
 
-This complete recipe verifies public detached launch. Run it after Launch. It records the doctor, action, result, and cleanup. The launch harness closes its own child in `finally`, including failed checks.
+This complete recipe verifies direct GUI launch. Run it after Launch. It records the doctor, action, result, and cleanup. The UI harness closes its own window in `finally`, including failed checks. The feature map also requires the separate `wts --live` entry before claiming complete launch coverage.
 
 ```powershell
-$binary = (Resolve-Path ./target/debug/wts.exe).Path
+$binary = (Resolve-Path ./target/debug/wts-ui.exe).Path
 $run = Join-Path $env:LOCALAPPDATA "Temp/opencode/verify-wts-$([Guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $run | Out-Null
 $fixture = $null
 $code = $null
 Start-Transcript -Path (Join-Path $run 'session.txt') | Out-Null
 try {
-    & $binary --version
+    & ./target/debug/wts.exe --version
     if ($LASTEXITCODE -ne 0) { throw 'WTS version check failed' }
     Get-FileHash -LiteralPath $binary -Algorithm SHA256
+    Get-FileHash -LiteralPath ./target/debug/wts.exe -Algorithm SHA256
     git rev-parse HEAD
     git status --short
-    Write-Output 'feature=detached-launch entry=wts --live'
-    Write-Output "Action: pwsh -NoProfile -File scripts/smoke-launch.ps1 -Binary $binary"
-    $output = @(& pwsh -NoProfile -File scripts/smoke-launch.ps1 -Binary $binary 2>&1)
+    Write-Output 'feature=detached-launch entry=wts-ui'
+    Write-Output "Action: pwsh -NoProfile -File scripts/smoke-ui.ps1 -Binary $binary"
+    $output = @(& pwsh -NoProfile -File scripts/smoke-ui.ps1 -Binary $binary 2>&1)
     $code = $LASTEXITCODE
     $output | Tee-Object -FilePath (Join-Path $run 'drive.txt')
     $location = @($output | Where-Object { "$_" -like 'Evidence at *' }) | Select-Object -Last 1
@@ -67,15 +69,17 @@ try {
         $fixture = "$location".Substring('Evidence at '.Length)
         $fixture | Set-Content -LiteralPath (Join-Path $run 'fixture-path.txt')
     }
-    if ($code -ne 0) { throw "Launch verification failed with exit $code" }
-    if (-not $fixture) { throw 'Launch check did not identify its evidence' }
+    if ($code -ne 0) { throw "UI verification failed with exit $code" }
+    if (-not $fixture) { throw 'UI check did not identify its evidence' }
     Get-Content -LiteralPath (Join-Path $fixture 'proof.json')
 } finally {
     try {
         if ($fixture) {
-            $fixtureHome = Join-Path $fixture 'home'
-            if (Test-Path -LiteralPath $fixtureHome) { Remove-Item -LiteralPath $fixtureHome -Recurse -Force }
-            if ($code -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $fixture 'proof.json'))) { throw 'Cleanup lost launch evidence' }
+            foreach ($name in @('home', 'profile', 'work')) {
+                $scratch = Join-Path $fixture $name
+                if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force }
+            }
+            if ($code -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $fixture 'proof.json'))) { throw 'Cleanup lost UI evidence' }
         }
     } finally {
         Stop-Transcript | Out-Null
@@ -84,7 +88,7 @@ try {
 }
 ```
 
-Require launcher success, released stdin, stdout and stderr EOF, a visible detached host with a different PID, and clean host exit after closing. Read the proof rather than trusting the script's final line alone.
+Require PE subsystem 2, a visible window owned by the direct UI process, no attachment to the launching console, and clean UI exit after closing. Read the proof rather than trusting the script's final line alone. The compatibility check separately requires launcher exit, released stdin, stdout and stderr EOF, and a different surviving UI PID.
 
 ## Evidence
 
@@ -100,7 +104,7 @@ Cover every entry point listed for the requested feature. Label a skipped entry 
 
 Let each harness finish its `finally` block. It restores its environment and closes or terminates only processes it launched. Never kill by executable name. If a check is interrupted outside its cleanup, establish ownership from that run's recorded PID and executable before closing anything. If ownership cannot be established, report cleanup incomplete and leave unrelated processes alone.
 
-For the standard detached-launch recipe, cleanup removes only that run's isolated `home` directory. Keep `proof.json`, `session.txt`, `drive.txt`, and `fixture-path.txt`. Confirm they still exist after cleanup. On a failed iteration, run the same scoped cleanup. If failure occurs before an artifact path is emitted, recover the path from the recorded run before deleting anything.
+For the standard direct-UI recipe, cleanup removes only that run's isolated `home`, `profile`, and `work` directories. Keep `proof.json`, `session.txt`, `drive.txt`, and `fixture-path.txt`. Confirm they still exist after cleanup. On a failed iteration, run the same scoped cleanup. If failure occurs before an artifact path is emitted, recover the path from the recorded run before deleting anything.
 
 For other mapped checks, first preserve registry and order files under the artifact root. Then remove only the scratch directories listed in the feature index for that specific run. Retain root-level transcripts, JSON proofs, text observations, and all images. A failed check's evidence survives cleanup too.
 

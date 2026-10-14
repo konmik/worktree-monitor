@@ -10,7 +10,6 @@ use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
 use windows_sys::Win32::Graphics::Gdi::*;
-use windows_sys::Win32::System::Console::FreeConsole;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{SetScrollInfo, SetWindowTheme, DRAWITEMSTRUCT, ODT_STATIC};
 use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
@@ -833,7 +832,7 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
         if SetWindowPos(window, HWND_TOPMOST, 0, 0, 640 * dpi / 96, 540 * dpi / 96, SWP_NOMOVE | SWP_NOACTIVATE) == 0 {
             state.failure = Some(io::Error::last_os_error());
             DestroyWindow(window);
-        } else { FreeConsole(); ShowWindow(window, SW_SHOWNOACTIVATE); }
+        } else { ShowWindow(window, SW_SHOWNOACTIVATE); }
         let mut message: MSG = std::mem::zeroed();
         loop {
             let received = GetMessageW(&mut message, null_mut(), 0, 0);

@@ -5,7 +5,7 @@ Read this index before choosing a check. Each file maps user entry points to exe
 ## Baseline preconditions
 
 - Build from the repository root with `cargo build --locked` and run the doctor in [the skill](../SKILL.md).
-- Use the checkout binary. Pass `-Binary target/debug/wts.exe` explicitly.
+- Use checkout binaries. Pass `-Binary target/debug/wts.exe` for CLI checks and `-Binary target/debug/wts-ui.exe` for direct UI, resize, and capture checks.
 - Use a fresh PowerShell 7 process for each script.
 - GUI checks require an interactive Windows desktop and exclusive verification use of that desktop.
 - Each harness creates an isolated profile and real Git fixtures. Use only instances it started.
@@ -23,7 +23,7 @@ Read this index before choosing a check. Each file maps user entry points to exe
 | Feature | Harness | Scratch children inside that run's artifact directory |
 | --- | --- | --- |
 | [Registration and snapshots](registration-and-snapshots.md) | `scripts/smoke-cli.ps1` | `home`, `repo`, `plain` |
-| [Detached launch](detached-launch.md) | `scripts/smoke-launch.ps1` | `home` |
+| [Detached launch](detached-launch.md) | `scripts/smoke-ui.ps1`, `scripts/smoke-launch.ps1` | `home`, `profile`, `work` for direct UI; `home` for CLI launch |
 | [Live updates](live-updates.md) | `scripts/smoke-window.ps1` | `home`, `repo` |
 | [Launch context and ordering](launch-context-and-ordering.md) | `scripts/smoke-dashboard.ps1` | `home`, `alpha`, `alpha-tree`, `beta`, `beta-tree`, `current`, `missing-git-home` |
 | [Resize and accessibility](resize-and-accessibility.md) | `scripts/smoke-resize.ps1`, `scripts/capture-window.ps1` | `home`, `signal-core`, `edge-gateway`, `infra-tools` |

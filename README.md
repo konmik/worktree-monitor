@@ -9,11 +9,13 @@ Rust and Git must be installed. Build and run from this checkout.
 ```powershell
 cargo run -- add C:\src\project
 cargo run
-cargo run -- --live
+cargo run --bin wts-ui
 cargo run -- remove C:\src\project
 ```
 
-Plain `wts` prints one current snapshot. `wts --live` opens the Windows status window and returns without holding the terminal or its standard streams. `add` accepts a repository or a directory inside any of its worktrees. Registering another worktree of the same repository does not create a duplicate. `remove` removes the whole repository from monitoring. These commands do not change the repository or its worktrees.
+Plain `wts` prints one current snapshot. `wts-ui` opens the Windows status window as a GUI application without creating a console. `wts --live` remains a shortcut that launches the sibling `wts-ui.exe` and returns without holding the terminal or its standard streams. Build both executables with `cargo build` before using that shortcut from the checkout. `add` accepts a repository or a directory inside any of its worktrees. Registering another worktree of the same repository does not create a duplicate. `remove` removes the whole repository from monitoring. These commands do not change the repository or its worktrees.
+
+`cargo install --path crates/wts --locked` installs both `wts` and `wts-ui`.
 
 The live window includes the repository you launch it from, even when it is not registered. This does not register it. Drag a repository's handle to move its whole group. Drag a worktree's handle to reorder it within its repository. The window remembers these positions across refreshes and restarts. Change counts appear on individual worktrees, without summary totals.
 
@@ -39,6 +41,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo build
 pwsh -NoProfile -File scripts/smoke-cli.ps1
 pwsh -NoProfile -File scripts/smoke-launch.ps1
+pwsh -NoProfile -File scripts/smoke-ui.ps1
 pwsh -NoProfile -File scripts/smoke-window.ps1
 pwsh -NoProfile -File scripts/smoke-dashboard.ps1
 pwsh -NoProfile -File scripts/smoke-resize.ps1

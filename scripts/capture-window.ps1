@@ -1,5 +1,5 @@
 param(
-    [string]$Binary = "$PSScriptRoot/../target/debug/wts.exe",
+    [string]$Binary = "$PSScriptRoot/../target/debug/wts-ui.exe",
     [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wts-dashboard.png",
     [switch]$Screen = $true,
     [int]$Height = 0,
@@ -8,6 +8,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
+$CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wts.exe')).Path
 $Output = [IO.Path]::GetFullPath($Output)
 Add-Type -AssemblyName System.Drawing
 Add-Type -TypeDefinition @'
@@ -105,10 +106,10 @@ try {
         Invoke-FixtureGit $repo @('-c', 'user.name=Wts Visual Test', '-c', 'user.email=wts@example.invalid', 'commit', '--quiet', '-m', 'Fixture')
         $after = @($before | Select-Object -Skip $spec.Deleted) + @(1..$spec.Added | ForEach-Object { "new line $_" })
         [IO.File]::WriteAllLines((Join-Path $repo 'source.txt'), $after)
-        & $Binary add $repo
+        & $CliBinary add $repo
         if ($LASTEXITCODE -ne 0) { throw 'Visual fixture registration failed' }
     }
-    $process = Start-Process -FilePath $Binary -ArgumentList '--live', '--live-child' -WorkingDirectory $fixtureHome -NoNewWindow -PassThru
+    $process = Start-Process -FilePath $Binary -WorkingDirectory $fixtureHome -NoNewWindow -PassThru
     $handle = [IntPtr]::Zero
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
     do {

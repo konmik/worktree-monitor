@@ -1,10 +1,11 @@
 param(
-    [string]$Binary = "$PSScriptRoot/../target/debug/wts.exe",
+    [string]$Binary = "$PSScriptRoot/../target/debug/wts-ui.exe",
     [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wts-resize-$([Guid]::NewGuid().ToString('N'))"
 )
 
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
+$CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wts.exe')).Path
 New-Item -ItemType Directory -Path $Output -Force | Out-Null
 Add-Type -AssemblyName System.Drawing
 Add-Type -TypeDefinition @'
@@ -128,10 +129,10 @@ try {
         Run-Git @('add', '.')
         Run-Git @('-c', 'user.name=Wts Test', '-c', 'user.email=wts@example.invalid', 'commit', '--quiet', '-m', 'Fixture')
         [IO.File]::WriteAllText((Join-Path $repo 'lines.txt'), "before`nadded`n")
-        & $Binary add $repo
+        & $CliBinary add $repo
         if ($LASTEXITCODE -ne 0) { throw 'Fixture registration failed' }
     }
-    $process = Start-Process -FilePath $Binary -ArgumentList '--live', '--live-child' -WorkingDirectory $fixtureHome -NoNewWindow -PassThru
+    $process = Start-Process -FilePath $Binary -WorkingDirectory $fixtureHome -NoNewWindow -PassThru
     $script:handle = [IntPtr]::Zero
     Wait-For { $script:handle = [WtsResizeProbe]::Find([uint32]$process.Id); $script:handle -ne [IntPtr]::Zero } 'window'
     $viewport = [WtsResizeProbe]::GetDlgItem($script:handle, 1001)

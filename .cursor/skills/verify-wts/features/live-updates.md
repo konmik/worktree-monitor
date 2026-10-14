@@ -12,7 +12,7 @@ The status window shows changing worktree counts, adapts its polling interval, a
 
 ## How to get to it (user POV)
 
-- Run `wts --live` after registering a repository with `wts add`.
+- Run `wts-ui` or the `wts --live` shortcut after registering a repository with `wts add`.
 - Edit monitored files, change registrations through the CLI, resize or scroll the window, and close it through the normal window close action.
 
 ## Driving it with PowerShell
@@ -31,3 +31,4 @@ Preconditions:
 - This check intentionally waits through the polling backoff. A short command timeout invalidates it. Allow at least 180 seconds.
 - Scroll stability here covers refresh behavior. Use the resize feature for pixel corruption after geometry changes.
 - Preserve configuration failure evidence before deleting the scratch home.
+- This harness covers the CLI shortcut's live lifecycle. The direct UI check establishes the separate executable's launch contract; both use the same window implementation.

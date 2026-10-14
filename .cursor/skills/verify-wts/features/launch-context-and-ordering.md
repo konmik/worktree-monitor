@@ -13,7 +13,7 @@ The dashboard includes the launch repository without registering it. Users drag 
 
 ## How to get to it (user POV)
 
-- Run `wts --live` inside a repository or its nested directory, or outside Git for registered repositories only.
+- Run `wts-ui` or the `wts --live` shortcut inside a repository or its nested directory, or outside Git for registered repositories only.
 - Drag the handle on a repository heading or a worktree card. Press Escape to cancel a drag.
 - Register or remove the launch repository through `wts add` and `wts remove` while the window remains open.
 - Close and reopen the dashboard to verify saved order.

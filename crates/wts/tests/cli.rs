@@ -19,11 +19,45 @@ fn help_version_and_invalid_usage_have_correct_exit_codes() {
     let version = invoke(&["--version"], home.path());
     assert_eq!(version.status.code(), Some(0));
     assert_eq!(version.stdout, b"wts 0.1.0\n");
-    for args in [&["add"][..], &["remove"][..], &["--unknown"][..], &["--live", "add", "."][..], &["--live-child"][..], &["--live", "--live-child", "add", "."][..], &["unexpected"][..]] {
+    for args in [&["add"][..], &["remove"][..], &["--unknown"][..], &["--live", "add", "."][..], &["--live-child"][..], &["--live", "--live-child"][..], &["--live", "--live-child", "add", "."][..], &["unexpected"][..]] {
         let result = invoke(args, home.path());
         assert_eq!(result.status.code(), Some(2));
         assert!(String::from_utf8(result.stderr).unwrap().contains("error:"));
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn live_reports_missing_sibling_without_hanging() {
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let parent = std::env::temp_dir().join("opencode");
+    fs::create_dir_all(&parent).unwrap();
+    let fixture = tempfile::tempdir_in(parent).unwrap();
+    let executable = fixture.path().join("wts.exe");
+    fs::copy(env!("CARGO_BIN_EXE_wts"), &executable).unwrap();
+    let mut child = Command::new(executable).arg("--live").current_dir(fixture.path())
+        .env("HOME", fixture.path()).env("USERPROFILE", fixture.path())
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("wts --live did not exit when its UI executable was missing");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let result = child.wait_with_output().unwrap();
+    assert_eq!(result.status.code(), Some(1));
+    assert_eq!(result.stdout, b"");
+    let error = String::from_utf8(result.stderr).unwrap();
+    assert!(error.starts_with("Error: Could not launch "), "{error}");
+    assert!(error.contains("wts-ui.exe"), "{error}");
 }
 
 #[test]

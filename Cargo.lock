@@ -379,6 +379,7 @@ dependencies = [
  "clap",
  "tempfile",
  "window-win",
+ "windows-sys",
  "wts-core",
 ]
 
