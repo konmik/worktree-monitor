@@ -1,7 +1,8 @@
 param(
     [string]$Binary = "$PSScriptRoot/../target/debug/wts-ui.exe",
     [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wts-visibility-$([Guid]::NewGuid().ToString('N'))",
-    [switch]$Baseline
+    [switch]$Baseline,
+    [switch]$VisibilityOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -443,14 +444,22 @@ function Find-VisibilityTopButton([string]$Caption) {
     })
 }
 
-function Assert-NativeVisibilitySurface([array]$Rows, [string]$HiddenKey, [string]$TopCaption) {
+function Assert-NativeVisibilitySurface([array]$Rows, [string]$HiddenKey, [bool]$Checked = $false) {
     $buttons = @(Get-NativeButtons)
     if ($buttons.Count -eq 0) { throw 'Native visibility buttons are not present' }
     if (@($buttons | Where-Object { $_.Class -ine 'Button' }).Count -ne 0) { throw 'Visibility controls are not native Button windows' }
-    $top = @(Find-VisibilityTopButton $TopCaption)
-    if ($top.Count -ne 1) { throw "Expected one native top visibility button captioned $TopCaption, found $($top.Count)" }
-    $otherCaption = if ($TopCaption -ceq 'Show all') { 'Hide hidden' } else { 'Show all' }
-    if (@(Find-VisibilityTopButton $otherCaption).Count -ne 0) { throw "Unexpected native top visibility button captioned $otherCaption" }
+    $top = @(Find-VisibilityTopButton 'Show all')
+    if ($top.Count -ne 1) { throw "Expected one Show all checkbox, found $($top.Count)" }
+    if (@(Find-VisibilityTopButton 'Hide hidden').Count -ne 0) { throw 'Show all label changed when toggled' }
+    $actualChecked = [WtsVisibilityNativeProbe]::Send($top[0].Handle, 0x00F0, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64()
+    if ($actualChecked -ne [int]$Checked) { throw "Expected Show all checked state $Checked, found $actualChecked" }
+    if (([WtsVisibilityNativeProbe]::GetWindowLong($top[0].Handle, -16) -band 15) -ne 3) {
+        throw 'Show all is not a native automatic checkbox'
+    }
+    $dpi = [WtsVisibilityNativeProbe]::GetDpiForWindow($script:handle)
+    if (($top[0].Bounds.Bottom - $top[0].Bounds.Top) -gt [int](28 * $dpi / 96)) {
+        throw 'Show all is taller than a compact toggle'
+    }
     $worktrees = @($Rows | Where-Object { $_.Kind -eq 'worktree' })
     if ($worktrees.Count -eq 0) { throw 'Visibility controls appeared without any worktree rows' }
     foreach ($row in $worktrees) {
@@ -461,18 +470,19 @@ function Assert-NativeVisibilitySurface([array]$Rows, [string]$HiddenKey, [strin
     }
     $visibilityButtons = @($buttons | Where-Object { $_.Text -match '^(Hide|Unhide|Show all|Hide hidden)$' })
     if ($visibilityButtons.Count -ne ($worktrees.Count + 1)) { throw "Expected $($worktrees.Count + 1) native visibility buttons, found $($visibilityButtons.Count)" }
-    foreach ($button in $visibilityButtons) {
+    foreach ($button in @($visibilityButtons | Where-Object { $_.Handle -ne $top[0].Handle })) {
         if (([WtsVisibilityNativeProbe]::GetWindowLong($button.Handle, -16) -band 15) -ne 11) {
             throw "Visibility button $($button.Text) does not use the app's shared owner-drawn style"
         }
     }
     [ordered]@{
         top_handle = $top[0].Handle.ToInt64()
-        top_caption = $TopCaption
+        top_caption = 'Show all'
+        top_checked = $actualChecked
         worktree_count = $worktrees.Count
         native_button_count = $visibilityButtons.Count
         all_native_button_class = 'Button'
-        all_owner_drawn = $true
+        action_buttons_owner_drawn = $true
     }
 }
 
@@ -908,7 +918,7 @@ function Select-SafeTarget([array]$Candidates) {
 function Invoke-VisibilityTest([array]$InitialRows) {
     $fullExpected = @(Get-ExpectedVisibleRows '')
     Assert-RowSnapshot $InitialRows $fullExpected 'Initial exact rows'
-    $initialSurface = Assert-NativeVisibilitySurface $InitialRows '' 'Show all'
+    $initialSurface = Assert-NativeVisibilitySurface $InitialRows ''
     $worktrees = @($InitialRows | Where-Object { $_.Kind -eq 'worktree' })
     if ($worktrees.Count -ne 6) { throw "Expected six fixture worktree rows, found $($worktrees.Count)" }
     $target = $worktrees[0]
@@ -920,7 +930,7 @@ function Invoke-VisibilityTest([array]$InitialRows) {
     if ($keyboardHide.result -ceq 'NOT_FEASIBLE') { Invoke-ButtonClick $targetButton[0] }
     $hiddenExpected = @(Get-ExpectedVisibleRows $target.Key)
     $afterHide = Wait-For-ExpectedRows $hiddenExpected 'Hide exact rows' 10
-    $afterHideSurface = Assert-NativeVisibilitySurface $afterHide $target.Key 'Show all'
+    $afterHideSurface = Assert-NativeVisibilitySurface $afterHide $target.Key
     $unrelatedAfterHide = @($afterHide | Where-Object { $_.Key -ceq $unrelated.Key })
     if ($unrelatedAfterHide.Count -ne 1 -or $unrelatedAfterHide[0].Handle -ne $unrelated.Handle) { throw 'Unrelated card HWND was not stable across hide' }
     $visibilityAfterHideData = Assert-VisibilityFile $target.RepositoryKey $target.WorktreeKey $true
@@ -930,7 +940,7 @@ function Invoke-VisibilityTest([array]$InitialRows) {
     Stop-Ui
     Start-Ui
     $afterRestartHidden = Wait-For-ExpectedRows $hiddenExpected 'Saved hide after restart' 20
-    $afterRestartHiddenSurface = Assert-NativeVisibilitySurface $afterRestartHidden $target.Key 'Show all'
+    $afterRestartHiddenSurface = Assert-NativeVisibilitySurface $afterRestartHidden $target.Key
     if (@($afterRestartHidden | Where-Object { $_.Key -ceq $target.Key }).Count -ne 0) { throw 'Hidden worktree returned after restart without Show all' }
     Assert-FileSnapshot $visibilityAfterHide $script:visibilityPath 'Saved visibility after restart'
     Assert-StableConfiguration
@@ -939,9 +949,10 @@ function Invoke-VisibilityTest([array]$InitialRows) {
 
     $showAllButton = @(Find-VisibilityTopButton 'Show all')
     if ($showAllButton.Count -ne 1) { throw 'Show all button was not present after restart' }
-    Invoke-ButtonClick $showAllButton[0]
+    $keyboardShowAll = Invoke-KeyboardButton $showAllButton[0]
+    if ($keyboardShowAll.result -ceq 'NOT_FEASIBLE') { Invoke-ButtonClick $showAllButton[0] }
     $afterShowAll = Wait-For-ExpectedRows $fullExpected 'Show all exact rows' 10
-    $afterShowAllSurface = Assert-NativeVisibilitySurface $afterShowAll $target.Key 'Hide hidden'
+    $afterShowAllSurface = Assert-NativeVisibilitySurface $afterShowAll $target.Key $true
     Assert-FileSnapshot $visibilityAfterHide $script:visibilityPath 'Show all visibility configuration'
     Assert-StableConfiguration
     $unrelatedAfterShowAll = @($afterShowAll | Where-Object { $_.Key -ceq $unrelated.Key })
@@ -950,7 +961,7 @@ function Invoke-VisibilityTest([array]$InitialRows) {
     Stop-Ui
     Start-Ui
     $afterShowAllRestartHidden = Wait-For-ExpectedRows $hiddenExpected 'Transient Show all after restart' 20
-    $afterShowAllRestartHiddenSurface = Assert-NativeVisibilitySurface $afterShowAllRestartHidden $target.Key 'Show all'
+    $afterShowAllRestartHiddenSurface = Assert-NativeVisibilitySurface $afterShowAllRestartHidden $target.Key
     Assert-FileSnapshot $visibilityAfterHide $script:visibilityPath 'Transient Show all visibility configuration'
     Assert-StableConfiguration
     $unrelatedAfterShowAllRestart = @($afterShowAllRestartHidden | Where-Object { $_.Key -ceq $unrelated.Key })
@@ -959,7 +970,7 @@ function Invoke-VisibilityTest([array]$InitialRows) {
     if ($showAllAgainButton.Count -ne 1) { throw 'Show all button was not restored after transient restart' }
     Invoke-ButtonClick $showAllAgainButton[0]
     $afterShowAllAgain = Wait-For-ExpectedRows $fullExpected 'Show all exact rows after transient restart' 10
-    $afterShowAllAgainSurface = Assert-NativeVisibilitySurface $afterShowAllAgain $target.Key 'Hide hidden'
+    $afterShowAllAgainSurface = Assert-NativeVisibilitySurface $afterShowAllAgain $target.Key $true
     Assert-FileSnapshot $visibilityAfterHide $script:visibilityPath 'Show all visibility configuration after transient restart'
     Assert-StableConfiguration
 
@@ -970,25 +981,25 @@ function Invoke-VisibilityTest([array]$InitialRows) {
     $keyboardUnhide = Invoke-KeyboardButton $unhideButton[0]
     if ($keyboardUnhide.result -ceq 'NOT_FEASIBLE') { Invoke-ButtonClick $unhideButton[0] }
     $afterUnhide = Wait-For-ExpectedRows $fullExpected 'Unhide exact rows' 10
-    $afterUnhideSurface = Assert-NativeVisibilitySurface $afterUnhide '' 'Hide hidden'
+    $afterUnhideSurface = Assert-NativeVisibilitySurface $afterUnhide '' $true
     $visibilityAfterUnhideData = Assert-VisibilityFile $target.RepositoryKey $target.WorktreeKey $false
     $visibilityAfterUnhide = Get-FileSnapshot $script:visibilityPath
     Assert-StableConfiguration
     $unrelatedAfterUnhide = @($afterUnhide | Where-Object { $_.Key -ceq $unrelated.Key })
     if ($unrelatedAfterUnhide.Count -ne 1 -or $unrelatedAfterUnhide[0].Handle -ne $unrelatedAfterShowAllRestart[0].Handle) { throw 'Unrelated card HWND was not stable across Unhide' }
 
-    $hideHiddenButton = @(Find-VisibilityTopButton 'Hide hidden')
-    if ($hideHiddenButton.Count -ne 1) { throw 'Hide hidden button was not present after Unhide' }
+    $hideHiddenButton = @(Find-VisibilityTopButton 'Show all')
+    if ($hideHiddenButton.Count -ne 1) { throw 'Show all checkbox was not present after Unhide' }
     Invoke-ButtonClick $hideHiddenButton[0]
     $afterReturn = Wait-For-ExpectedRows $fullExpected 'Return from Show all exact rows' 10
-    $afterReturnSurface = Assert-NativeVisibilitySurface $afterReturn '' 'Show all'
+    $afterReturnSurface = Assert-NativeVisibilitySurface $afterReturn ''
     Assert-FileSnapshot $visibilityAfterUnhide $script:visibilityPath 'Hide hidden visibility configuration'
     Assert-StableConfiguration
 
     Stop-Ui
     Start-Ui
     $afterFinalRestart = Wait-For-ExpectedRows $fullExpected 'Permanent Unhide after restart' 20
-    $afterFinalRestartSurface = Assert-NativeVisibilitySurface $afterFinalRestart '' 'Show all'
+    $afterFinalRestartSurface = Assert-NativeVisibilitySurface $afterFinalRestart ''
     Assert-FileSnapshot $visibilityAfterUnhide $script:visibilityPath 'Permanent Unhide visibility configuration'
     Assert-StableConfiguration
     [ordered]@{
@@ -1005,6 +1016,7 @@ function Invoke-VisibilityTest([array]$InitialRows) {
         after_final_restart_surface = $afterFinalRestartSurface
         keyboard_hide = $keyboardHide
         keyboard_unhide = $keyboardUnhide
+        keyboard_show_all = $keyboardShowAll
         tab_navigation = $tab
         hidden_key = [ordered]@{ repository = $target.RepositoryKey; worktree = $target.WorktreeKey }
         saved_hidden = $visibilityAfterHideData
@@ -1076,7 +1088,13 @@ try {
     $cards = @(Get-Cards)
     Settle-Paint $cards
     if (-not $Baseline) {
-        [void](Assert-NativeVisibilitySurface $initialRows '' 'Show all')
+        [void](Assert-NativeVisibilitySurface $initialRows '')
+    }
+    if ($VisibilityOnly) {
+        $proof.visibility = Invoke-VisibilityTest $initialRows
+        $proof.result = 'PASS'
+        Write-Host "PASS. Visibility controls passed. Evidence at $Output"
+        return
     }
     $worktreeRows = @($initialRows | Where-Object { $_.Kind -eq 'worktree' })
     $worktreeSource = $worktreeRows[0]

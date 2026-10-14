@@ -3,7 +3,8 @@ param(
     [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wts-dashboard.png",
     [switch]$Screen = $true,
     [int]$Height = 0,
-    [switch]$Client
+    [switch]$Client,
+    [switch]$ShowAll
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,6 +24,8 @@ public static class WtsCapture {
     [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumProc callback, IntPtr data);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr handle, out uint pid);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr handle);
+    [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr parent, int id);
+    [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr handle, uint message, IntPtr wparam, IntPtr lparam);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr handle, StringBuilder text, int count);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessageTimeout(IntPtr handle, uint message, UIntPtr wparam, StringBuilder text, uint flags, uint timeout, out UIntPtr result);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr handle, out Rect rect);
@@ -136,6 +139,11 @@ foreach (`$item in `$items) { `$item.Current.Name }
     if ($LASTEXITCODE -ne 0) { throw 'Native accessibility inspection failed' }
     [IO.File]::WriteAllText((Join-Path $fixture 'accessibility.txt'), $names)
     if (-not (Has-FixtureData $names)) { throw 'Dashboard data has no accessible names' }
+    if ($ShowAll) {
+        $toggle = [WtsCapture]::GetDlgItem($handle, 1004)
+        if ($toggle -eq [IntPtr]::Zero) { throw 'Show all control is unavailable' }
+        [void][WtsCapture]::SendMessageW($toggle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
+    }
     $bounds = New-Object WtsCapture+Rect
     if (-not [WtsCapture]::GetWindowRect($handle, [ref]$bounds)) { throw 'Window bounds unavailable' }
     if ($Height -gt 0) {
