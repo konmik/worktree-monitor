@@ -7,6 +7,7 @@ using System;
 using System.Text;
 using System.Runtime.InteropServices;
 public static class WtsWindowProbe {
+    public struct Rect { public int Left, Top, Right, Bottom; }
     public delegate bool EnumProc(IntPtr handle, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumProc callback, IntPtr data);
@@ -20,6 +21,7 @@ public static class WtsWindowProbe {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr handle, StringBuilder text, int count);
     [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr handle, uint message, IntPtr wparam, IntPtr lparam);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr handle, IntPtr after, int x, int y, int width, int height, uint flags);
+    [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr handle, out Rect rect);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr handle, uint message, IntPtr wparam, IntPtr lparam);
     public static IntPtr Find(uint pid) {
         IntPtr found = IntPtr.Zero;
@@ -54,6 +56,11 @@ public static class WtsWindowProbe {
             return true;
         }, IntPtr.Zero);
         return found;
+    }
+    public static int Height(IntPtr handle) {
+        Rect rect;
+        if (!GetClientRect(handle, out rect)) { throw new InvalidOperationException("Control bounds unavailable"); }
+        return rect.Bottom - rect.Top;
     }
 }
 '@
@@ -104,8 +111,10 @@ try {
     $process = Start-Process -FilePath $Binary -ArgumentList '--live' -NoNewWindow -PassThru
     $script:handle = [IntPtr]::Zero
     Wait-For { $script:handle = [WtsWindowProbe]::Find([uint32]$process.Id); $script:handle -ne [IntPtr]::Zero } 'visible window'
-    if (([WtsWindowProbe]::GetWindowLongPtr($script:handle, -20).ToInt64() -band 8) -eq 0) { throw 'Window is not always on top' }
-    if ([WtsWindowProbe]::GetForegroundWindow() -eq $script:handle) { throw 'Window took foreground focus' }
+    $initialStyle = [WtsWindowProbe]::GetWindowLongPtr($script:handle, -20).ToInt64()
+    $foregroundOnShow = [WtsWindowProbe]::GetForegroundWindow()
+    if (($initialStyle -band 8) -eq 0) { throw 'Window is not always on top' }
+    if ($foregroundOnShow -eq $script:handle) { throw 'Window took foreground focus' }
     Wait-For { Has-Counts 1 0 } 'initial +1 -0 count'
     $initial = [WtsWindowProbe]::Text($script:handle)
     if ($initial -notmatch '5s\b') { throw 'Initial polling interval is not 5s' }
@@ -113,10 +122,17 @@ try {
     $edit = [WtsWindowProbe]::Edit($script:handle)
     if ($edit -eq [IntPtr]::Zero) { throw 'Status text control is missing' }
     if (-not [WtsWindowProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, 600, 130, 22)) { throw 'Window resize failed' }
-    [void][WtsWindowProbe]::SendMessage($edit, 0x00B6, [IntPtr]::Zero, [IntPtr]100)
+    [void][WtsWindowProbe]::SendMessage($edit, 0x00B6, [IntPtr]::Zero, [IntPtr]1)
     $beforeScroll = [WtsWindowProbe]::SendMessage($edit, 0x00CE, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64()
     if ($beforeScroll -le 0) { throw 'Status text did not scroll in the resized window' }
-    Wait-For { [WtsWindowProbe]::Text($script:handle) -match '10s\b' } 'unchanged polling backoff to 10s' 15
+    Wait-For {
+        $text = [WtsWindowProbe]::Text($script:handle)
+        $line = [WtsWindowProbe]::SendMessage($edit, 0x00CE, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64()
+        $height = [WtsWindowProbe]::Height($edit)
+        $focus = [WtsWindowProbe]::GetForegroundWindow().ToInt64()
+        [IO.File]::AppendAllText((Join-Path $fixture 'scroll-trace.txt'), "$line`t$height`t$focus`t$($text.Replace("`r", '').Replace("`n", '\n'))`n")
+        $text -match '10s\b'
+    } 'unchanged polling backoff to 10s' 15
     $afterScroll = [WtsWindowProbe]::SendMessage($edit, 0x00CE, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64()
     [IO.File]::WriteAllText((Join-Path $fixture 'scroll.txt'), "before=$beforeScroll`nafter=$afterScroll`n")
     if ($afterScroll -ne $beforeScroll) { throw "Unchanged refresh reset the scroll position from $beforeScroll to $afterScroll" }
@@ -128,7 +144,8 @@ try {
     Wait-For { Has-Counts 2 0 } 'live +2 -0 count'
     $updated = [WtsWindowProbe]::Text($script:handle)
     if ($updated -notmatch '5s\b') { throw 'Polling did not reset to 5s after a change' }
-    if ([WtsWindowProbe]::GetForegroundWindow() -eq $script:handle) { throw 'Refresh took foreground focus' }
+    $foregroundOnRefresh = [WtsWindowProbe]::GetForegroundWindow()
+    if ($foregroundOnRefresh -eq $script:handle) { throw 'Refresh took foreground focus' }
     if (([WtsWindowProbe]::GetWindowLongPtr($script:handle, -20).ToInt64() -band 0x08000000) -ne 0) { throw 'Window cannot be activated by clicking' }
     [IO.File]::WriteAllText((Join-Path $fixture 'updated.txt'), $updated)
     $validConfig = [IO.File]::ReadAllText($config)
@@ -140,6 +157,7 @@ try {
     & $Binary remove $repo
     if ($LASTEXITCODE -ne 0) { throw 'Removal failed' }
     Wait-For { [WtsWindowProbe]::Text($script:handle) -match '(?i)no (registered )?repo' } 'live registry reload'
+    [IO.File]::WriteAllText((Join-Path $fixture 'empty.txt'), [WtsWindowProbe]::Text($script:handle))
     if ($process.HasExited -or -not [WtsWindowProbe]::IsWindow($script:handle)) { throw 'Window exited before close' }
     if (-not [WtsWindowProbe]::PostMessage($script:handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'Close message failed' }
     Wait-For { -not [WtsWindowProbe]::IsWindow($script:handle) } 'window destruction' 10
@@ -150,6 +168,11 @@ try {
         sha256 = (Get-FileHash -LiteralPath $Binary -Algorithm SHA256).Hash
         initial_interval = 5
         maximum_interval = 30
+        topmost = ($initialStyle -band 8) -ne 0
+        activated_on_show = $foregroundOnShow -eq $script:handle
+        activated_on_refresh = $foregroundOnRefresh -eq $script:handle
+        registry_empty = [IO.File]::ReadAllText((Join-Path $fixture 'empty.txt')) -match '(?i)no (registered )?repo'
+        window_destroyed = -not [WtsWindowProbe]::IsWindow($script:handle)
         scroll_before = $beforeScroll
         scroll_after = $afterScroll
         exit_code = $process.ExitCode
