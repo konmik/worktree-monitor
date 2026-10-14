@@ -31,6 +31,8 @@ Codex's worktree and Git utilities supplied a second local precedent for subproc
 
 The Windows dashboard projects structured snapshots into repository sections and worktree rows. It does not parse CLI output or show summary totals. Each worktree shows its own counts or scan error. Zero changed lines are not presented as proof of a clean Git status.
 
+Line counts are grouped into source, tests, and scripts or tooling when Git's numstat records are parsed. Renames use the destination path. Test classification takes precedence over tooling classification, following the OpenCode line-changes plugin. The groups are the only stored line counts. Both text output and accessible window captions use `S +n/-n · T +n/-n · X +n/-n`. Only source numbers receive addition and deletion colors.
+
 The visual design uses charcoal surfaces, monospace typography, acid-green additions, coral-red deletions and errors, and teal branch labels. Native owner-drawn controls retain real captions for accessibility. A clipped native viewport owns scrolling, while the header stays fixed. Drag handles move whole repository sections or worktrees within their own section. Saved display order does not change registrations or create worktrees. There are no invented history charts, activity scores, or decorative animations.
 
 | Dashboard alternative | Choice |
@@ -41,6 +43,8 @@ The visual design uses charcoal surfaces, monospace typography, acid-green addit
 The terminal sketch contributed the vivid green and teal palette and WTS wordmark. Core counting, registration storage, CLI output, and monitor ownership remain unchanged. The viewport preserves scroll on unchanged and count-only updates.
 
 Display order lives in a separate window-library model. Stable Git common-directory and worktree-root paths identify groups and rows. A completed drop updates `config.order.json` through its own nonblocking lock and atomic replacement. A failed save keeps the prior order and shows a warning. The core accepts explicit live launch context but does not register it. Saved ranks cannot discover or register repositories.
+
+Window placement has its own model and `config.placement.json` file. It records normal window bounds and the associated monitor's geometry. Startup restores fitting bounds when the monitor's pixel dimensions are unchanged. A work-area change alone does not discard a placement that still fits. Normal bounds survive maximization and minimization, and startup never restores a minimized window.
 
 ## Evidence and tradeoffs
 

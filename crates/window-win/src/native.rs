@@ -1,5 +1,6 @@
 use crate::dashboard::{ellipsize_start, DashboardView, DisplayItem, Health, ItemKey};
 use crate::order::{Order, OrderMove};
+use crate::placement_win;
 use std::collections::HashMap;
 use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -97,6 +98,8 @@ struct State {
     next_card_id: usize,
     failure: Option<io::Error>,
     order_path: PathBuf,
+    placement_path: PathBuf,
+    starting: bool,
     order: Order,
     order_warning: Option<String>,
     order_write_failed: bool,
@@ -686,14 +689,24 @@ unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, p
             if controls(window, state) { 0 } else { state.failure = Some(io::Error::last_os_error()); -1 }
         }
         WM_SIZE if !viewport => { cancel_drag(pointer); let saved = anchor(&*pointer); layout(window, &mut *pointer, saved); 0 }
+        WM_EXITSIZEMOVE if !viewport => {
+            let _ = placement_win::save(window, &(*pointer).placement_path);
+            0
+        }
+        WM_QUERYENDSESSION if !viewport => {
+            let _ = placement_win::save(window, &(*pointer).placement_path);
+            1
+        }
         WM_DPICHANGED if !viewport => {
             cancel_drag(pointer);
             let saved = anchor(&*pointer).map(|(key, offset)| (key,
                 (i64::from(offset) * i64::from(GetDpiForWindow(window).max(96)) / i64::from((*pointer).dpi)) as i32));
             if !fonts(window, &mut *pointer) { (*pointer).failure = Some(io::Error::last_os_error()); }
             let suggested = &*(lparam as *const RECT);
-            SetWindowPos(window, null_mut(), suggested.left, suggested.top, suggested.right - suggested.left,
-                suggested.bottom - suggested.top, SWP_NOZORDER | SWP_NOACTIVATE);
+            if !(*pointer).starting {
+                SetWindowPos(window, null_mut(), suggested.left, suggested.top, suggested.right - suggested.left,
+                    suggested.bottom - suggested.top, SWP_NOZORDER | SWP_NOACTIVATE);
+            }
             layout(window, &mut *pointer, saved);
             0
         }
@@ -767,6 +780,7 @@ unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, p
         }
         WM_CLOSE if !viewport => {
             cancel_drag(pointer);
+            let _ = placement_win::save(window, &(*pointer).placement_path);
             KillTimer(window, 1);
             if let Err(error) = (*pointer).monitor.stop() { (*pointer).failure = Some(io::Error::other(error)); }
             DestroyWindow(window);
@@ -800,6 +814,7 @@ unsafe fn controls(window: HWND, state: &mut State) -> bool {
 
 pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error> {
     let order_path = service.config_path().with_extension("order.json");
+    let placement_path = service.config_path().with_extension("placement.json");
     let (order, order_warning) = match Order::read(&order_path) {
         Ok(order) => (order, None),
         Err(error) => (Order::default(), Some(format!("Cannot load presentation order: {error}"))),
@@ -807,7 +822,7 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
     let mut state = Box::new(State { monitor: service.monitor_from(launch_directory).map_err(io::Error::other)?, viewport: null_mut(),
         fixed: Vec::new(), cards: Vec::new(), resources: None, view: DashboardView::scanning(), latest: None,
         dpi: 96, scroll: 0, content: 0, page: 0, width: 0, wheel_remainder: 0, next_card_id: 2000, failure: None,
-        order_path, order, order_warning, order_write_failed: false, order_check: Instant::now(), drag: None });
+        order_path, placement_path, starting: true, order, order_warning, order_write_failed: false, order_check: Instant::now(), drag: None });
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let instance = GetModuleHandleW(null());
@@ -834,11 +849,28 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
         }
         let dark = 1i32;
         DwmSetWindowAttribute(window, 20, (&dark as *const i32).cast(), std::mem::size_of::<i32>() as u32);
-        let dpi = GetDpiForWindow(window).max(96) as i32;
-        if SetWindowPos(window, HWND_TOPMOST, 0, 0, 640 * dpi / 96, 540 * dpi / 96, SWP_NOMOVE | SWP_NOACTIVATE) == 0 {
+        let restored = placement_win::restore(window, &state.placement_path).unwrap_or(false);
+        let positioned = if restored {
+            SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+        } else {
+            let dpi = GetDpiForWindow(window).max(96) as i32;
+            let mut rect: RECT = std::mem::zeroed();
+            GetWindowRect(window, &mut rect);
+            let mut monitor: MONITORINFO = std::mem::zeroed();
+            monitor.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+            let (x, y, width, height) = if GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &mut monitor) != 0 {
+                let work = monitor.rcWork;
+                let width = (640 * dpi / 96).min(work.right - work.left);
+                let height = (540 * dpi / 96).min(work.bottom - work.top);
+                (rect.left.clamp(work.left, work.right - width), rect.top.clamp(work.top, work.bottom - height), width, height)
+            } else { (rect.left, rect.top, 640 * dpi / 96, 540 * dpi / 96) };
+            SetWindowPos(window, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE)
+        };
+        state.starting = false;
+        if positioned == 0 {
             state.failure = Some(io::Error::last_os_error());
             DestroyWindow(window);
-        } else { ShowWindow(window, SW_SHOWNOACTIVATE); }
+        } else { ShowWindow(window, if restored { SW_SHOWNA } else { SW_SHOWNOACTIVATE }); }
         let mut message: MSG = std::mem::zeroed();
         loop {
             let received = GetMessageW(&mut message, null_mut(), 0, 0);

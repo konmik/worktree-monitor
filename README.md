@@ -21,7 +21,7 @@ The live window includes the repository you launch it from, even when it is not 
 
 ## Counts
 
-Each worktree shows its branch and added and deleted lines. Counts compare the working files with `HEAD`, including staged changes once and untracked files. A staged edit reverted in the working file contributes no lines. Repositories without a first commit are supported.
+Each worktree shows its branch and `S +n/-n · T +n/-n · X +n/-n`. `S` counts source changes, `T` counts test changes, and `X` counts scripts and tooling changes. The categories match the OpenCode line-changes plugin. Only source additions and deletions use green and red. Counts compare the working files with `HEAD`, including staged changes once and untracked files. A staged edit reverted in the working file contributes no lines. Repositories without a first commit are supported.
 
 Git's ignore rules and binary attributes apply. Binary files have a separate count, not an invented line count. Ignored untracked files and submodule contents are not counted. Missing or unreadable worktrees show errors rather than zero changes.
 
@@ -32,6 +32,8 @@ The live view scans immediately, then waits 5 seconds. Unchanged results increas
 Registrations live in `~/.config/wts/config.json`. On Windows, this is `%USERPROFILE%\.config\wts\config.json`. Configuration writes are locked and atomic. A malformed file is reported and is not overwritten by `add` or `remove`.
 
 The live window saves display order in `config.order.json` beside the registration file. Reordering does not change which repositories are registered. A failed save shows a warning and leaves the previous order in place.
+
+The window saves its size and position separately in `config.placement.json`. Startup restores the saved window unless its screen changed or its bounds no longer fit. Closing a minimized window preserves its normal bounds and does not reopen it minimized.
 
 ## Verify
 
@@ -45,6 +47,7 @@ pwsh -NoProfile -File scripts/smoke-ui.ps1
 pwsh -NoProfile -File scripts/smoke-window.ps1
 pwsh -NoProfile -File scripts/smoke-dashboard.ps1
 pwsh -NoProfile -File scripts/smoke-resize.ps1
+pwsh -NoProfile -File scripts/smoke-features.ps1
 ```
 
 The smoke checks use isolated temporary repositories and configuration. The window check needs an interactive Windows desktop. It checks the real window, live counts, polling backoff, registry reload, and closing.

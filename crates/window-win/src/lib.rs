@@ -1,5 +1,9 @@
 pub mod dashboard;
 pub mod order;
+pub mod placement;
+
+#[cfg(windows)]
+mod placement_win;
 
 #[cfg(windows)]
 mod native;
