@@ -1,0 +1,53 @@
+mod config;
+mod git;
+mod model;
+mod poll;
+mod process;
+
+pub use model::{Counts, Error, ErrorKind, Head, RepoEntry, Snapshot, WorktreeEntry, WorktreeStats};
+pub use poll::{Monitor, MonitorUpdate};
+pub use process::Cancel;
+
+use std::path::{Path, PathBuf};
+
+#[derive(Clone, Debug)]
+pub struct Service {
+    config_path: PathBuf,
+}
+
+impl Service {
+    pub fn user() -> Result<Self, Error> {
+        let variable = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        let home = std::env::var_os(variable)
+            .filter(|home| !home.is_empty())
+            .ok_or_else(|| Error::config(format!("{variable} is not set")))?;
+        Ok(Self::at(PathBuf::from(home).join(".config/wts/config.json")))
+    }
+
+    pub fn at(path: impl Into<PathBuf>) -> Self {
+        Self { config_path: path.into() }
+    }
+
+    pub fn add(&self, path: &Path) -> Result<bool, Error> {
+        config::update(&self.config_path, path, true, &Cancel::new())
+    }
+
+    pub fn remove(&self, path: &Path) -> Result<bool, Error> {
+        config::update(&self.config_path, path, false, &Cancel::new())
+    }
+
+    pub fn snapshot(&self, cancel: &Cancel) -> Snapshot {
+        match config::read(&self.config_path).and_then(|bytes| config::parse(&bytes)) {
+            Ok(repos) => git::scan(&repos, None, cancel),
+            Err(error) => Snapshot { repos: Vec::new(), config_error: Some(error) },
+        }
+    }
+
+    pub fn monitor(self) -> Result<Monitor, Error> {
+        Monitor::start(self)
+    }
+}
+
+#[cfg(test)]
+#[path = "../tests/unit/mod.rs"]
+mod unit_tests;

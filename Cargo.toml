@@ -1,0 +1,12 @@
+[workspace]
+members = ["crates/wts-core", "crates/wts", "crates/window-win"]
+default-members = ["crates/wts"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+wts-core = { path = "crates/wts-core" }
+window-win = { path = "crates/window-win" }
