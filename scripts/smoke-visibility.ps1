@@ -19,6 +19,18 @@ using System.Text;
 
 public static class WtsVisibilityNativeProbe {
     public struct Point { public int X, Y; }
+    [StructLayout(LayoutKind.Sequential)] public struct MouseInput {
+        public int X, Y;
+        public uint Data, Flags, Time;
+        public UIntPtr Extra;
+    }
+    [StructLayout(LayoutKind.Explicit)] public struct InputData {
+        [FieldOffset(0)] public MouseInput Mouse;
+    }
+    [StructLayout(LayoutKind.Sequential)] public struct Input {
+        public uint Type;
+        public InputData Data;
+    }
     public struct Rect { public int Left, Top, Right, Bottom; }
     public struct GuiInfo {
         public uint Size, Flags;
@@ -52,6 +64,10 @@ public static class WtsVisibilityNativeProbe {
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr handle);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr handle);
     [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr handle);
+    [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point point);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
+    [DllImport("user32.dll")] public static extern uint SendInput(uint count, Input[] inputs, int size);
     [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] public static extern int GetWindowLong(IntPtr handle, int index);
     [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr handle);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr handle, out Rect rect);
@@ -190,6 +206,14 @@ public static class WtsVisibilityNativeProbe {
         IntPtr result;
         if (SendMessageTimeout(handle, message, wparam, lparam, 2, 3000, out result) == IntPtr.Zero) throw new InvalidOperationException("Native message timed out or failed");
         return result;
+    }
+
+    public static void Click() {
+        var inputs = new[] {
+            new Input { Data = new InputData { Mouse = new MouseInput { Flags = 2 } } },
+            new Input { Data = new InputData { Mouse = new MouseInput { Flags = 4 } } }
+        };
+        if (SendInput(2, inputs, Marshal.SizeOf<Input>()) != 2) throw new InvalidOperationException("Mouse click input was not delivered");
     }
 }
 '@
@@ -593,7 +617,26 @@ function Invoke-TabProbe($Button) {
 }
 
 function Invoke-ButtonClick($Button) {
-    [void][WtsVisibilityNativeProbe]::Send($Button.Handle, 0x00f5, [IntPtr]::Zero, [IntPtr]::Zero)
+    $bounds = [WtsVisibilityNativeProbe]::WindowBounds($Button.Handle)
+    $point = [WtsVisibilityNativeProbe+Point]::new()
+    $point.X = [int](($bounds.Left + $bounds.Right) / 2)
+    $point.Y = [int](($bounds.Top + $bounds.Bottom) / 2)
+    if (-not [WtsVisibilityNativeProbe]::SetCursorPos($point.X, $point.Y)) { throw 'Could not position the mouse over the button' }
+    $hit = [WtsVisibilityNativeProbe]::WindowFromPoint($point)
+    [uint32]$owner = 0
+    [void][WtsVisibilityNativeProbe]::GetWindowThreadProcessId($hit, [ref]$owner)
+    if ($owner -ne $script:process.Id) { throw 'Mouse target is outside the test window' }
+    [WtsVisibilityNativeProbe]::Click()
+    if ($hit -ne $Button.Handle) {
+        throw "Mouse click on $($Button.Text) reaches $([WtsVisibilityNativeProbe]::Class($hit)) instead of the button"
+    }
+}
+
+function Invoke-VisibilityActivation($Button, [bool]$Keyboard) {
+    if ($Keyboard) {
+        $result = Invoke-KeyboardButton $Button
+        if ($result.result -cne 'PASS') { throw "Could not verify keyboard activation of $($Button.Text)" }
+    } else { Invoke-ButtonClick $Button }
 }
 
 function Get-PointsForCard($Card) {
@@ -915,7 +958,7 @@ function Select-SafeTarget([array]$Candidates) {
     throw 'No drag target stayed away from the viewport scroll edges'
 }
 
-function Invoke-VisibilityTest([array]$InitialRows) {
+function Invoke-VisibilityTest([array]$InitialRows, [switch]$Keyboard) {
     $fullExpected = @(Get-ExpectedVisibleRows '')
     Assert-RowSnapshot $InitialRows $fullExpected 'Initial exact rows'
     $initialSurface = Assert-NativeVisibilitySurface $InitialRows ''
@@ -926,8 +969,8 @@ function Invoke-VisibilityTest([array]$InitialRows) {
     $targetButton = @(Find-VisibilityButton $target.Card 'Hide')
     if ($targetButton.Count -ne 1) { throw 'Keyboard visibility probe lacks a native Hide button' }
     $tab = Invoke-TabProbe $targetButton[0]
-    $keyboardHide = Invoke-KeyboardButton $targetButton[0]
-    if ($keyboardHide.result -ceq 'NOT_FEASIBLE') { Invoke-ButtonClick $targetButton[0] }
+    if ($tab.result -cne 'PASS') { throw 'Could not verify Tab navigation from Hide' }
+    Invoke-VisibilityActivation $targetButton[0] $Keyboard
     $hiddenExpected = @(Get-ExpectedVisibleRows $target.Key)
     $afterHide = Wait-For-ExpectedRows $hiddenExpected 'Hide exact rows' 10
     $afterHideSurface = Assert-NativeVisibilitySurface $afterHide $target.Key
@@ -949,8 +992,7 @@ function Invoke-VisibilityTest([array]$InitialRows) {
 
     $showAllButton = @(Find-VisibilityTopButton 'Show all')
     if ($showAllButton.Count -ne 1) { throw 'Show all button was not present after restart' }
-    $keyboardShowAll = Invoke-KeyboardButton $showAllButton[0]
-    if ($keyboardShowAll.result -ceq 'NOT_FEASIBLE') { Invoke-ButtonClick $showAllButton[0] }
+    Invoke-VisibilityActivation $showAllButton[0] $Keyboard
     $afterShowAll = Wait-For-ExpectedRows $fullExpected 'Show all exact rows' 10
     $afterShowAllSurface = Assert-NativeVisibilitySurface $afterShowAll $target.Key $true
     Assert-FileSnapshot $visibilityAfterHide $script:visibilityPath 'Show all visibility configuration'
@@ -968,7 +1010,7 @@ function Invoke-VisibilityTest([array]$InitialRows) {
     if ($unrelatedAfterShowAllRestart.Count -ne 1) { throw 'Unrelated card disappeared after transient Show all restart' }
     $showAllAgainButton = @(Find-VisibilityTopButton 'Show all')
     if ($showAllAgainButton.Count -ne 1) { throw 'Show all button was not restored after transient restart' }
-    Invoke-ButtonClick $showAllAgainButton[0]
+    Invoke-VisibilityActivation $showAllAgainButton[0] $Keyboard
     $afterShowAllAgain = Wait-For-ExpectedRows $fullExpected 'Show all exact rows after transient restart' 10
     $afterShowAllAgainSurface = Assert-NativeVisibilitySurface $afterShowAllAgain $target.Key $true
     Assert-FileSnapshot $visibilityAfterHide $script:visibilityPath 'Show all visibility configuration after transient restart'
@@ -978,8 +1020,7 @@ function Invoke-VisibilityTest([array]$InitialRows) {
     if ($unhideRow.Count -ne 1) { throw 'Hidden worktree was not shown by Show all' }
     $unhideButton = @(Find-VisibilityButton $unhideRow[0].Card 'Unhide')
     if ($unhideButton.Count -ne 1) { throw 'Show all did not expose one native Unhide button' }
-    $keyboardUnhide = Invoke-KeyboardButton $unhideButton[0]
-    if ($keyboardUnhide.result -ceq 'NOT_FEASIBLE') { Invoke-ButtonClick $unhideButton[0] }
+    Invoke-VisibilityActivation $unhideButton[0] $Keyboard
     $afterUnhide = Wait-For-ExpectedRows $fullExpected 'Unhide exact rows' 10
     $afterUnhideSurface = Assert-NativeVisibilitySurface $afterUnhide '' $true
     $visibilityAfterUnhideData = Assert-VisibilityFile $target.RepositoryKey $target.WorktreeKey $false
@@ -990,7 +1031,7 @@ function Invoke-VisibilityTest([array]$InitialRows) {
 
     $hideHiddenButton = @(Find-VisibilityTopButton 'Show all')
     if ($hideHiddenButton.Count -ne 1) { throw 'Show all checkbox was not present after Unhide' }
-    Invoke-ButtonClick $hideHiddenButton[0]
+    Invoke-VisibilityActivation $hideHiddenButton[0] $Keyboard
     $afterReturn = Wait-For-ExpectedRows $fullExpected 'Return from Show all exact rows' 10
     $afterReturnSurface = Assert-NativeVisibilitySurface $afterReturn ''
     Assert-FileSnapshot $visibilityAfterUnhide $script:visibilityPath 'Hide hidden visibility configuration'
@@ -1014,9 +1055,7 @@ function Invoke-VisibilityTest([array]$InitialRows) {
         after_unhide_surface = $afterUnhideSurface
         after_return_surface = $afterReturnSurface
         after_final_restart_surface = $afterFinalRestartSurface
-        keyboard_hide = $keyboardHide
-        keyboard_unhide = $keyboardUnhide
-        keyboard_show_all = $keyboardShowAll
+        activation = if ($Keyboard) { 'keyboard' } else { 'mouse' }
         tab_navigation = $tab
         hidden_key = [ordered]@{ repository = $target.RepositoryKey; worktree = $target.WorktreeKey }
         saved_hidden = $visibilityAfterHideData
@@ -1066,6 +1105,8 @@ $proof = [ordered]@{
     assumptions = @('Fixture uses direct linked-worktree metadata and does not run git worktree add')
 }
 $dpiContext = [IntPtr]::Zero
+$cursor = [WtsVisibilityNativeProbe+Point]::new()
+$restoreCursor = [WtsVisibilityNativeProbe]::GetCursorPos([ref]$cursor)
 try {
     $env:HOME = Join-Path $Output 'unix-home'
     $env:USERPROFILE = $fixtureHome
@@ -1092,6 +1133,8 @@ try {
     }
     if ($VisibilityOnly) {
         $proof.visibility = Invoke-VisibilityTest $initialRows
+        $keyboardRows = Wait-For-ExpectedRows (Get-ExpectedVisibleRows '') 'rows before keyboard visibility checks' 10
+        $proof.keyboard_visibility = Invoke-VisibilityTest $keyboardRows -Keyboard
         $proof.result = 'PASS'
         Write-Host "PASS. Visibility controls passed. Evidence at $Output"
         return
@@ -1157,6 +1200,7 @@ try {
     throw
 } finally {
     try { Stop-Ui } catch { }
+    if ($restoreCursor) { [void][WtsVisibilityNativeProbe]::SetCursorPos($cursor.X, $cursor.Y) }
     $proof.actions = $script:actions.ToArray()
     $proof.actions | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $Output 'paint-trace.json') -Encoding utf8NoBOM
     $proof | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath (Join-Path $Output 'proof.json') -Encoding utf8NoBOM
