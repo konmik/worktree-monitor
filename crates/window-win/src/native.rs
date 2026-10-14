@@ -13,10 +13,11 @@ use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, REC
 use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Controls::{SetScrollInfo, SetWindowTheme, DRAWITEMSTRUCT, ODT_BUTTON, ODT_STATIC,
-    ODS_CHECKED, ODS_DISABLED, ODS_FOCUS, ODS_GRAYED, ODS_HOTLIGHT, ODS_SELECTED};
+use windows_sys::Win32::UI::Controls::{SetScrollInfo, SetWindowTheme, DRAWITEMSTRUCT,
+    ODT_BUTTON, ODT_STATIC, ODS_CHECKED, ODS_DISABLED, ODS_FOCUS, ODS_GRAYED,
+    ODS_HOTLIGHT, ODS_SELECTED, BST_CHECKED};
 use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetCapture, GetFocus, ReleaseCapture, SetCapture, SetFocus};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetCapture, GetFocus, IsWindowEnabled, ReleaseCapture, SetCapture, SetFocus};
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use wts_core::{Monitor, MonitorUpdate, Service};
@@ -118,7 +119,6 @@ struct State {
     visibility_warning: Option<String>,
     visibility_write_failed: bool,
     visibility_check: Instant,
-    show_all: bool,
     show_all_button: HWND,
     next_action_id: usize,
     drag: Option<Drag>,
@@ -194,13 +194,6 @@ unsafe fn set_action(card: &mut Card, visibility: &Visibility) {
         SetWindowTextW(action, wide(if hidden { "Unhide" } else { "Hide" }).as_ptr());
         InvalidateRect(action, null(), 0);
         card.action_hidden = Some(hidden);
-    }
-}
-
-unsafe fn set_show_all_caption(state: &State) {
-    if !state.show_all_button.is_null() {
-        SetWindowTextW(state.show_all_button, wide(if state.show_all { "Hide hidden" } else { "Show all" }).as_ptr());
-        InvalidateRect(state.show_all_button, null(), 0);
     }
 }
 
@@ -338,10 +331,12 @@ unsafe fn layout(window: HWND, state: &mut State, restore: Option<(ItemKey, i32)
     let status_height = s(20);
     let header = brand_height + status_height;
     let width = (client.right - margin * 2).max(1);
-    let toggle_width = scaled(92, state.dpi).min(width);
+    let toggle_width = scaled(104, state.dpi).min(width);
+    let toggle_height = scaled(24, state.dpi).min(brand_height);
     MoveWindow(state.fixed[0].window, margin, margin, (width - toggle_width).max(1), brand_height, 0);
     MoveWindow(state.fixed[1].window, margin, margin + brand_height, width, status_height, 0);
-    MoveWindow(state.show_all_button, margin + width - toggle_width, margin, toggle_width, brand_height, 0);
+    MoveWindow(state.show_all_button, margin + width - toggle_width, margin + (brand_height - toggle_height) / 2,
+        toggle_width, toggle_height, 0);
     let top = margin + header + gap;
     let page = (client.bottom - top - margin).max(1);
     MoveWindow(state.viewport, margin, top, width, page, 0);
@@ -546,6 +541,10 @@ unsafe fn button_caption(window: HWND) -> String {
     String::from_utf16_lossy(&value[..length.min(value.len())])
 }
 
+unsafe fn show_all_checked(state: &State) -> bool {
+    SendMessageW(state.show_all_button, BM_GETCHECK, 0, 0) == BST_CHECKED as LRESULT
+}
+
 unsafe fn paint_button(draw: &DRAWITEMSTRUCT, state: &State) {
     let width = draw.rcItem.right - draw.rcItem.left;
     let height = draw.rcItem.bottom - draw.rcItem.top;
@@ -575,30 +574,18 @@ unsafe fn draw_button(draw: &DRAWITEMSTRUCT, state: &State) {
     let pressed = draw.itemState & ODS_SELECTED != 0;
     let focused = draw.itemState & ODS_FOCUS != 0;
     let hot = draw.itemState & ODS_HOTLIGHT != 0;
-    let checked = draw.itemState & ODS_CHECKED != 0
-        || (draw.hwndItem == state.show_all_button && state.show_all);
+    let checked = draw.itemState & ODS_CHECKED != 0;
     let inset = s(1).min(width.saturating_sub(1) / 2).min(height.saturating_sub(1) / 2);
     let body = RECT { left: rect.left + inset, top: rect.top + inset,
         right: rect.right - inset, bottom: rect.bottom - inset };
     let radius = s(7).min((body.right - body.left).max(1) / 2).min((body.bottom - body.top).max(1) / 2);
     let fill_brush = if disabled || pressed { resources.background } else { resources.surface };
     let border_pen = if disabled { resources.border }
-        else if checked { resources.checked } else if pressed || hot { resources.accent } else { resources.border };
+        else if checked { resources.checked } else if focused || pressed || hot { resources.accent } else { resources.border };
     fill(draw.hDC, rect, resources.background);
     SelectObject(draw.hDC, fill_brush);
     SelectObject(draw.hDC, border_pen);
     RoundRect(draw.hDC, body.left, body.top, body.right, body.bottom, radius, radius);
-    if focused && !disabled {
-        let focus_inset = s(4).min(width.saturating_sub(1) / 2).min(height.saturating_sub(1) / 2);
-        let focus = RECT { left: rect.left + focus_inset, top: rect.top + focus_inset,
-            right: rect.right - focus_inset, bottom: rect.bottom - focus_inset };
-        if focus.left < focus.right && focus.top < focus.bottom {
-            SelectObject(draw.hDC, GetStockObject(NULL_BRUSH));
-            SelectObject(draw.hDC, resources.accent);
-            let radius = s(5).min((focus.right - focus.left).max(1) / 2).min((focus.bottom - focus.top).max(1) / 2);
-            RoundRect(draw.hDC, focus.left, focus.top, focus.right, focus.bottom, radius, radius);
-        }
-    }
     let offset = if pressed { s(1) } else { 0 };
     let padding = s(8);
     let text_rect = RECT { left: rect.left + padding, top: rect.top + offset,
@@ -607,6 +594,36 @@ unsafe fn draw_button(draw: &DRAWITEMSTRUCT, state: &State) {
     text(draw.hDC, &button_caption(draw.hwndItem), text_rect, resources.fonts[1], color,
         DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     RestoreDC(draw.hDC, saved);
+}
+
+unsafe fn draw_checkbox(dc: HDC, rect: RECT, window: HWND, state: &State) {
+    let Some(resources) = &state.resources else { return; };
+    let saved = SaveDC(dc);
+    let width = rect.right - rect.left;
+    let height = rect.bottom - rect.top;
+    let s = |value| scaled(value, state.dpi);
+    if width > 0 && height > 0 {
+        fill(dc, rect, resources.background);
+        let size = s(16).min(width).min(height);
+        let top = rect.top + (height - size) / 2;
+        let checkbox = RECT { left: rect.left, top, right: rect.left + size, bottom: top + size };
+        let checked = SendMessageW(window, BM_GETCHECK, 0, 0) == BST_CHECKED as LRESULT;
+        let focused = GetFocus() == window;
+        let disabled = IsWindowEnabled(window) == 0;
+        SelectObject(dc, if disabled { resources.background } else { resources.surface });
+        SelectObject(dc, if disabled { resources.border }
+            else if focused { resources.accent } else if checked { resources.checked } else { resources.border });
+        Rectangle(dc, checkbox.left, checkbox.top, checkbox.right, checkbox.bottom);
+        if checked && !disabled {
+            SelectObject(dc, resources.checked);
+            MoveToEx(dc, checkbox.left + size / 4, checkbox.top + size / 2, null_mut());
+            LineTo(dc, checkbox.left + size / 2, checkbox.top + size * 3 / 4);
+            LineTo(dc, checkbox.left + size * 3 / 4, checkbox.top + size / 4);
+        }
+        text(dc, "Show all", RECT { left: checkbox.right + s(8), top: rect.top, right: rect.right, bottom: rect.bottom },
+            resources.fonts[1], if disabled { MUTED } else if checked { GREEN } else { WHITE }, DT_SINGLELINE | DT_VCENTER);
+    }
+    RestoreDC(dc, saved);
 }
 
 fn intersection(left: RECT, right: RECT) -> Option<RECT> {
@@ -658,8 +675,7 @@ unsafe fn draw_item(state: &State, lparam: LPARAM) -> LRESULT {
             return 1;
         }
     }
-    if draw.CtlType == ODT_BUTTON && (draw.hwndItem == state.show_all_button
-        || state.cards.iter().any(|card| card.action == Some(draw.hwndItem))) {
+    if draw.CtlType == ODT_BUTTON && state.cards.iter().any(|card| card.action == Some(draw.hwndItem)) {
         paint_button(draw, state);
         return 1;
     }
@@ -813,7 +829,7 @@ unsafe fn refresh(window: HWND, state: &mut State) {
     let mut view = if let Some(update) = &state.latest {
         let mut snapshot = (*update.snapshot).clone();
         state.order.apply(&mut snapshot);
-        let mut view = DashboardView::from_snapshot_with_visibility(&snapshot, &state.visibility, state.show_all);
+        let mut view = DashboardView::from_snapshot_with_visibility(&snapshot, &state.visibility, show_all_checked(state));
         if let Some(error) = &update.launch_error { view.launch_error(error); }
         view
     } else { DashboardView::scanning() };
@@ -856,8 +872,6 @@ unsafe fn command(window: HWND, state: &mut State, wparam: WPARAM, lparam: LPARA
     }
     let control = lparam as HWND;
     if !viewport && control == state.show_all_button {
-        state.show_all = !state.show_all;
-        set_show_all_caption(state);
         refresh(window, state);
         return 0;
     }
@@ -941,6 +955,26 @@ unsafe extern "system" fn card_procedure(window: HWND, message: u32, wparam: WPA
         }
     }
     DefSubclassProc(window, message, wparam, lparam)
+}
+
+unsafe extern "system" fn show_all_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, data: usize) -> LRESULT {
+    if message == WM_ERASEBKGND { return 1; }
+    if message == WM_NCDESTROY { RemoveWindowSubclass(window, Some(show_all_procedure), 1); }
+    if message == WM_PAINT || message == WM_PRINTCLIENT {
+        let mut paint: PAINTSTRUCT = std::mem::zeroed();
+        let dc = if message == WM_PAINT { BeginPaint(window, &mut paint) } else { wparam as HDC };
+        let mut rect: RECT = std::mem::zeroed();
+        if !dc.is_null() && GetClientRect(window, &mut rect) != 0 {
+            draw_checkbox(dc, rect, window, &*(data as *const State));
+        }
+        if message == WM_PAINT { EndPaint(window, &paint); }
+        return 0;
+    }
+    let result = DefSubclassProc(window, message, wparam, lparam);
+    if matches!(message, WM_SETFOCUS | WM_KILLFOCUS | WM_ENABLE | BM_SETCHECK | BM_SETSTATE) {
+        InvalidateRect(window, null(), 0);
+    }
+    result
 }
 
 unsafe extern "system" fn viewport_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -1105,9 +1139,10 @@ unsafe fn controls(window: HWND, state: &mut State) -> bool {
         let Some(card) = create_card(window, 1002 + index, None, None, display, resources) else { return false; };
         state.fixed.push(card);
     }
-    state.show_all_button = CreateWindowExW(0, wide("BUTTON").as_ptr(), wide(if state.show_all { "Hide hidden" } else { "Show all" }).as_ptr(),
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32, 0, 0, 1, 1, window, 1004 as _, GetModuleHandleW(null()), null());
+    state.show_all_button = CreateWindowExW(0, wide("BUTTON").as_ptr(), wide("Show all").as_ptr(),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX as u32, 0, 0, 1, 1, window, 1004 as _, GetModuleHandleW(null()), null());
     if state.show_all_button.is_null() { return false; }
+    if SetWindowSubclass(state.show_all_button, Some(show_all_procedure), 1, state as *const State as usize) == 0 { return false; }
     SendMessageW(state.show_all_button, WM_SETFONT, resources.fonts[1] as WPARAM, 0);
     state.viewport = CreateWindowExW(WS_EX_CONTROLPARENT, wide("WtsDashboardViewport").as_ptr(), wide("Repository worktrees").as_ptr(),
         WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_TABSTOP,
@@ -1135,7 +1170,7 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
         dpi: 96, scroll: 0, content: 0, page: 0, width: 0, wheel_remainder: 0, next_card_id: 2000, failure: None,
         order_path, placement_path, starting: true, order, order_warning, order_write_failed: false, order_check: Instant::now(),
         visibility_path, visibility, visibility_warning, visibility_write_failed: false, visibility_check: Instant::now(),
-        show_all: false, show_all_button: null_mut(), next_action_id: 3000, drag: None });
+        show_all_button: null_mut(), next_action_id: 3000, drag: None });
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let instance = GetModuleHandleW(null());
