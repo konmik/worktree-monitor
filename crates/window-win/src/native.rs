@@ -13,7 +13,8 @@ use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, REC
 use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Controls::{SetScrollInfo, SetWindowTheme, DRAWITEMSTRUCT, ODT_STATIC};
+use windows_sys::Win32::UI::Controls::{SetScrollInfo, SetWindowTheme, DRAWITEMSTRUCT, ODT_BUTTON, ODT_STATIC,
+    ODS_CHECKED, ODS_DISABLED, ODS_FOCUS, ODS_GRAYED, ODS_HOTLIGHT, ODS_SELECTED};
 use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetCapture, GetFocus, ReleaseCapture, SetCapture, SetFocus};
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
@@ -41,6 +42,8 @@ struct Resources {
     background: HBRUSH,
     surface: HBRUSH,
     border: HPEN,
+    accent: HPEN,
+    checked: HPEN,
     green: HBRUSH,
     red: HBRUSH,
     teal: HBRUSH,
@@ -51,6 +54,7 @@ impl Resources {
     unsafe fn new(dpi: i32) -> Option<Self> {
         let mut resources = Self { fonts: [null_mut(); 6], background: CreateSolidBrush(BACKGROUND),
             surface: CreateSolidBrush(SURFACE), border: CreatePen(PS_SOLID, 1, BORDER),
+            accent: CreatePen(PS_SOLID, 1, TEAL), checked: CreatePen(PS_SOLID, 1, GREEN),
             green: CreateSolidBrush(GREEN), red: CreateSolidBrush(RED), teal: CreateSolidBrush(TEAL), muted: CreateSolidBrush(MUTED) };
         for (index, (size, weight)) in [(11, 400), (14, 400), (16, 700), (28, 700), (36, 700), (20, 700)].into_iter().enumerate() {
             resources.fonts[index] = CreateFontW(-(size * dpi / 96), 0, 0, 0, weight, 0, 0, 0,
@@ -58,7 +62,8 @@ impl Resources {
                 wide("Consolas").as_ptr());
         }
         if resources.fonts.iter().any(|font| font.is_null()) || resources.background.is_null() || resources.surface.is_null()
-            || resources.border.is_null() || resources.green.is_null() || resources.red.is_null() || resources.teal.is_null() || resources.muted.is_null() {
+            || resources.border.is_null() || resources.accent.is_null() || resources.checked.is_null()
+            || resources.green.is_null() || resources.red.is_null() || resources.teal.is_null() || resources.muted.is_null() {
             None
         } else { Some(resources) }
     }
@@ -68,7 +73,7 @@ impl Drop for Resources {
     fn drop(&mut self) {
         unsafe {
             for font in self.fonts { if !font.is_null() { DeleteObject(font); } }
-            for object in [self.background, self.surface, self.border, self.green, self.red, self.teal, self.muted] {
+            for object in [self.background, self.surface, self.border, self.accent, self.checked, self.green, self.red, self.teal, self.muted] {
                 if !object.is_null() { DeleteObject(object); }
             }
         }
@@ -164,14 +169,13 @@ unsafe fn create_card(parent: HWND, id: usize, action_id: Option<usize>, key: Op
     SendMessageW(window, WM_SETFONT, resources.fonts[1] as WPARAM, 0);
     let action = if let Some(action_id) = action_id {
         let action = CreateWindowExW(0, wide("BUTTON").as_ptr(), wide("Hide").as_ptr(),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32, 0, 0, 1, 1, parent,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32, 0, 0, 1, 1, parent,
             action_id as _, GetModuleHandleW(null()), null());
         if action.is_null() {
             DestroyWindow(window);
             return None;
         }
         SendMessageW(action, WM_SETFONT, resources.fonts[1] as WPARAM, 0);
-        SetWindowTheme(action, wide("DarkMode_Explorer").as_ptr(), null());
         Some(action)
     } else { None };
     Some(Card { window, action, action_hidden: None, key, display, top: 0, height: 0 })
@@ -188,6 +192,7 @@ unsafe fn set_action(card: &mut Card, visibility: &Visibility) {
     let hidden = visibility.contains(repository, worktree);
     if card.action_hidden != Some(hidden) {
         SetWindowTextW(action, wide(if hidden { "Unhide" } else { "Hide" }).as_ptr());
+        InvalidateRect(action, null(), 0);
         card.action_hidden = Some(hidden);
     }
 }
@@ -195,6 +200,7 @@ unsafe fn set_action(card: &mut Card, visibility: &Visibility) {
 unsafe fn set_show_all_caption(state: &State) {
     if !state.show_all_button.is_null() {
         SetWindowTextW(state.show_all_button, wide(if state.show_all { "Hide hidden" } else { "Show all" }).as_ptr());
+        InvalidateRect(state.show_all_button, null(), 0);
     }
 }
 
@@ -534,6 +540,75 @@ unsafe fn wrapped_width(dc: HDC, value: &str, font: HFONT) -> i32 {
     size.cx
 }
 
+unsafe fn button_caption(window: HWND) -> String {
+    let mut value = [0u16; 128];
+    let length = GetWindowTextW(window, value.as_mut_ptr(), value.len() as i32).max(0) as usize;
+    String::from_utf16_lossy(&value[..length.min(value.len())])
+}
+
+unsafe fn paint_button(draw: &DRAWITEMSTRUCT, state: &State) {
+    let width = draw.rcItem.right - draw.rcItem.left;
+    let height = draw.rcItem.bottom - draw.rcItem.top;
+    if width <= 0 || height <= 0 { return; }
+    let memory = CreateCompatibleDC(draw.hDC);
+    let bitmap = CreateCompatibleBitmap(draw.hDC, width, height);
+    if !memory.is_null() && !bitmap.is_null() {
+        let old = SelectObject(memory, bitmap);
+        let buffered = DRAWITEMSTRUCT { hDC: memory,
+            rcItem: RECT { left: 0, top: 0, right: width, bottom: height }, ..*draw };
+        draw_button(&buffered, state);
+        BitBlt(draw.hDC, draw.rcItem.left, draw.rcItem.top, width, height, memory, 0, 0, SRCCOPY);
+        SelectObject(memory, old);
+    } else { draw_button(draw, state); }
+    if !bitmap.is_null() { DeleteObject(bitmap); }
+    if !memory.is_null() { DeleteDC(memory); }
+}
+
+unsafe fn draw_button(draw: &DRAWITEMSTRUCT, state: &State) {
+    let Some(resources) = &state.resources else { return; };
+    let saved = SaveDC(draw.hDC);
+    let rect = draw.rcItem;
+    let width = rect.right - rect.left;
+    let height = rect.bottom - rect.top;
+    let s = |value| scaled(value, state.dpi);
+    let disabled = draw.itemState & (ODS_DISABLED | ODS_GRAYED) != 0;
+    let pressed = draw.itemState & ODS_SELECTED != 0;
+    let focused = draw.itemState & ODS_FOCUS != 0;
+    let hot = draw.itemState & ODS_HOTLIGHT != 0;
+    let checked = draw.itemState & ODS_CHECKED != 0
+        || (draw.hwndItem == state.show_all_button && state.show_all);
+    let inset = s(1).min(width.saturating_sub(1) / 2).min(height.saturating_sub(1) / 2);
+    let body = RECT { left: rect.left + inset, top: rect.top + inset,
+        right: rect.right - inset, bottom: rect.bottom - inset };
+    let radius = s(7).min((body.right - body.left).max(1) / 2).min((body.bottom - body.top).max(1) / 2);
+    let fill_brush = if disabled || pressed { resources.background } else { resources.surface };
+    let border_pen = if disabled { resources.border }
+        else if checked { resources.checked } else if pressed || hot { resources.accent } else { resources.border };
+    fill(draw.hDC, rect, resources.background);
+    SelectObject(draw.hDC, fill_brush);
+    SelectObject(draw.hDC, border_pen);
+    RoundRect(draw.hDC, body.left, body.top, body.right, body.bottom, radius, radius);
+    if focused && !disabled {
+        let focus_inset = s(4).min(width.saturating_sub(1) / 2).min(height.saturating_sub(1) / 2);
+        let focus = RECT { left: rect.left + focus_inset, top: rect.top + focus_inset,
+            right: rect.right - focus_inset, bottom: rect.bottom - focus_inset };
+        if focus.left < focus.right && focus.top < focus.bottom {
+            SelectObject(draw.hDC, GetStockObject(NULL_BRUSH));
+            SelectObject(draw.hDC, resources.accent);
+            let radius = s(5).min((focus.right - focus.left).max(1) / 2).min((focus.bottom - focus.top).max(1) / 2);
+            RoundRect(draw.hDC, focus.left, focus.top, focus.right, focus.bottom, radius, radius);
+        }
+    }
+    let offset = if pressed { s(1) } else { 0 };
+    let padding = s(8);
+    let text_rect = RECT { left: rect.left + padding, top: rect.top + offset,
+        right: rect.right - padding, bottom: rect.bottom + offset };
+    let color = if disabled { MUTED } else if checked { GREEN } else { WHITE };
+    text(draw.hDC, &button_caption(draw.hwndItem), text_rect, resources.fonts[1], color,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    RestoreDC(draw.hDC, saved);
+}
+
 fn intersection(left: RECT, right: RECT) -> Option<RECT> {
     let rect = RECT { left: left.left.max(right.left), top: left.top.max(right.top),
         right: left.right.min(right.right), bottom: left.bottom.min(right.bottom) };
@@ -582,6 +657,11 @@ unsafe fn draw_item(state: &State, lparam: LPARAM) -> LRESULT {
             paint_card(draw, card, state);
             return 1;
         }
+    }
+    if draw.CtlType == ODT_BUTTON && (draw.hwndItem == state.show_all_button
+        || state.cards.iter().any(|card| card.action == Some(draw.hwndItem))) {
+        paint_button(draw, state);
+        return 1;
     }
     0
 }
@@ -776,7 +856,7 @@ unsafe fn command(window: HWND, state: &mut State, wparam: WPARAM, lparam: LPARA
     }
     let control = lparam as HWND;
     if !viewport && control == state.show_all_button {
-        state.show_all = SendMessageW(control, BM_GETCHECK, 0, 0) == 1;
+        state.show_all = !state.show_all;
         set_show_all_caption(state);
         refresh(window, state);
         return 0;
@@ -1026,12 +1106,9 @@ unsafe fn controls(window: HWND, state: &mut State) -> bool {
         state.fixed.push(card);
     }
     state.show_all_button = CreateWindowExW(0, wide("BUTTON").as_ptr(), wide(if state.show_all { "Hide hidden" } else { "Show all" }).as_ptr(),
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX as u32, 0, 0, 1, 1, window, 1004 as _, GetModuleHandleW(null()), null());
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32, 0, 0, 1, 1, window, 1004 as _, GetModuleHandleW(null()), null());
     if state.show_all_button.is_null() { return false; }
     SendMessageW(state.show_all_button, WM_SETFONT, resources.fonts[1] as WPARAM, 0);
-    let check = if state.show_all { 1 } else { 0 };
-    SendMessageW(state.show_all_button, BM_SETCHECK, check as WPARAM, 0);
-    SetWindowTheme(state.show_all_button, wide("DarkMode_Explorer").as_ptr(), null());
     state.viewport = CreateWindowExW(WS_EX_CONTROLPARENT, wide("WtsDashboardViewport").as_ptr(), wide("Repository worktrees").as_ptr(),
         WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_TABSTOP,
         0, 0, 1, 1, window, 1001 as _, GetModuleHandleW(null()), (state as *mut State).cast());

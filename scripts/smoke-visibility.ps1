@@ -51,6 +51,7 @@ public static class WtsVisibilityNativeProbe {
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr handle);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr handle);
     [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr handle);
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] public static extern int GetWindowLong(IntPtr handle, int index);
     [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr handle);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr handle, out Rect rect);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr handle, out Rect rect);
@@ -460,12 +461,18 @@ function Assert-NativeVisibilitySurface([array]$Rows, [string]$HiddenKey, [strin
     }
     $visibilityButtons = @($buttons | Where-Object { $_.Text -match '^(Hide|Unhide|Show all|Hide hidden)$' })
     if ($visibilityButtons.Count -ne ($worktrees.Count + 1)) { throw "Expected $($worktrees.Count + 1) native visibility buttons, found $($visibilityButtons.Count)" }
+    foreach ($button in $visibilityButtons) {
+        if (([WtsVisibilityNativeProbe]::GetWindowLong($button.Handle, -16) -band 15) -ne 11) {
+            throw "Visibility button $($button.Text) does not use the app's shared owner-drawn style"
+        }
+    }
     [ordered]@{
         top_handle = $top[0].Handle.ToInt64()
         top_caption = $TopCaption
         worktree_count = $worktrees.Count
         native_button_count = $visibilityButtons.Count
         all_native_button_class = 'Button'
+        all_owner_drawn = $true
     }
 }
 
