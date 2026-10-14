@@ -1,15 +1,22 @@
 use std::path::{Path, PathBuf};
 use crate::order::identity;
+use crate::visibility::Visibility;
 use wts_core::{Error, Head, Snapshot, WorktreeStats};
+use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Health { Scanning, Live, Errors }
 
 impl Health {
-    pub fn caption(self, interval: u64) -> String {
+    pub fn caption(self, polling_time_last_minute: Duration) -> String {
         let label = match self { Self::Scanning => "SCANNING", Self::Live => "LIVE", Self::Errors => "ERROR" };
-        format!("{label} · Polling interval {interval}s")
+        format!("{label} · Polling {} in last minute", duration_caption(polling_time_last_minute))
     }
+}
+
+fn duration_caption(duration: Duration) -> String {
+    let tenths = duration.as_millis().saturating_add(50) / 100;
+    format!("{}.{:01}s", tenths / 10, tenths % 10)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -17,6 +24,7 @@ pub enum ItemKey {
     Configuration,
     Launch,
     Presentation,
+    Visibility,
     Empty,
     Repository(PathBuf),
     RepositoryError(PathBuf),
@@ -26,7 +34,7 @@ pub enum ItemKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DisplayItem {
     Brand,
-    Status { health: Health, interval: u64 },
+    Status { health: Health, polling_time_last_minute: Duration },
     Repository { name: String, worktrees: Option<usize>, bare: bool },
     Worktree { path: PathBuf, result: Result<WorktreeStats, Error> },
     Notice { title: String, message: String, error: bool },
@@ -59,7 +67,7 @@ impl DisplayItem {
     pub fn caption(&self) -> String {
         match self {
             Self::Brand => "WTS\nWORKTREE MONITOR".into(),
-            Self::Status { health, interval } => health.caption(*interval),
+            Self::Status { health, polling_time_last_minute } => health.caption(*polling_time_last_minute),
             Self::Repository { name, worktrees, bare } => {
                 let label = if *worktrees == Some(1) { "worktree" } else { "worktrees" };
                 let mut text = format!("{name} · {} {label}", worktrees.map_or_else(|| "?".into(), |count| count.to_string()));
@@ -98,6 +106,10 @@ impl DashboardView {
     }
 
     pub fn from_snapshot(snapshot: &Snapshot) -> Self {
+        Self::from_snapshot_with_visibility(snapshot, &Visibility::default(), false)
+    }
+
+    pub fn from_snapshot_with_visibility(snapshot: &Snapshot, visibility: &Visibility, show_all: bool) -> Self {
         let mut items = Vec::new();
         if let Some(error) = &snapshot.config_error {
             items.push(ViewItem { key: ItemKey::Configuration, display: DisplayItem::Notice {
@@ -118,6 +130,7 @@ impl DashboardView {
             match &repo.worktrees {
                 Ok(trees) => {
                     for tree in trees {
+                        if !show_all && visibility.contains(&repo.common_dir, &tree.path) { continue; }
                         items.push(ViewItem { key: ItemKey::Worktree(identity(&repo.common_dir), identity(&tree.path)),
                             display: DisplayItem::Worktree { path: tree.path.clone(), result: tree.result.clone() } });
                     }
@@ -142,6 +155,12 @@ impl DashboardView {
         self.health = Health::Errors;
         self.items.insert(0, ViewItem { key: ItemKey::Presentation, display: DisplayItem::Notice {
             title: "Presentation order warning".into(), message: message.into(), error: true } });
+    }
+
+    pub fn visibility_warning(&mut self, message: &str) {
+        self.health = Health::Errors;
+        self.items.insert(0, ViewItem { key: ItemKey::Visibility, display: DisplayItem::Notice {
+            title: "Worktree visibility warning".into(), message: message.into(), error: true } });
     }
 }
 

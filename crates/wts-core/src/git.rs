@@ -92,6 +92,18 @@ pub(crate) struct ListedTree {
     pub prunable: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct DiscoveredTree {
+    pub path: PathBuf,
+    pub error: Option<Error>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DiscoveredRepo {
+    pub path: PathBuf,
+    pub trees: Vec<DiscoveredTree>,
+}
+
 pub(crate) fn worktrees(bytes: &[u8]) -> Result<Vec<ListedTree>, Error> {
     if !bytes.is_empty() && !bytes.ends_with(b"\0\0") { return Err(invalid("Incomplete worktree list record")); }
     let mut trees = Vec::new();
@@ -113,27 +125,48 @@ pub(crate) fn worktrees(bytes: &[u8]) -> Result<Vec<ListedTree>, Error> {
     Ok(trees)
 }
 
+fn fallback_path(common: &Path) -> PathBuf {
+    common.parent().filter(|_| common.file_name().is_some_and(|name| name == ".git"))
+        .unwrap_or(common).to_path_buf()
+}
+
+fn missing_worktree(tree: &ListedTree) -> Option<Error> {
+    if tree.path.is_dir() && tree.prunable.is_none() { return None; }
+    Some(Error::new(ErrorKind::Io, format!("Missing or inaccessible worktree {}{}",
+        tree.path.display(), tree.prunable.as_ref().map(|reason| format!(": {reason}")).unwrap_or_default())))
+}
+
+pub(crate) fn discover(common: &Path, cancel: &Cancel) -> Result<DiscoveredRepo, Error> {
+    let mut command = args(&["--git-dir"]);
+    command.push(common.as_os_str().to_owned());
+    command.extend(args(&["worktree", "list", "--porcelain", "-z"]));
+    let listed = worktrees(&process::checked(None, &command, cancel)?)?;
+    let path = listed.first().map(|tree| tree.path.clone()).unwrap_or_else(|| fallback_path(common));
+    let mut trees: Vec<_> = listed.into_iter().filter(|tree| !tree.bare).map(|tree| DiscoveredTree {
+        path: tree.path.clone(),
+        error: missing_worktree(&tree),
+    }).collect();
+    trees.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(DiscoveredRepo { path, trees })
+}
+
 pub(crate) fn scan(repos: &[PathBuf], config_error: Option<Error>, cancel: &Cancel) -> Snapshot {
     let repos = repos.iter().map(|common| {
-        let mut command = args(&["--git-dir"]);
-        command.push(common.as_os_str().to_owned());
-        command.extend(args(&["worktree", "list", "--porcelain", "-z"]));
-        let trees = process::checked(None, &command, cancel).and_then(|bytes| worktrees(&bytes));
-        let display = trees.as_ref().ok().and_then(|trees| trees.first()).map(|tree| tree.path.clone())
-            .unwrap_or_else(|| common.parent().filter(|_| common.file_name().is_some_and(|name| name == ".git"))
-                .unwrap_or(common).to_path_buf());
-        let worktrees = trees.map(|trees| {
-            let mut entries: Vec<_> = trees.into_iter().filter(|tree| !tree.bare).map(|tree| {
-                let result = if !tree.path.is_dir() {
-                    Err(Error::new(ErrorKind::Io, format!("Missing or inaccessible worktree {}{}", tree.path.display(),
-                        tree.prunable.map(|reason| format!(": {reason}")).unwrap_or_default())))
-                } else { scan_tree(&tree.path, cancel) };
-                WorktreeEntry { path: tree.path, result }
-            }).collect();
-            entries.sort_by(|left, right| left.path.cmp(&right.path));
-            entries
-        });
-        RepoEntry { common_dir: common.clone(), path: display, worktrees }
+        match discover(common, cancel) {
+            Ok(discovered) => RepoEntry {
+                common_dir: common.clone(),
+                path: discovered.path,
+                worktrees: Ok(discovered.trees.into_iter().map(|tree| WorktreeEntry {
+                    path: tree.path.clone(),
+                    result: tree.error.map_or_else(|| scan_tree(&tree.path, cancel), Err),
+                }).collect()),
+            },
+            Err(error) => RepoEntry {
+                common_dir: common.clone(),
+                path: fallback_path(common),
+                worktrees: Err(error),
+            },
+        }
     }).collect();
     Snapshot { repos, config_error }
 }
@@ -170,7 +203,7 @@ fn head(tree: &Path, cancel: &Cancel) -> Result<(Head, String), Error> {
     Err(invalid("Cannot resolve HEAD"))
 }
 
-fn scan_tree(tree: &Path, cancel: &Cancel) -> Result<WorktreeStats, Error> {
+pub(crate) fn scan_tree(tree: &Path, cancel: &Cancel) -> Result<WorktreeStats, Error> {
     for _ in 0..2 {
         let (head, base) = head(tree, cancel)?;
         let stats = count_tree(tree, head.clone(), &base, cancel)?;

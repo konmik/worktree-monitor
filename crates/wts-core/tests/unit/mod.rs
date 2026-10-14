@@ -1,5 +1,5 @@
 use crate::git::{category, numstat, worktrees, Category};
-use crate::poll::{Backoff, Registrations};
+use crate::poll::{Registrations, WorktreeBackoff};
 use crate::{Counts, ErrorKind, Head, LineCounts, RepoEntry, Snapshot, WorktreeEntry, WorktreeStats};
 use std::path::Path;
 
@@ -71,13 +71,13 @@ fn parses_nul_worktree_record_framing() {
 
 #[test]
 fn unchanged_backoff_caps_and_changes_reset() {
-    let mut backoff = Backoff::default();
-    let snapshot = Snapshot::default();
-    let observations: Vec<_> = (0..6).map(|_| backoff.observe(&snapshot)).collect();
+    let mut backoff = WorktreeBackoff::default();
+    let result = Ok(WorktreeStats { head: Head::Branch("main".into()), counts: Counts::default() });
+    let observations: Vec<_> = (0..6).map(|_| backoff.observe(&result).as_secs()).collect();
     assert_eq!(observations, vec![5, 10, 20, 30, 30, 30]);
-    let changed = Snapshot { config_error: Some(crate::Error::config("broken")), ..snapshot };
-    assert_eq!(backoff.observe(&changed), 5);
-    assert_eq!(backoff.observe(&changed), 10);
+    let changed = Err(crate::Error::new(ErrorKind::Git, "broken"));
+    assert_eq!(backoff.observe(&changed).as_secs(), 5);
+    assert_eq!(backoff.observe(&changed).as_secs(), 10);
 }
 
 #[test]

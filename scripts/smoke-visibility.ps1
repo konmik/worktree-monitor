@@ -24,6 +24,12 @@ public static class WtsVisibilityNativeProbe {
         public IntPtr Active, Focus, Capture, MenuOwner, MoveSize, Caret;
         public Rect CaretRect;
     }
+    public struct ScrollInfo {
+        public uint Size, Mask;
+        public int Min, Max;
+        public uint Page;
+        public int Position, TrackPosition;
+    }
     public sealed class WindowInfo {
         public IntPtr Handle;
         public IntPtr Parent;
@@ -48,6 +54,7 @@ public static class WtsVisibilityNativeProbe {
     [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr handle);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr handle, out Rect rect);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr handle, out Rect rect);
+    [DllImport("user32.dll")] public static extern bool GetScrollInfo(IntPtr handle, int bar, ref ScrollInfo info);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr handle, IntPtr after, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr handle);
     [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
@@ -76,6 +83,12 @@ public static class WtsVisibilityNativeProbe {
         Rect rect;
         if (!GetWindowRect(handle, out rect)) throw new InvalidOperationException("Window bounds unavailable");
         return rect;
+    }
+
+    public static ScrollInfo Scroll(IntPtr handle) {
+        var info = new ScrollInfo { Size = (uint)Marshal.SizeOf<ScrollInfo>(), Mask = 7 };
+        if (!GetScrollInfo(handle, 1, ref info)) throw new InvalidOperationException("Scroll state unavailable");
+        return info;
     }
 
     public static string Text(IntPtr handle) {
@@ -741,6 +754,42 @@ function Invoke-DragProbe([string]$Name, $Source, $Target) {
     }
 }
 
+function Invoke-EdgeScrollTest {
+    $original = [WtsVisibilityNativeProbe]::WindowBounds($script:handle)
+    $scale = [int][WtsVisibilityNativeProbe]::GetDpiForWindow($script:handle)
+    if (-not [WtsVisibilityNativeProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, [int](760 * $scale / 96), [int](400 * $scale / 96), 0x16)) { throw 'Edge-scroll fixture resize failed' }
+    try {
+        [void][WtsVisibilityNativeProbe]::Send($script:viewport, 0x0115, [IntPtr]6, [IntPtr]::Zero)
+        $cards = @(Get-Cards)
+        $source = @((Get-RowSnapshot $cards) | Where-Object Kind -eq 'worktree')[0].Card
+        Start-Drag $source
+        $viewportBounds = [WtsVisibilityNativeProbe]::ClientBounds($script:viewport)
+        $x = [int](12 * $scale / 96)
+        $bottom = [pscustomobject]@{ X = $x; Y = $viewportBounds.Bottom - [int](8 * $scale / 96) }
+        [void][WtsVisibilityNativeProbe]::Send($script:viewport, 0x0200, [IntPtr]1, [WtsVisibilityNativeProbe]::Position($bottom.X, $bottom.Y))
+        Wait-For {
+            $scroll = [WtsVisibilityNativeProbe]::Scroll($script:viewport)
+            $scroll.Position -gt 0 -and $scroll.Position -eq ($scroll.Max - [int]$scroll.Page + 1)
+        } 'drag auto-scroll to the bottom' 10
+        $bottomPosition = [WtsVisibilityNativeProbe]::Scroll($script:viewport).Position
+        if ([WtsVisibilityNativeProbe]::Capture($script:handle) -ne $script:viewport) { throw 'Edge scrolling lost drag capture' }
+        $cards = @(Get-Cards)
+        $target = @((Get-RowSnapshot $cards) | Where-Object Kind -eq 'worktree')[-1].Card
+        Settle-Paint $cards
+        $stationary = Measure-DragMove 'edge-bottom-stationary' $bottom $cards $source $target
+        if ($stationary.viewport.broad -or $stationary.unrelated_broad_invalidated_count -gt 0) { throw 'A clamped edge drag redrew unrelated rows' }
+        [void][WtsVisibilityNativeProbe]::Send($script:viewport, 0x0200, [IntPtr]1, [WtsVisibilityNativeProbe]::Position($x, [int](8 * $scale / 96)))
+        Wait-For { [WtsVisibilityNativeProbe]::Scroll($script:viewport).Position -eq 0 } 'drag auto-scroll to the top' 10
+        if ([WtsVisibilityNativeProbe]::Capture($script:handle) -ne $script:viewport) { throw 'Reverse edge scrolling lost drag capture' }
+        [ordered]@{ result = 'PASS'; bottom_position = $bottomPosition; returned_to_top = $true; capture_preserved = $true; stationary_edge_broad_repaints = 0 }
+    } finally {
+        Stop-Drag
+        if (-not [WtsVisibilityNativeProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0,
+            $original.Right - $original.Left, $original.Bottom - $original.Top, 0x16)) { throw 'Edge-scroll fixture restoration failed' }
+        [void][WtsVisibilityNativeProbe]::Send($script:viewport, 0x0115, [IntPtr]6, [IntPtr]::Zero)
+    }
+}
+
 function Get-StatusText {
     $status = @([WtsVisibilityNativeProbe]::Children($script:handle) | Where-Object {
         $_.Parent -eq $script:handle -and $_.Class -ieq 'STATIC' -and $_.Text -match '^(SCANNING|LIVE|ERROR) · Polling '
@@ -1063,6 +1112,7 @@ try {
         })
         if ($badPaint.Count -ne 0) { throw "Regression paint check found broad unrelated or whole-list invalidation in $($badPaint.Count) drag probes" }
         $metric = Invoke-MetricPaintTest $cards
+        $edgeScroll = Invoke-EdgeScrollTest
         $proof.paint = [ordered]@{
             result = 'PASS'
             card_count = $cards.Count
@@ -1071,6 +1121,7 @@ try {
             broad_unrelated_repaints = 0
             whole_list_repaint_actions = $wholeListActions.Count
             metric = $metric
+            edge_scroll = $edgeScroll
         }
         $proof.visibility = Invoke-VisibilityTest $postPaintRows
         $proof.result = 'PASS'

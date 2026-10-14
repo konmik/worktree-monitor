@@ -1,6 +1,7 @@
 pub mod dashboard;
 pub mod order;
 pub mod placement;
+pub mod visibility;
 
 #[cfg(windows)]
 mod placement_win;

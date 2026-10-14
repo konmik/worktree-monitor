@@ -404,7 +404,7 @@ fn monitor_reloads_preserves_last_good_recovers_and_stops_promptly() {
     fixture.service().add(&fixture.repo).unwrap();
     let good = fs::read(&fixture.config).unwrap();
     let mut monitor = fixture.service().monitor().unwrap();
-    wait_for(&monitor, |update| update.snapshot.repos.len() == 1 && update.interval_seconds == 5);
+    wait_for(&monitor, |update| update.snapshot.repos.len() == 1);
     fs::write(&fixture.config, b"broken").unwrap();
     wait_for(&monitor, |update| update.snapshot.config_error.is_some() && update.snapshot.repos.len() == 1);
     fs::write(&fixture.config, good).unwrap();
@@ -452,7 +452,8 @@ fn launch_from_a_linked_tree_discovers_siblings_and_deduplicates_registrations()
     fs::create_dir(&nested).unwrap();
     fs::write(linked.join("tracked.txt"), "before\nafter\n").unwrap();
     let mut unregistered = fixture.service().monitor_from(nested.clone()).unwrap();
-    wait_for(&unregistered, |update| update.snapshot.repos.len() == 1);
+    wait_for(&unregistered, |update| update.snapshot.repos.len() == 1
+        && update.snapshot.repos[0].worktrees.as_ref().is_ok_and(|trees| trees.len() == 2));
     let trees = unregistered.latest().unwrap().snapshot.repos[0].worktrees.clone().unwrap();
     assert_eq!(trees.len(), 2);
     let tree = trees.iter().find(|tree| tree.path == dunce::canonicalize(&linked).unwrap()).unwrap();
@@ -463,7 +464,8 @@ fn launch_from_a_linked_tree_discovers_siblings_and_deduplicates_registrations()
     fixture.service().add(&fixture.repo).unwrap();
     let bytes = fs::read(&fixture.config).unwrap();
     let mut registered = fixture.service().monitor_from(nested).unwrap();
-    wait_for(&registered, |update| update.snapshot.repos.len() == 1);
+    wait_for(&registered, |update| update.snapshot.repos.len() == 1
+        && update.snapshot.repos[0].worktrees.as_ref().is_ok_and(|trees| trees.len() == 2));
     assert_eq!(registered.latest().unwrap().snapshot.repos[0].worktrees.as_ref().unwrap().len(), 2);
     assert_eq!(fs::read(&fixture.config).unwrap(), bytes);
     registered.stop().unwrap();

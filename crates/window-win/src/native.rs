@@ -1,6 +1,7 @@
 use crate::dashboard::{ellipsize_start, DashboardView, DisplayItem, Health, ItemKey};
 use crate::order::{Order, OrderMove};
 use crate::placement_win;
+use crate::visibility::Visibility;
 use std::collections::HashMap;
 use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -14,7 +15,7 @@ use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{SetScrollInfo, SetWindowTheme, DRAWITEMSTRUCT, ODT_STATIC};
 use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetCapture, ReleaseCapture, SetCapture, SetFocus};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetCapture, GetFocus, ReleaseCapture, SetCapture, SetFocus};
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use wts_core::{Monitor, MonitorUpdate, Service};
@@ -31,6 +32,7 @@ const STATIC_OWNERDRAW: u32 = 13;
 const STATIC_NOTIFY: u32 = 256;
 const WORKTREE_SUCCESS_HEIGHT: i32 = 84;
 const WORKTREE_ERROR_HEIGHT: i32 = 76;
+const WORKTREE_ACTION_WIDTH: i32 = 78;
 
 const fn rgb(red: u32, green: u32, blue: u32) -> COLORREF { red | (green << 8) | (blue << 16) }
 
@@ -75,6 +77,8 @@ impl Drop for Resources {
 
 struct Card {
     window: HWND,
+    action: Option<HWND>,
+    action_hidden: Option<bool>,
     key: Option<ItemKey>,
     display: DisplayItem,
     top: i32,
@@ -104,15 +108,25 @@ struct State {
     order_warning: Option<String>,
     order_write_failed: bool,
     order_check: Instant,
+    visibility_path: PathBuf,
+    visibility: Visibility,
+    visibility_warning: Option<String>,
+    visibility_write_failed: bool,
+    visibility_check: Instant,
+    show_all: bool,
+    show_all_button: HWND,
+    next_action_id: usize,
     drag: Option<Drag>,
 }
 
 struct Drag {
     source: ItemKey,
+    source_handle: HWND,
     origin: POINT,
     position: POINT,
     active: bool,
     target: Option<DropTarget>,
+    marker_rect: Option<RECT>,
 }
 
 struct DropTarget {
@@ -139,7 +153,7 @@ unsafe fn set_item(card: &mut Card, display: DisplayItem) {
     }
 }
 
-unsafe fn create_card(parent: HWND, id: usize, key: Option<ItemKey>, display: DisplayItem, resources: &Resources) -> Option<Card> {
+unsafe fn create_card(parent: HWND, id: usize, action_id: Option<usize>, key: Option<ItemKey>, display: DisplayItem, resources: &Resources) -> Option<Card> {
     let window = CreateWindowExW(0, wide("STATIC").as_ptr(), wide(&display.caption()).as_ptr(),
         WS_CHILD | WS_VISIBLE | STATIC_OWNERDRAW | STATIC_NOTIFY, 0, 0, 1, 1, parent, id as _, GetModuleHandleW(null()), null());
     if window.is_null() { return None; }
@@ -148,7 +162,40 @@ unsafe fn create_card(parent: HWND, id: usize, key: Option<ItemKey>, display: Di
         return None;
     }
     SendMessageW(window, WM_SETFONT, resources.fonts[1] as WPARAM, 0);
-    Some(Card { window, key, display, top: 0, height: 0 })
+    let action = if let Some(action_id) = action_id {
+        let action = CreateWindowExW(0, wide("BUTTON").as_ptr(), wide("Hide").as_ptr(),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32, 0, 0, 1, 1, parent,
+            action_id as _, GetModuleHandleW(null()), null());
+        if action.is_null() {
+            DestroyWindow(window);
+            return None;
+        }
+        SendMessageW(action, WM_SETFONT, resources.fonts[1] as WPARAM, 0);
+        SetWindowTheme(action, wide("DarkMode_Explorer").as_ptr(), null());
+        Some(action)
+    } else { None };
+    Some(Card { window, action, action_hidden: None, key, display, top: 0, height: 0 })
+}
+
+unsafe fn destroy_card(card: Card) {
+    if let Some(action) = card.action { DestroyWindow(action); }
+    DestroyWindow(card.window);
+}
+
+unsafe fn set_action(card: &mut Card, visibility: &Visibility) {
+    let Some(action) = card.action else { return; };
+    let Some(ItemKey::Worktree(repository, worktree)) = &card.key else { return; };
+    let hidden = visibility.contains(repository, worktree);
+    if card.action_hidden != Some(hidden) {
+        SetWindowTextW(action, wide(if hidden { "Unhide" } else { "Hide" }).as_ptr());
+        card.action_hidden = Some(hidden);
+    }
+}
+
+unsafe fn set_show_all_caption(state: &State) {
+    if !state.show_all_button.is_null() {
+        SetWindowTextW(state.show_all_button, wide(if state.show_all { "Hide hidden" } else { "Show all" }).as_ptr());
+    }
 }
 
 unsafe fn reconcile(state: &mut State) -> bool {
@@ -159,13 +206,22 @@ unsafe fn reconcile(state: &mut State) -> bool {
     for item in &state.view.items {
         if let Some(mut card) = previous.remove(&item.key) {
             set_item(&mut card, item.display.clone());
+            set_action(&mut card, &state.visibility);
             state.cards.push(card);
-        } else if let Some(card) = create_card(state.viewport, state.next_card_id, Some(item.key.clone()), item.display.clone(), resources) {
-            state.next_card_id += 1;
-            state.cards.push(card);
-        } else { succeeded = false; break; }
+        } else {
+            let action_id = matches!(item.key, ItemKey::Worktree(_, _)).then(|| {
+                let id = state.next_action_id;
+                state.next_action_id += 1;
+                id
+            });
+            if let Some(mut card) = create_card(state.viewport, state.next_card_id, action_id, Some(item.key.clone()), item.display.clone(), resources) {
+                state.next_card_id += 1;
+                set_action(&mut card, &state.visibility);
+                state.cards.push(card);
+            } else { succeeded = false; break; }
+        }
     }
-    for card in previous.into_values() { DestroyWindow(card.window); }
+    for card in previous.into_values() { destroy_card(card); }
     succeeded
 }
 
@@ -174,6 +230,12 @@ unsafe fn fonts(window: HWND, state: &mut State) -> bool {
     let Some(resources) = Resources::new(dpi) else { return false; };
     for card in state.fixed.iter().chain(&state.cards) {
         SendMessageW(card.window, WM_SETFONT, resources.fonts[1] as WPARAM, 0);
+        if let Some(action) = card.action {
+            SendMessageW(action, WM_SETFONT, resources.fonts[1] as WPARAM, 0);
+        }
+    }
+    if !state.show_all_button.is_null() {
+        SendMessageW(state.show_all_button, WM_SETFONT, resources.fonts[1] as WPARAM, 0);
     }
     state.resources = Some(resources);
     state.dpi = dpi;
@@ -215,9 +277,30 @@ fn anchor(state: &State) -> Option<(ItemKey, i32)> {
 }
 
 unsafe fn position_cards(state: &State) {
+    let action_width = scaled(WORKTREE_ACTION_WIDTH, state.dpi).min(state.width.max(1));
+    let action_height = scaled(24, state.dpi).min(state.page.max(1));
+    let action_left = state.width.saturating_sub(action_width).saturating_sub(scaled(10, state.dpi));
+    let mut placements = Vec::with_capacity(state.cards.len() * 2);
     for card in &state.cards {
-        SetWindowPos(card.window, null_mut(), 0, card.top - state.scroll, state.width, card.height,
-            SWP_NOZORDER | SWP_NOACTIVATE);
+        let top = card.top - state.scroll;
+        placements.push((card.window, RECT { left: 0, top, right: state.width, bottom: top + card.height }));
+        if let Some(action) = card.action {
+            let top = top + scaled(7, state.dpi);
+            placements.push((action, RECT { left: action_left, top, right: action_left + action_width,
+                bottom: top + action_height }));
+        }
+    }
+    let flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS;
+    let mut batch = BeginDeferWindowPos(placements.len() as i32);
+    for (window, rect) in &placements {
+        if batch.is_null() { break; }
+        batch = DeferWindowPos(batch, *window, null_mut(), rect.left, rect.top,
+            rect.right - rect.left, rect.bottom - rect.top, flags);
+    }
+    if batch.is_null() || EndDeferWindowPos(batch) == 0 {
+        for (window, rect) in placements {
+            SetWindowPos(window, null_mut(), rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, flags);
+        }
     }
     InvalidateRect(state.viewport, null(), 0);
 }
@@ -229,6 +312,9 @@ unsafe fn scroll_to(state: &mut State, position: i32) {
         let info = SCROLLINFO { cbSize: std::mem::size_of::<SCROLLINFO>() as u32, fMask: SIF_POS, nPos: position, ..std::mem::zeroed() };
         SetScrollInfo(state.viewport, SB_VERT, &info, 1);
         position_cards(state);
+        let marker = state.drag.as_ref().and_then(|drag| drag.target.as_ref().map(|target| target.marker));
+        let marker_rect = marker.and_then(|marker| project_marker(state, marker));
+        if let Some(drag) = state.drag.as_mut() { drag.marker_rect = marker_rect; }
     }
 }
 
@@ -242,11 +328,14 @@ unsafe fn layout(window: HWND, state: &mut State, restore: Option<(ItemKey, i32)
     let tiny = client.bottom < s(150);
     let margin = s(if tiny { 6 } else if short { 10 } else { 18 });
     let gap = s(if tiny { 5 } else if short { 8 } else { 12 });
-    let header = s(if tiny { 24 } else if short { 38 } else { 48 });
+    let brand_height = s(if tiny { 24 } else if short { 38 } else { 48 });
+    let status_height = s(20);
+    let header = brand_height + status_height;
     let width = (client.right - margin * 2).max(1);
-    let brand_width = (width * 52 / 100).max(1);
-    MoveWindow(state.fixed[0].window, margin, margin, brand_width, header, 0);
-    MoveWindow(state.fixed[1].window, margin + brand_width, margin, (width - brand_width).max(1), header, 0);
+    let toggle_width = scaled(92, state.dpi).min(width);
+    MoveWindow(state.fixed[0].window, margin, margin, (width - toggle_width).max(1), brand_height, 0);
+    MoveWindow(state.fixed[1].window, margin, margin + brand_height, width, status_height, 0);
+    MoveWindow(state.show_all_button, margin + width - toggle_width, margin, toggle_width, brand_height, 0);
     let top = margin + header + gap;
     let page = (client.bottom - top - margin).max(1);
     MoveWindow(state.viewport, margin, top, width, page, 0);
@@ -309,6 +398,24 @@ unsafe fn text(dc: HDC, value: &str, rect: RECT, font: HFONT, color: COLORREF, f
 unsafe fn fill(dc: HDC, rect: RECT, brush: HBRUSH) { FillRect(dc, &rect, brush); }
 
 unsafe fn paint_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
+    let width = draw.rcItem.right - draw.rcItem.left;
+    let height = draw.rcItem.bottom - draw.rcItem.top;
+    if width <= 0 || height <= 0 { return; }
+    let memory = CreateCompatibleDC(draw.hDC);
+    let bitmap = CreateCompatibleBitmap(draw.hDC, width, height);
+    if !memory.is_null() && !bitmap.is_null() {
+        let old = SelectObject(memory, bitmap);
+        let buffered = DRAWITEMSTRUCT { hDC: memory,
+            rcItem: RECT { left: 0, top: 0, right: width, bottom: height }, ..*draw };
+        draw_card(&buffered, card, state);
+        BitBlt(draw.hDC, draw.rcItem.left, draw.rcItem.top, width, height, memory, 0, 0, SRCCOPY);
+        SelectObject(memory, old);
+    } else { draw_card(draw, card, state); }
+    if !bitmap.is_null() { DeleteObject(bitmap); }
+    if !memory.is_null() { DeleteDC(memory); }
+}
+
+unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
     let Some(resources) = &state.resources else { return; };
     let dc = draw.hDC;
     let saved = SaveDC(dc);
@@ -338,7 +445,7 @@ unsafe fn paint_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
             SelectObject(dc, match health { Health::Live => resources.green, Health::Errors => resources.red, Health::Scanning => resources.muted });
             SelectObject(dc, GetStockObject(NULL_PEN));
             Ellipse(dc, s(3), y + s(3), s(9), y + s(9));
-            text(dc, &caption, bounds(s(17), y, width, y + s(20)), resources.fonts[0], color, line | DT_RIGHT);
+            text(dc, &caption, bounds(s(17), y, width, y + s(20)), resources.fonts[0], color, line);
         }
         DisplayItem::Repository { bare, .. } => {
             text(dc, lines[0], bounds(s(30), s(8), width - s(12), s(32)), resources.fonts[2], TEAL, line);
@@ -351,11 +458,12 @@ unsafe fn paint_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
             let inset = worktree_inset(width, state.dpi);
             let text_width = worktree_text_width(width, state.dpi);
             let right = inset + text_width;
+            let heading_width = (width - s(WORKTREE_ACTION_WIDTH + 18) - inset).max(1).min(text_width);
             let path = path.display().to_string();
             match result {
                 Ok(stats) => {
                     let badge_width = wrapped_width(dc, lines[0], resources.fonts[0]).saturating_add(s(18))
-                        .min(text_width).max(1);
+                        .min(heading_width).max(1);
                     let badge_left = inset;
                     let badge_padding = s(8).min(badge_width / 2);
                     SelectObject(dc, resources.background);
@@ -386,8 +494,8 @@ unsafe fn paint_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
                     }
                 }
                 Err(_) => {
-                    let fitted_path = ellipsize_start(&path, text_width, |value| wrapped_width(dc, value, resources.fonts[0]));
-                    text(dc, &fitted_path, bounds(inset, s(12), right, s(32)), resources.fonts[0], MUTED, DT_SINGLELINE);
+                    let fitted_path = ellipsize_start(&path, heading_width, |value| wrapped_width(dc, value, resources.fonts[0]));
+                    text(dc, &fitted_path, bounds(inset, s(12), inset + heading_width, s(32)), resources.fonts[0], MUTED, DT_SINGLELINE);
                     text(dc, lines[1], bounds(inset, s(36), right, s(57)), resources.fonts[0], MUTED, line);
                     text(dc, &lines[2..].join("\n"), bounds(inset, s(60), right, height - s(8)), resources.fonts[1], RED, DT_WORDBREAK);
                 }
@@ -402,7 +510,7 @@ unsafe fn paint_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
         }
     }
     if card.key.as_ref().is_some_and(draggable) {
-        let active = state.drag.as_ref().is_some_and(|drag| Some(&drag.source) == card.key.as_ref());
+        let active = state.drag.as_ref().is_some_and(|drag| drag.source_handle == card.window);
         let brush = if active { resources.teal } else { resources.muted };
         for y in [14, 19, 24] {
             for x in [8, 13] { fill(dc, bounds(s(x), s(y), s(x + 2), s(y + 2)), brush); }
@@ -426,21 +534,41 @@ unsafe fn wrapped_width(dc: HDC, value: &str, font: HFONT) -> i32 {
     size.cx
 }
 
-unsafe fn paint_background(window: HWND, resources: &Resources) {
+fn intersection(left: RECT, right: RECT) -> Option<RECT> {
+    let rect = RECT { left: left.left.max(right.left), top: left.top.max(right.top),
+        right: left.right.min(right.right), bottom: left.bottom.min(right.bottom) };
+    (rect.left < rect.right && rect.top < rect.bottom).then_some(rect)
+}
+
+unsafe fn paint_background(window: HWND, resources: &Resources, marker: Option<RECT>) {
     let mut paint: PAINTSTRUCT = std::mem::zeroed();
     let dc = BeginPaint(window, &mut paint);
     let rect = paint.rcPaint;
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
+    let marker = marker.and_then(|marker| intersection(marker, rect)).map(|mut marker| {
+        marker.left -= rect.left;
+        marker.top -= rect.top;
+        marker.right -= rect.left;
+        marker.bottom -= rect.top;
+        marker
+    });
     if width > 0 && height > 0 && !dc.is_null() {
         let memory = CreateCompatibleDC(dc);
         let bitmap = CreateCompatibleBitmap(dc, width, height);
         if !memory.is_null() && !bitmap.is_null() {
             let old = SelectObject(memory, bitmap);
             fill(memory, RECT { left: 0, top: 0, right: width, bottom: height }, resources.background);
+            if let Some(marker) = marker.as_ref() { fill(memory, *marker, resources.teal); }
             BitBlt(dc, rect.left, rect.top, width, height, memory, 0, 0, SRCCOPY);
             SelectObject(memory, old);
-        } else { fill(dc, rect, resources.background); }
+        } else {
+            fill(dc, rect, resources.background);
+            if let Some(marker) = marker.as_ref() {
+                fill(dc, RECT { left: marker.left + rect.left, top: marker.top + rect.top,
+                    right: marker.right + rect.left, bottom: marker.bottom + rect.top }, resources.teal);
+            }
+        }
         if !bitmap.is_null() { DeleteObject(bitmap); }
         if !memory.is_null() { DeleteDC(memory); }
     }
@@ -501,15 +629,38 @@ fn mouse_point(lparam: LPARAM) -> POINT {
     POINT { x: (lparam as u16 as i16) as i32, y: ((lparam >> 16) as u16 as i16) as i32 }
 }
 
-unsafe fn invalidate_drag(state: &State) {
-    InvalidateRect(state.viewport, null(), 0);
-    for card in &state.cards { InvalidateRect(card.window, null(), 0); }
+fn project_marker(state: &State, marker: i32) -> Option<RECT> {
+    let thickness = scaled(2, state.dpi);
+    let y = marker.saturating_sub(state.scroll);
+    let rect = RECT { left: 0, top: y.saturating_sub(thickness).max(0), right: state.width, bottom: y.min(state.page) };
+    (state.width > 0 && state.page > 0 && rect.left < rect.right && rect.top < rect.bottom).then_some(rect)
+}
+
+fn same_rect(left: Option<&RECT>, right: Option<&RECT>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => left.left == right.left && left.top == right.top
+            && left.right == right.right && left.bottom == right.bottom,
+        _ => false,
+    }
+}
+
+unsafe fn invalidate_drag(state: &State, source_handle: Option<HWND>, old_marker: Option<RECT>, new_marker: Option<RECT>) {
+    if let Some(source_handle) = source_handle {
+        let handle = RECT { left: 0, top: 0, right: scaled(24, state.dpi), bottom: scaled(30, state.dpi) };
+        InvalidateRect(source_handle, &handle, 0);
+    }
+    if !same_rect(old_marker.as_ref(), new_marker.as_ref()) {
+        for marker in old_marker.as_ref().into_iter().chain(new_marker.as_ref()) {
+            RedrawWindow(state.viewport, marker, null_mut(), RDW_INVALIDATE | RDW_NOERASE | RDW_ALLCHILDREN);
+        }
+    }
 }
 
 unsafe fn cancel_drag(pointer: *mut State) {
-    if (*pointer).drag.take().is_some() {
+    if let Some(drag) = (*pointer).drag.take() {
         let viewport = (*pointer).viewport;
-        invalidate_drag(&*pointer);
+        invalidate_drag(&*pointer, Some(drag.source_handle), drag.marker_rect, None);
         if GetCapture() == viewport { ReleaseCapture(); }
     }
 }
@@ -559,25 +710,38 @@ unsafe fn move_drag(state: &mut State, point: POINT) {
     let active = drag.active || (point.x - drag.origin.x).abs() >= GetSystemMetrics(SM_CXDRAG).max(1)
         || (point.y - drag.origin.y).abs() >= GetSystemMetrics(SM_CYDRAG).max(1);
     let target = if active { drop_target(state, &drag.source, point) } else { None };
+    let old_marker = drag.marker_rect;
+    let new_marker = target.as_ref().and_then(|target| project_marker(state, target.marker));
     let drag = state.drag.as_mut().unwrap();
     drag.position = point;
     drag.active = active;
     drag.target = target;
-    invalidate_drag(state);
+    drag.marker_rect = new_marker;
+    if !same_rect(old_marker.as_ref(), new_marker.as_ref()) {
+        invalidate_drag(state, None, old_marker, new_marker);
+    }
+}
+
+unsafe fn set_status(state: &mut State) {
+    if let Some(card) = state.fixed.get_mut(1) {
+        set_item(card, DisplayItem::Status { health: state.view.health,
+            polling_time_last_minute: state.latest.as_ref().map_or(Duration::ZERO, |update| update.polling_time_last_minute) });
+    }
 }
 
 unsafe fn refresh(window: HWND, state: &mut State) {
     let mut view = if let Some(update) = &state.latest {
         let mut snapshot = (*update.snapshot).clone();
         state.order.apply(&mut snapshot);
-        let mut view = DashboardView::from_snapshot(&snapshot);
+        let mut view = DashboardView::from_snapshot_with_visibility(&snapshot, &state.visibility, state.show_all);
         if let Some(error) = &update.launch_error { view.launch_error(error); }
         view
     } else { DashboardView::scanning() };
     if let Some(warning) = &state.order_warning { view.presentation_warning(warning); }
+    if let Some(warning) = &state.visibility_warning { view.visibility_warning(warning); }
     if view != state.view {
-        let warning_changed = view.items.first().filter(|item| item.key == ItemKey::Presentation)
-            .is_some_and(|item| state.view.items.first() != Some(item));
+        let warning_changed = view.items.first().is_some_and(|item| matches!(item.key, ItemKey::Presentation | ItemKey::Visibility))
+            && state.view.items.first() != view.items.first();
         let saved = if warning_changed { state.scroll = 0; None } else { anchor(state) };
         state.view = view;
         if !reconcile(state) {
@@ -587,16 +751,58 @@ unsafe fn refresh(window: HWND, state: &mut State) {
         }
         layout(window, state, saved);
     }
-    if let Some(card) = state.fixed.get_mut(1) {
-        set_item(card, DisplayItem::Status { health: state.view.health,
-            interval: state.latest.as_ref().map_or(5, |update| update.interval_seconds) });
+    for card in &mut state.cards { set_action(card, &state.visibility); }
+    set_status(state);
+}
+
+unsafe fn toggle_visibility(window: HWND, state: &mut State, repository: PathBuf, worktree: PathBuf) {
+    match Visibility::persist_toggle(&state.visibility_path, &repository, &worktree) {
+        Ok(visibility) => {
+            state.visibility = visibility;
+            state.visibility_warning = None;
+            state.visibility_write_failed = false;
+        }
+        Err(error) => {
+            state.visibility_warning = Some(format!("Visibility was not saved: {error}"));
+            state.visibility_write_failed = true;
+        }
     }
+    refresh(window, state);
+}
+
+unsafe fn command(window: HWND, state: &mut State, wparam: WPARAM, lparam: LPARAM, viewport: bool) -> LRESULT {
+    if ((wparam >> 16) & 0xffff) as u32 != BN_CLICKED {
+        return DefWindowProcW(window, WM_COMMAND, wparam, lparam);
+    }
+    let control = lparam as HWND;
+    if !viewport && control == state.show_all_button {
+        state.show_all = SendMessageW(control, BM_GETCHECK, 0, 0) == 1;
+        set_show_all_caption(state);
+        refresh(window, state);
+        return 0;
+    }
+    if viewport {
+        let target = state.cards.iter().find(|card| card.action == Some(control)).and_then(|card| match &card.key {
+            Some(ItemKey::Worktree(repository, worktree)) => Some((repository.clone(), worktree.clone())),
+            _ => None,
+        });
+        if let Some((repository, worktree)) = target {
+            let focused = GetFocus() == control;
+            toggle_visibility(GetParent(window), state, repository, worktree);
+            if focused && GetFocus() != control { SetFocus(state.show_all_button); }
+            return 0;
+        }
+    }
+    DefWindowProcW(window, WM_COMMAND, wparam, lparam)
 }
 
 unsafe fn finish_drag(pointer: *mut State, point: POINT) {
     move_drag(&mut *pointer, point);
-    let movement = (*pointer).drag.take().and_then(|drag| drag.target.map(|target| target.movement));
-    invalidate_drag(&*pointer);
+    let drag = (*pointer).drag.take();
+    let movement = drag.as_ref().and_then(|drag| drag.target.as_ref().map(|target| target.movement.clone()));
+    let source_handle = drag.as_ref().map(|drag| drag.source_handle);
+    let marker_rect = drag.as_ref().and_then(|drag| drag.marker_rect);
+    invalidate_drag(&*pointer, source_handle, marker_rect, None);
     let viewport = (*pointer).viewport;
     if GetCapture() == viewport { ReleaseCapture(); }
     if let (Some(movement), Some(update)) = (movement, (*pointer).latest.clone()) {
@@ -611,6 +817,7 @@ unsafe fn finish_drag(pointer: *mut State, point: POINT) {
 }
 
 unsafe extern "system" fn card_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
+    if message == WM_ERASEBKGND { return 1; }
     if message == WM_NCDESTROY {
         let viewport = GetParent(window);
         if GetCapture() == viewport { SendMessageW(viewport, WM_CANCELMODE, 0, 0); }
@@ -638,8 +845,9 @@ unsafe extern "system" fn card_procedure(window: HWND, message: u32, wparam: WPA
                     SetFocus(viewport);
                     SetCapture(viewport);
                     if GetCapture() == viewport {
-                        (*pointer).drag = Some(Drag { source, origin: point, position: point, active: false, target: None });
-                        invalidate_drag(&*pointer);
+                        (*pointer).drag = Some(Drag { source, source_handle: window, origin: point, position: point,
+                            active: false, target: None, marker_rect: None });
+                        invalidate_drag(&*pointer, Some(window), None, None);
                     }
                     return true;
                 }
@@ -712,9 +920,16 @@ unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, p
         }
         WM_TIMER if !viewport => {
             let state = &mut *pointer;
-            if let Some(drag) = &state.drag {
-                let point = drag.position;
-                if drag.active && point.x >= 0 && point.x < state.width && point.y >= 0 && point.y < state.page {
+            if let Some((point, active)) = state.drag.as_ref().map(|drag| (drag.position, drag.active)) {
+                if let Some(update) = state.monitor.latest() {
+                    let metric_only = state.latest.as_ref().is_some_and(|old| Arc::ptr_eq(&old.snapshot, &update.snapshot)
+                        && old.launch_error == update.launch_error);
+                    if metric_only && state.latest.as_ref().is_none_or(|old| !Arc::ptr_eq(old, &update)) {
+                        state.latest = Some(update);
+                        set_status(state);
+                    }
+                }
+                if active && point.x >= 0 && point.x < state.width && point.y >= 0 && point.y < state.page {
                     let edge = scaled(24, state.dpi);
                     if point.y < edge { scroll_to(state, state.scroll - edge); }
                     else if point.y > state.page - edge { scroll_to(state, state.scroll + edge); }
@@ -732,6 +947,19 @@ unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, p
                 }
                 state.order_check = Instant::now() + Duration::from_secs(1);
             }
+            if Instant::now() >= state.visibility_check {
+                match Visibility::read(&state.visibility_path) {
+                    Ok(visibility) => {
+                        if !state.visibility_write_failed || visibility != state.visibility {
+                            state.visibility_warning = None;
+                            state.visibility_write_failed = false;
+                        }
+                        state.visibility = visibility;
+                    }
+                    Err(error) => { state.visibility_warning = Some(format!("Cannot load worktree visibility: {error}")); }
+                }
+                state.visibility_check = Instant::now() + Duration::from_secs(1);
+            }
             if let Some(update) = state.monitor.latest() {
                 if state.latest.as_ref().is_none_or(|old| !Arc::ptr_eq(old, &update)) {
                     state.latest = Some(update);
@@ -742,19 +970,13 @@ unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, p
         }
         WM_PAINT => {
             if let Some(resources) = &(*pointer).resources {
-                paint_background(window, resources);
-                if viewport {
-                    if let Some(target) = (*pointer).drag.as_ref().and_then(|drag| drag.target.as_ref()) {
-                        let dc = GetDC(window);
-                        let y = target.marker - (*pointer).scroll;
-                        fill(dc, RECT { left: 0, top: y - scaled(2, (*pointer).dpi), right: (*pointer).width, bottom: y }, resources.teal);
-                        ReleaseDC(window, dc);
-                    }
-                }
+                let marker = viewport.then(|| (*pointer).drag.as_ref().and_then(|drag| drag.marker_rect)).flatten();
+                paint_background(window, resources, marker);
                 0
             }
             else { DefWindowProcW(window, message, wparam, lparam) }
         }
+        WM_COMMAND => command(window, &mut *pointer, wparam, lparam, viewport),
         WM_ERASEBKGND => 1,
         WM_CTLCOLORSTATIC => {
             if let Some(resources) = &(*pointer).resources {
@@ -798,12 +1020,19 @@ unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, p
 unsafe fn controls(window: HWND, state: &mut State) -> bool {
     if !fonts(window, state) { return false; }
     let resources = state.resources.as_ref().unwrap();
-    let displays = [DisplayItem::Brand, DisplayItem::Status { health: Health::Scanning, interval: 5 }];
+    let displays = [DisplayItem::Brand, DisplayItem::Status { health: Health::Scanning, polling_time_last_minute: Duration::ZERO }];
     for (index, display) in displays.into_iter().enumerate() {
-        let Some(card) = create_card(window, 1002 + index, None, display, resources) else { return false; };
+        let Some(card) = create_card(window, 1002 + index, None, None, display, resources) else { return false; };
         state.fixed.push(card);
     }
-    state.viewport = CreateWindowExW(0, wide("WtsDashboardViewport").as_ptr(), wide("Repository worktrees").as_ptr(),
+    state.show_all_button = CreateWindowExW(0, wide("BUTTON").as_ptr(), wide(if state.show_all { "Hide hidden" } else { "Show all" }).as_ptr(),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX as u32, 0, 0, 1, 1, window, 1004 as _, GetModuleHandleW(null()), null());
+    if state.show_all_button.is_null() { return false; }
+    SendMessageW(state.show_all_button, WM_SETFONT, resources.fonts[1] as WPARAM, 0);
+    let check = if state.show_all { 1 } else { 0 };
+    SendMessageW(state.show_all_button, BM_SETCHECK, check as WPARAM, 0);
+    SetWindowTheme(state.show_all_button, wide("DarkMode_Explorer").as_ptr(), null());
+    state.viewport = CreateWindowExW(WS_EX_CONTROLPARENT, wide("WtsDashboardViewport").as_ptr(), wide("Repository worktrees").as_ptr(),
         WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_TABSTOP,
         0, 0, 1, 1, window, 1001 as _, GetModuleHandleW(null()), (state as *mut State).cast());
     if state.viewport.is_null() || !reconcile(state) { return false; }
@@ -814,15 +1043,22 @@ unsafe fn controls(window: HWND, state: &mut State) -> bool {
 
 pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error> {
     let order_path = service.config_path().with_extension("order.json");
+    let visibility_path = service.config_path().with_extension("visibility.json");
     let placement_path = service.config_path().with_extension("placement.json");
     let (order, order_warning) = match Order::read(&order_path) {
         Ok(order) => (order, None),
         Err(error) => (Order::default(), Some(format!("Cannot load presentation order: {error}"))),
     };
+    let (visibility, visibility_warning) = match Visibility::read(&visibility_path) {
+        Ok(visibility) => (visibility, None),
+        Err(error) => (Visibility::default(), Some(format!("Cannot load worktree visibility: {error}"))),
+    };
     let mut state = Box::new(State { monitor: service.monitor_from(launch_directory).map_err(io::Error::other)?, viewport: null_mut(),
         fixed: Vec::new(), cards: Vec::new(), resources: None, view: DashboardView::scanning(), latest: None,
         dpi: 96, scroll: 0, content: 0, page: 0, width: 0, wheel_remainder: 0, next_card_id: 2000, failure: None,
-        order_path, placement_path, starting: true, order, order_warning, order_write_failed: false, order_check: Instant::now(), drag: None });
+        order_path, placement_path, starting: true, order, order_warning, order_write_failed: false, order_check: Instant::now(),
+        visibility_path, visibility, visibility_warning, visibility_write_failed: false, visibility_check: Instant::now(),
+        show_all: false, show_all_button: null_mut(), next_action_id: 3000, drag: None });
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let instance = GetModuleHandleW(null());
@@ -880,6 +1116,8 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
                 break;
             }
             if received == 0 { break; }
+            if state.drag.is_none() && message.message == WM_KEYDOWN && matches!(message.wParam, 0x09 | 0x0d)
+                && IsDialogMessageW(window, &message) != 0 { continue; }
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }

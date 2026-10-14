@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Duration;
 use window_win::dashboard::{DashboardView, DisplayItem, Health, ItemKey};
 use window_win::order::identity;
 use wts_core::{Counts, Error, ErrorKind, Head, LineCounts, RepoEntry, Snapshot, WorktreeEntry, WorktreeStats};
@@ -53,10 +54,16 @@ fn partial_errors_preserve_known_counts_and_missing_values() {
     let view = DashboardView::from_snapshot(&snapshot);
     assert_eq!(view.items.len(), 6);
     assert!(view.items[2].display.caption().contains("S +4/-2 · T +0/-0 · X +0/-0 · binaries: 1"));
-    assert_eq!(view.health.caption(20), "ERROR · Polling interval 20s");
+    assert_eq!(view.health.caption(Duration::from_secs(20)), "ERROR · Polling 20.0s in last minute");
     assert_eq!(view.items[0].display.caption(), "Configuration error\nConfig: Invalid config");
     assert_eq!(view.items[3].display.caption(), "/broken\nCounts unavailable · binaries unavailable\nERROR (Git): Cannot inspect worktree");
     assert_eq!(view.items[4].display.caption(), "lost · ? worktrees");
+}
+
+#[test]
+fn status_formats_polling_time_for_the_last_minute() {
+    let status = DisplayItem::Status { health: Health::Live, polling_time_last_minute: Duration::from_millis(1200) };
+    assert_eq!(status.caption(), "LIVE · Polling 1.2s in last minute");
 }
 
 #[test]
@@ -75,7 +82,7 @@ fn branch_detached_and_unborn_are_distinct() {
 fn empty_bare_scanning_and_zero_measurements_are_truthful() {
     let empty = DashboardView::from_snapshot(&Snapshot::default());
     assert_eq!(empty.items[0].display.caption(), "No registered repositories.\n");
-    assert_eq!(empty.health.caption(5), "LIVE · Polling interval 5s");
+    assert_eq!(empty.health.caption(Duration::from_secs(5)), "LIVE · Polling 5.0s in last minute");
     let scanning = DashboardView::scanning();
     assert_eq!(scanning.health, Health::Scanning);
     assert_eq!(scanning.items.len(), 1);
@@ -136,7 +143,7 @@ fn launch_discovery_error_has_its_own_notice_and_error_health() {
     let snapshot = Snapshot::default();
     let mut view = DashboardView::from_snapshot(&snapshot);
     view.launch_error(&Error { kind: ErrorKind::Io, message: "Could not start Git".into() });
-    assert_eq!(view.health.caption(5), "ERROR · Polling interval 5s");
+    assert_eq!(view.health.caption(Duration::from_secs(5)), "ERROR · Polling 5.0s in last minute");
     assert_eq!(view.items.len(), 2);
     assert_eq!(view.items[0].key, ItemKey::Launch);
     assert_eq!(view.items[0].display, DisplayItem::Notice {
@@ -158,4 +165,19 @@ fn launch_discovery_error_preserves_rows_and_other_error_notices() {
     assert_eq!(view.items[0].key, ItemKey::Presentation);
     assert_eq!(view.items[1].key, ItemKey::Launch);
     assert_eq!(&view.items[2..], rows.as_slice());
+}
+
+#[test]
+fn visibility_save_warning_preserves_rows_and_reports_error_health() {
+    let snapshot = Snapshot { config_error: None,
+        repos: vec![repo(vec![tree("/repo", Head::Branch("main".into()), 4, 2, 0)])] };
+    let mut view = DashboardView::from_snapshot(&snapshot);
+    let rows = view.items.clone();
+    view.visibility_warning("Cannot lock worktree visibility");
+    assert_eq!(view.health, Health::Errors);
+    assert_eq!(view.items[0].key, ItemKey::Visibility);
+    assert_eq!(view.items[0].display, DisplayItem::Notice {
+        title: "Worktree visibility warning".into(), message: "Cannot lock worktree visibility".into(), error: true,
+    });
+    assert_eq!(&view.items[1..], rows.as_slice());
 }
