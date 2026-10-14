@@ -286,8 +286,7 @@ unsafe fn layout(window: HWND, state: &mut State, restore: Option<(ItemKey, i32)
         SetScrollInfo(state.viewport, SB_VERT, &info, 1);
     }
     position_cards(state);
-    for card in &state.fixed { InvalidateRect(card.window, null(), 0); }
-    InvalidateRect(window, null(), 0);
+    RedrawWindow(window, null(), null_mut(), RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME);
 }
 
 unsafe fn text(dc: HDC, value: &str, rect: RECT, font: HFONT, color: COLORREF, flags: u32) {

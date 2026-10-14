@@ -41,6 +41,7 @@ pwsh -NoProfile -File scripts/smoke-cli.ps1
 pwsh -NoProfile -File scripts/smoke-launch.ps1
 pwsh -NoProfile -File scripts/smoke-window.ps1
 pwsh -NoProfile -File scripts/smoke-dashboard.ps1
+pwsh -NoProfile -File scripts/smoke-resize.ps1
 ```
 
 The smoke checks use isolated temporary repositories and configuration. The window check needs an interactive Windows desktop. It checks the real window, live counts, polling backoff, registry reload, and closing.
