@@ -10,7 +10,11 @@ The workspace contains a reusable `wts-core` library, the `wts` command, and the
 
 A snapshot contains repositories and their worktrees. Each worktree has a path and either successful branch and count data or an error. A failed scan cannot claim zero changed lines. The configuration representation stays private to the core.
 
-One worker owns the previous snapshot and adaptive polling interval. The window reads immutable updates and never runs Git on its message thread. Configuration commands share one locked read-modify-replace operation. Monitoring does not write the registry.
+One coordinator owns a registry of worktree polling schedules. Each worktree has its own adaptive delay and scan state. Scan jobs run outside the coordinator so a slow worktree does not block another worktree's update. The window reads immutable updates and never runs Git on its message thread. Configuration commands share one locked read-modify-replace operation. Monitoring does not write the registry.
+
+At most four jobs run at once. Discovery and scans retain capacity for each other, and overdue jobs run in deadline order. A worktree never overlaps its own scan. Removed jobs are canceled and joined. Ready worktrees appear without waiting for slower initial scans.
+
+The status shows elapsed polling work within the previous 60 seconds. Waiting between scans does not count. Concurrent scans contribute their durations separately, so the total can exceed 60 seconds.
 
 ## Synthesis
 
@@ -35,6 +39,8 @@ Line counts are grouped into source, tests, and scripts or tooling when Git's nu
 
 The visual design uses charcoal surfaces, monospace typography, acid-green additions, coral-red deletions and errors, and teal branch labels. Native owner-drawn controls retain real captions for accessibility. A clipped native viewport owns scrolling, while the header stays fixed. Drag handles move whole repository sections or worktrees within their own section. Saved display order does not change registrations or create worktrees. There are no invented history charts, activity scores, or decorative animations.
 
+Drag movement redraws only the source handle and changed drop-marker strips. Edge scrolling batches child-window moves and buffers each card before display. Polling-time updates redraw the fixed status row without rebuilding the list. Native Hide and Unhide buttons support keyboard activation, and Show all temporarily overrides the visibility filter.
+
 | Dashboard alternative | Choice |
 | --- | --- |
 | Native repository cards | Selected for clear hierarchy, colored counters, branch badges, and an actual visual redesign. |
@@ -43,6 +49,8 @@ The visual design uses charcoal surfaces, monospace typography, acid-green addit
 The terminal sketch contributed the vivid green and teal palette and WTS wordmark. Core counting, registration storage, CLI output, and monitor ownership remain unchanged. The viewport preserves scroll on unchanged and count-only updates.
 
 Display order lives in a separate window-library model. Stable Git common-directory and worktree-root paths identify groups and rows. A completed drop updates `config.order.json` through its own nonblocking lock and atomic replacement. A failed save keeps the prior order and shows a warning. The core accepts explicit live launch context but does not register it. Saved ranks cannot discover or register repositories.
+
+Hidden worktrees use the same stable identity pairs in a separate `config.visibility.json` file. Filtering changes the displayed rows, not monitoring, repository totals, or error health. Show all is a temporary display override that leaves saved hidden settings intact. Unhide clears one worktree's hidden setting.
 
 Window placement has its own model and `config.placement.json` file. It records normal window bounds and the associated monitor's geometry. Startup restores fitting bounds when the monitor's pixel dimensions are unchanged. A work-area change alone does not discard a placement that still fits. Normal bounds survive maximization and minimization, and startup never restores a minimized window.
 
@@ -60,4 +68,4 @@ The initial release provides a Windows live window. Other platforms can use the 
 
 ## Verification
 
-Core tests exercise real temporary Git repositories and literal expected counts. CLI smoke checks exercise the executable with an isolated registry. The Windows smoke check reads the actual visible controls, verifies topmost behavior, changes a file, checks polling backoff and reset, reloads the registry, and closes the real window. A separate read-only check compares discovered paths against existing Git worktrees.
+Core tests exercise real temporary Git repositories and literal expected counts. Scheduler tests check independent worktree backoff and the rolling polling duration. CLI smoke checks exercise the executable with an isolated registry. The Windows smoke check reads the actual visible controls, verifies topmost behavior, changes a file, checks the polling-time label, reloads the registry, and closes the real window. A separate read-only check compares discovered paths against existing Git worktrees.

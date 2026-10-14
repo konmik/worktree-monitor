@@ -19,19 +19,21 @@ Plain `wts` prints one current snapshot. `wts-ui` opens the Windows status windo
 
 The live window includes the repository you launch it from, even when it is not registered. This does not register it. Drag a repository's handle to move its whole group. Drag a worktree's handle to reorder it within its repository. The window remembers these positions across refreshes and restarts. Change counts appear on individual worktrees, without summary totals.
 
+Use **Hide** on a worktree to remove it from the list. **Show all** reveals hidden worktrees without clearing their saved settings. Use **Unhide** to keep a revealed worktree visible when you turn **Show all** off. Hiding a worktree does not unregister it or stop monitoring it.
+
 ## Counts
 
 Each worktree shows its branch and `S +n/-n · T +n/-n · X +n/-n`. `S` counts source changes, `T` counts test changes, and `X` counts scripts and tooling changes. The categories match the OpenCode line-changes plugin. Only source additions and deletions use green and red. Counts compare the working files with `HEAD`, including staged changes once and untracked files. A staged edit reverted in the working file contributes no lines. Repositories without a first commit are supported.
 
 Git's ignore rules and binary attributes apply. Binary files have a separate count, not an invented line count. Ignored untracked files and submodule contents are not counted. Missing or unreadable worktrees show errors rather than zero changes.
 
-The live view scans immediately, then waits 5 seconds. Unchanged results increase the wait to 10, 20, then 30 seconds. A changed result resets it to 5 seconds. The window shows the next polling interval and reloads registrations while running.
+Each worktree scans immediately, then waits 5 seconds on its own schedule. Unchanged results increase that worktree's wait to 10, 20, then 30 seconds. A changed result resets its wait to 5 seconds without changing other worktrees' schedules. The window shows time spent polling during the last minute, not the wait between scans, and reloads registrations while running.
 
 ## Configuration
 
 Registrations live in `~/.config/wts/config.json`. On Windows, this is `%USERPROFILE%\.config\wts\config.json`. Configuration writes are locked and atomic. A malformed file is reported and is not overwritten by `add` or `remove`.
 
-The live window saves display order in `config.order.json` beside the registration file. Reordering does not change which repositories are registered. A failed save shows a warning and leaves the previous order in place.
+The live window saves display order in `config.order.json` and hidden worktrees in `config.visibility.json` beside the registration file. Neither changes which repositories are registered. A failed save shows a warning and leaves the previous settings in place.
 
 The window saves its size and position separately in `config.placement.json`. Startup restores the saved window unless its screen changed or its bounds no longer fit. Closing a minimized window preserves its normal bounds and does not reopen it minimized.
 
@@ -48,9 +50,10 @@ pwsh -NoProfile -File scripts/smoke-window.ps1
 pwsh -NoProfile -File scripts/smoke-dashboard.ps1
 pwsh -NoProfile -File scripts/smoke-resize.ps1
 pwsh -NoProfile -File scripts/smoke-features.ps1
+pwsh -NoProfile -File scripts/smoke-visibility.ps1
 ```
 
-The smoke checks use isolated temporary repositories and configuration. The window check needs an interactive Windows desktop. It checks the real window, live counts, polling backoff, registry reload, and closing.
+The smoke checks use isolated temporary repositories and configuration. The window checks need an interactive Windows desktop. They check the real window, live counts, polling time, registry reload, saved visibility, drag redraws, and closing.
 
 `pwsh -NoProfile -File scripts/capture-window.ps1 -Client` creates three real Git fixtures, verifies native accessibility, and captures the actual dashboard without surrounding desktop content. It leaves the image and fixture evidence under the OpenCode temporary directory and closes its own window.
 
