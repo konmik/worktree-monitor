@@ -33,6 +33,7 @@ public static class WtsResizeProbe {
     [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr handle, uint message, IntPtr wparam, IntPtr lparam);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr handle, uint message, IntPtr wparam, IntPtr lparam);
     [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+    [DllImport("user32.dll", EntryPoint="SystemParametersInfoW")] public static extern bool SystemParametersInfo(uint action, uint parameter, out Rect rect, uint flags);
     [DllImport("dwmapi.dll")] public static extern int DwmFlush();
     public static string Text(IntPtr handle) {
         var text = new StringBuilder(65536);
@@ -67,10 +68,13 @@ public static class WtsResizeProbe {
         using (var graphics = Graphics.FromImage(bitmap)) { graphics.CopyFromScreen(origin.X, origin.Y, 0, 0, bitmap.Size); }
         return bitmap;
     }
-    public static int Difference(Bitmap first, Bitmap second) {
+    public static int Difference(Bitmap first, Bitmap second, Rect excluded) {
         int changed = 0;
         for (int y = 0; y < first.Height; y++) {
-            for (int x = 0; x < first.Width; x++) { if (first.GetPixel(x, y) != second.GetPixel(x, y)) { changed++; } }
+            for (int x = 0; x < first.Width; x++) {
+                if (x >= excluded.Left && x < excluded.Right && y >= excluded.Top && y < excluded.Bottom) continue;
+                if (first.GetPixel(x, y) != second.GetPixel(x, y)) changed++;
+            }
         }
         return changed;
     }
@@ -94,6 +98,8 @@ function Run-Git([string[]]$Arguments) {
 function Compare-Repaint([string]$Name) {
     [void][WtsResizeProbe]::RedrawWindow($script:handle, [IntPtr]::Zero, [IntPtr]::Zero, 0x0180)
     [void][WtsResizeProbe]::DwmFlush()
+    $status = [WtsResizeProbe]::GetDlgItem($script:handle, 1003)
+    $statusBefore = [WtsResizeProbe]::Text($status)
     $before = [WtsResizeProbe]::Capture($script:handle)
     try {
         $before.Save((Join-Path $Output "$Name-normal.png"))
@@ -104,8 +110,19 @@ function Compare-Repaint([string]$Name) {
         $after = [WtsResizeProbe]::Capture($script:handle)
         try {
             $after.Save((Join-Path $Output "$Name-repaint.png"))
-            $difference = [WtsResizeProbe]::Difference($before, $after)
-            $script:results.Add([ordered]@{ action = $Name; changed_pixels = $difference; geometry_unchanged = $geometry -eq [WtsResizeProbe]::Geometry($script:handle, $false) })
+            $statusAfter = [WtsResizeProbe]::Text($status)
+            $excluded = [WtsResizeProbe+Rect]::new()
+            if ($statusBefore -ne $statusAfter) {
+                if (-not [WtsResizeProbe]::GetWindowRect($status, [ref]$excluded)) { throw 'Status bounds unavailable' }
+                $origin = [WtsResizeProbe+Point]::new()
+                if (-not [WtsResizeProbe]::ClientToScreen($script:handle, [ref]$origin)) { throw 'Client origin unavailable' }
+                $excluded.Left -= $origin.X
+                $excluded.Right -= $origin.X
+                $excluded.Top -= $origin.Y
+                $excluded.Bottom -= $origin.Y
+            }
+            $difference = [WtsResizeProbe]::Difference($before, $after, $excluded)
+            $script:results.Add([ordered]@{ action = $Name; changed_pixels = $difference; status_before = $statusBefore; status_after = $statusAfter; geometry_unchanged = $geometry -eq [WtsResizeProbe]::Geometry($script:handle, $false) })
             Write-Host "$Name`: $difference pixels changed by full repaint"
         } finally { $after.Dispose() }
     } finally { $before.Dispose() }
@@ -137,10 +154,12 @@ try {
     Wait-For { $script:handle = [WtsResizeProbe]::Find([uint32]$process.Id); $script:handle -ne [IntPtr]::Zero } 'window'
     $viewport = [WtsResizeProbe]::GetDlgItem($script:handle, 1001)
     Wait-For { [WtsResizeProbe]::Geometry($viewport) -match 'infra-tools.*S\s+\+1/-0' } 'fixture counts'
+    $workArea = [WtsResizeProbe+Rect]::new()
+    if (-not [WtsResizeProbe]::SystemParametersInfo(0x0030, 0, [ref]$workArea, 0)) { throw 'Work area unavailable' }
     $index = 0
     foreach ($size in @(@(640, 540), @(800, 720), @(460, 330), @(740, 620), @(600, 130), @(640, 540), @(380, 620), @(800, 720))) {
         $index++
-        if (-not [WtsResizeProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 32, 32, $size[0], $size[1], 20)) { throw 'Resize failed' }
+        if (-not [WtsResizeProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, $workArea.Left + 32, $workArea.Top + 32, $size[0], $size[1], 20)) { throw 'Resize failed' }
         Compare-Repaint "$index-resize-$($size[0])x$($size[1])"
         [void][WtsResizeProbe]::SendMessage($viewport, 0x0115, [IntPtr]3, [IntPtr]::Zero)
         Compare-Repaint "$index-scroll-down"

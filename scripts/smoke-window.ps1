@@ -179,7 +179,9 @@ try {
     Wait-For { Has-Counts 1 0 } 'initial source count'
     $initial = [WtsWindowProbe]::Text($script:handle)
     if ($initial -cmatch 'REPOSITORIES|WORKTREES|LINE CHANGES') { throw 'Dashboard still shows summary totals' }
-    if ($initial -notmatch '5s\b') { throw 'Initial polling interval is not 5s' }
+    $initialPolling = [regex]::Match($initial, 'Polling ([0-9]+\.[0-9]+)s in last minute')
+    if (-not $initialPolling.Success -or $initial -match 'Polling interval') { throw 'Rolling polling time is missing or still shows the interval' }
+    $initialPollingSeconds = [double]::Parse($initialPolling.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture)
     [IO.File]::WriteAllText((Join-Path $fixture 'initial.txt'), $initial)
     $viewport = [WtsWindowProbe]::GetDlgItem($script:handle, 1001)
     if ($viewport -eq [IntPtr]::Zero) { throw 'Dashboard viewport is missing' }
@@ -197,23 +199,22 @@ try {
         $height = [WtsWindowProbe]::Height($viewport)
         $focus = [WtsWindowProbe]::GetForegroundWindow().ToInt64()
         [IO.File]::AppendAllText((Join-Path $fixture 'scroll-trace.txt'), "$line`t$height`t$focus`t$($text.Replace("`r", '').Replace("`n", '\n'))`n")
-        $text -match '10s\b'
-    } 'unchanged polling backoff to 10s' 15
+        $polling = [regex]::Match($text, 'Polling ([0-9]+\.[0-9]+)s in last minute')
+        $polling.Success -and [double]::Parse($polling.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) -gt $initialPollingSeconds
+    } 'rolling polling time to include another scan' 20
     $afterScroll = [WtsWindowProbe]::ScrollPosition($viewport)
     [IO.File]::WriteAllText((Join-Path $fixture 'scroll.txt'), "before=$beforeScroll`nafter=$afterScroll`n")
     if ($afterScroll -ne $beforeScroll) { throw "Unchanged refresh reset the scroll position from $beforeScroll to $afterScroll" }
     $unchangedAnchor = [WtsWindowProbe]::Top($card) - [WtsWindowProbe]::Top($viewport)
     if ($unchangedAnchor -ne $cardScrolled) { throw "Unchanged refresh moved the card anchor from $cardScrolled to $unchangedAnchor" }
-    Wait-For { [WtsWindowProbe]::Text($script:handle) -match '20s\b' } 'unchanged polling backoff to 20s' 20
-    Wait-For { [WtsWindowProbe]::Text($script:handle) -match '30s\b' } 'unchanged polling backoff to 30s' 30
-    [IO.File]::WriteAllText((Join-Path $fixture 'backoff.txt'), [WtsWindowProbe]::Text($script:handle))
+    [IO.File]::WriteAllText((Join-Path $fixture 'polling-time.txt'), [WtsWindowProbe]::Text($script:handle))
     [IO.File]::WriteAllText((Join-Path $repo 'lines.txt'), "before`nadded`nanother`n")
     Wait-For { Has-Counts 2 0 } 'live source count'
     $updated = [WtsWindowProbe]::Text($script:handle)
     if ([WtsWindowProbe]::ScrollPosition($viewport) -ne $beforeScroll) { throw 'Count-only refresh reset viewport scroll' }
     $updatedAnchor = [WtsWindowProbe]::Top($card) - [WtsWindowProbe]::Top($viewport)
     if ($updatedAnchor -ne $cardScrolled) { throw "Count-only refresh moved the card anchor from $cardScrolled to $updatedAnchor" }
-    if ($updated -notmatch '5s\b') { throw 'Polling did not reset to 5s after a change' }
+    if ($updated -notmatch 'Polling [0-9]+\.[0-9]+s in last minute' -or $updated -match 'Polling interval') { throw 'Count refresh lost the rolling polling time' }
     $foregroundOnRefresh = [WtsWindowProbe]::GetForegroundWindow()
     if ($foregroundOnRefresh -eq $script:handle) { throw 'Refresh took foreground focus' }
     if (([WtsWindowProbe]::GetWindowLongPtr($script:handle, -20).ToInt64() -band 0x08000000) -ne 0) { throw 'Window cannot be activated by clicking' }
@@ -237,8 +238,8 @@ try {
     [ordered]@{
         binary = $Binary
         sha256 = (Get-FileHash -LiteralPath $Binary -Algorithm SHA256).Hash
-        initial_interval = 5
-        maximum_interval = 30
+        initial_polling_seconds = $initialPollingSeconds
+        rolling_polling_time = $true
         topmost = ($initialStyle -band 8) -ne 0
         activated_on_show = $foregroundOnShow -eq $script:handle
         activated_on_refresh = $foregroundOnRefresh -eq $script:handle
@@ -256,7 +257,7 @@ try {
         exit_code = $process.ExitCode
         result = 'PASS'
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $fixture 'proof.json') -Encoding utf8NoBOM
-    Write-Host "PASS. Terminal detached, always on top, live counts, scroll preservation, polling backoff/reset, config error/recovery, registry reload, and clean close. Evidence at $fixture"
+    Write-Host "PASS. Terminal detached, always on top, live counts, scroll preservation, rolling polling time, config error/recovery, registry reload, and clean close. Evidence at $fixture"
 } finally {
     $env:HOME = $oldHome
     $env:USERPROFILE = $oldProfile

@@ -74,7 +74,7 @@ public static class WtsDragProbe {
         EnumChildWindows(parent, (handle, data) => {
             var name = new StringBuilder(128);
             GetClassName(handle, name, name.Capacity);
-            if (GetParent(handle) == parent && IsWindowVisible(handle) && Text(handle).Length != 0) {
+            if (GetParent(handle) == parent && IsWindowVisible(handle) && string.Equals(name.ToString(), "STATIC", StringComparison.OrdinalIgnoreCase) && Text(handle).Length != 0) {
                 Rect rect;
                 if (!GetWindowRect(handle, out rect)) { throw new InvalidOperationException("Card bounds unavailable"); }
                 cards.Add(new Card { Handle = handle, Text = Text(handle), Class = name.ToString(), Top = rect.Top });
