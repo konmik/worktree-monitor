@@ -99,7 +99,7 @@ fn registration_clears_inherited_git_repository_overrides() {
     assert_eq!(added.stdout, b"Repository registered.\n");
     let snapshot = invoke(&[], &home);
     assert_eq!(snapshot.status.code(), Some(0));
-    assert!(String::from_utf8(snapshot.stdout).unwrap().contains("+0 -0  binaries: 0"));
+    assert!(String::from_utf8(snapshot.stdout).unwrap().contains("S +0/-0 · T +0/-0 · X +0/-0"));
 }
 
 #[test]

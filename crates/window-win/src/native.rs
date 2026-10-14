@@ -362,19 +362,24 @@ unsafe fn paint_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
                     let fitted_path = ellipsize_start(&path, text_width, |value| wrapped_width(dc, value, resources.fonts[0]));
                     text(dc, &fitted_path, bounds(inset, s(37), right, s(57)), resources.fonts[0], MUTED, DT_SINGLELINE);
                     let y = s(60);
-                    let addition = format!("+{}", stats.counts.additions);
-                    let deletion = format!("-{}", stats.counts.deletions);
-                    let addition_width = wrapped_width(dc, &addition, resources.fonts[1]).min(text_width / 3);
-                    let deletion_width = wrapped_width(dc, &deletion, resources.fonts[1]).min(text_width / 3);
-                    let mut x = inset;
-                    text(dc, &addition, bounds(x, y, (x + addition_width).min(right), y + s(20)), resources.fonts[1], GREEN, line);
-                    x = (x + addition_width + s(12)).min(right);
-                    text(dc, &deletion, bounds(x, y, (x + deletion_width).min(right), y + s(20)), resources.fonts[1], RED, line);
+                    let mut parts = vec![
+                        ("S ".to_owned(), MUTED),
+                        (format!("+{}", stats.counts.source.additions), GREEN),
+                        ("/".to_owned(), MUTED),
+                        (format!("-{}", stats.counts.source.deletions), RED),
+                        (format!(" · T +{}/-{} · X +{}/-{}", stats.counts.test.additions,
+                            stats.counts.test.deletions, stats.counts.extra.additions, stats.counts.extra.deletions), MUTED),
+                    ];
                     if stats.counts.binaries > 0 {
-                        let binaries = format!("binaries: {}", stats.counts.binaries);
-                        let binary_width = wrapped_width(dc, &binaries, resources.fonts[1]).min(text_width);
-                        x = (x + deletion_width + s(16)).min(right);
-                        text(dc, &binaries, bounds(x, y, (x + binary_width).min(right), y + s(20)), resources.fonts[1], MUTED, line);
+                        parts.push((format!(" · binaries: {}", stats.counts.binaries), MUTED));
+                    }
+                    let mut x = inset;
+                    for (part, color) in parts {
+                        let part_width = wrapped_width(dc, &part, resources.fonts[1]).min(right.saturating_sub(x));
+                        if part_width > 0 {
+                            text(dc, &part, bounds(x, y, (x + part_width).min(right), y + s(20)), resources.fonts[1], color, line);
+                        }
+                        x = (x + part_width).min(right);
                     }
                 }
                 Err(_) => {

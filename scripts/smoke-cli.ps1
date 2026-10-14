@@ -185,11 +185,10 @@ function Assert-Snapshot {
     $out = Normalize $Result.Stdout
     if (-not $out.Replace('\', '/').Contains($worktreeDisplay.Replace('\', '/'))) { throw 'snapshot lacks the worktree path' }
     if (-not $out.Contains($branch)) { throw 'snapshot lacks the branch' }
-    $counts = [regex]::Matches($out, '\+(\d+)\s+-(\d+)')
+    $counts = [regex]::Matches($out, '\bS\s+\+(\d+)/-(\d+)\b')
     if ($counts.Count -ne 1 -or [int]$counts[0].Groups[1].Value -ne $Add -or [int]$counts[0].Groups[2].Value -ne $Del) {
-        throw "snapshot expected +$Add -$Del, got $out"
+        throw "snapshot expected S +$Add/-$Del, got $out"
     }
-    if ($out -notmatch '(?i)binar(?:ies|y(?: files)?)[\s:]+0\b') { throw 'snapshot lacks the zero binary count' }
 }
 
 function Assert-Help {

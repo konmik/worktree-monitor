@@ -60,18 +60,49 @@ impl fmt::Display for Head {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct Counts {
+pub struct LineCounts {
     pub additions: u64,
     pub deletions: u64,
+}
+
+impl LineCounts {
+    fn add(self, other: Self) -> Result<Self, Error> {
+        let overflow = || Error::new(ErrorKind::InvalidOutput, "Git line counts overflowed");
+        Ok(Self {
+            additions: self.additions.checked_add(other.additions).ok_or_else(overflow)?,
+            deletions: self.deletions.checked_add(other.deletions).ok_or_else(overflow)?,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Counts {
+    pub source: LineCounts,
+    pub test: LineCounts,
+    pub extra: LineCounts,
     pub binaries: u64,
 }
 
 impl Counts {
     pub(crate) fn add(&mut self, other: Self) -> Result<(), Error> {
         let overflow = || Error::new(ErrorKind::InvalidOutput, "Git line counts overflowed");
-        self.additions = self.additions.checked_add(other.additions).ok_or_else(overflow)?;
-        self.deletions = self.deletions.checked_add(other.deletions).ok_or_else(overflow)?;
-        self.binaries = self.binaries.checked_add(other.binaries).ok_or_else(overflow)?;
+        let source = self.source.add(other.source)?;
+        let test = self.test.add(other.test)?;
+        let extra = self.extra.add(other.extra)?;
+        let binaries = self.binaries.checked_add(other.binaries).ok_or_else(overflow)?;
+        self.source = source;
+        self.test = test;
+        self.extra = extra;
+        self.binaries = binaries;
+        Ok(())
+    }
+}
+
+impl fmt::Display for Counts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "S +{}/-{} · T +{}/-{} · X +{}/-{}", self.source.additions, self.source.deletions,
+            self.test.additions, self.test.deletions, self.extra.additions, self.extra.deletions)?;
+        if self.binaries > 0 { write!(f, " · binaries: {}", self.binaries)?; }
         Ok(())
     }
 }
@@ -130,8 +161,7 @@ impl Snapshot {
                     let _ = writeln!(text, "  {}", tree.path.display());
                     match &tree.result {
                         Ok(stats) => {
-                            let _ = writeln!(text, "    {}  +{} -{}  binaries: {}", stats.head,
-                                stats.counts.additions, stats.counts.deletions, stats.counts.binaries);
+                            let _ = writeln!(text, "    {}  {}", stats.head, stats.counts);
                         }
                         Err(error) => { let _ = writeln!(text, "    ERROR: {error}"); }
                     }

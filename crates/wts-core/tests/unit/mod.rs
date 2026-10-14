@@ -1,11 +1,54 @@
-use crate::git::{numstat, worktrees};
+use crate::git::{category, numstat, worktrees, Category};
 use crate::poll::{Backoff, Registrations};
-use crate::{Counts, ErrorKind, Snapshot};
+use crate::{Counts, ErrorKind, Head, LineCounts, RepoEntry, Snapshot, WorktreeEntry, WorktreeStats};
+use std::path::Path;
 
 #[test]
 fn rename_unicode_and_binary_numstat() {
-    let bytes = "2\t3\t\0旧 name.txt\0new\tname.txt\0-\t-\timage.bin\x000\t0\tunchanged.txt\0";
-    assert_eq!(numstat(bytes.as_bytes()).unwrap(), Counts { additions: 2, deletions: 3, binaries: 1 });
+    let bytes = "2\t3\t\0旧 name.txt\0tests/new\tname.test.js\0-\t-\timage.bin\x000\t0\tunchanged.txt\0";
+    assert_eq!(numstat(bytes.as_bytes()).unwrap(), Counts {
+        test: LineCounts { additions: 2, deletions: 3 }, binaries: 1, ..Counts::default()
+    });
+}
+
+#[test]
+fn classifier_matches_plugin_rules_and_test_precedence() {
+    for path in ["src/main.rs", "src/testing/foo.rs", "src/scripts.rs", "src/foo.test", "test.rs",
+        "contest_foo.rs", "vitest.config", "vitest.configured.js", "src/foo.sh.txt", "script/build.rs"] {
+        assert_eq!(category(Path::new(path)), Category::Source, "{path}");
+    }
+    for path in ["src\\Tests\\fixture.rs", "src/foo.test.ts", "src/foo.spec.ts", "src/foo_test.ts", "test-foo.rs",
+        "test_foo.rs", "tests.config.js", "test.setup.ts", "tests.setup.ts", "tests/tools/build.ps1", "scripts/unit.spec.sh"] {
+        assert_eq!(category(Path::new(path)), Category::Test, "{path}");
+    }
+    for directory in ["test", "tests", "__tests__", "e2e", "spec", "testdata", "__mocks__", "__fixtures__", "fixtures", "__snapshots__"] {
+        assert_eq!(category(Path::new(&format!("scripts/{directory}/file.sh"))), Category::Test);
+    }
+    for prefix in ["ava", "cypress", "jest", "karma", "playwright", "vitest"] {
+        assert_eq!(category(Path::new(&format!("{prefix}.config.ts"))), Category::Test);
+    }
+    for directory in ["tools", "scripts", "development_tools", "development-tools", "tooling"] {
+        assert_eq!(category(Path::new(&format!("{directory}/build.rs"))), Category::Extra);
+    }
+    for extension in ["ps1", "sh", "bash", "bat", "cmd"] {
+        assert_eq!(category(Path::new(&format!("src/build.{extension}"))), Category::Extra);
+        assert_eq!(category(Path::new(&format!(".{extension}"))), Category::Extra);
+    }
+    assert_eq!(category(Path::new("src/build.PS1")), Category::Extra);
+}
+
+#[test]
+fn snapshot_text_uses_the_categorized_indicator() {
+    let snapshot = Snapshot { config_error: None, repos: vec![RepoEntry {
+        common_dir: "/repo/.git".into(), path: "/repo".into(), worktrees: Ok(vec![WorktreeEntry {
+            path: "/repo".into(), result: Ok(WorktreeStats { head: Head::Branch("main".into()), counts: Counts {
+                source: LineCounts { additions: 1, deletions: 2 },
+                test: LineCounts { additions: 3, deletions: 4 },
+                extra: LineCounts { additions: 5, deletions: 6 }, binaries: 7,
+            } }),
+        }]),
+    }] };
+    assert!(snapshot.text().contains("S +1/-2 · T +3/-4 · X +5/-6 · binaries: 7"));
 }
 
 #[test]

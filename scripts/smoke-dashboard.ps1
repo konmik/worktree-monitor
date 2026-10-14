@@ -335,7 +335,7 @@ try {
         if ([IO.File]::ReadAllText($preferences) -ne $savedBeforeCancel) { throw 'Cancelled drag changed saved order' }
     }
     [IO.File]::WriteAllText((Join-Path $alpha 'lines.txt'), "before`nchanged`n")
-    Wait-For { (Find-Card $alpha).Text -match '\+1\s+-0\b' } 'live count refresh' 40
+    Wait-For { (Find-Card $alpha).Text -match 'S\s+\+1/-0\b' } 'live count refresh' 40
     Assert-Order $worktreeOrder 'Refresh preserves repository and worktree order'
     $reorderedOrder = Card-Order
     if ([IO.File]::ReadAllText($config) -ne $registrations) { throw 'Reordering changed repository registrations' }
@@ -345,14 +345,14 @@ try {
     & $Binary add $current
     if ($LASTEXITCODE -ne 0) { throw 'Explicit registration of launch repository failed' }
     [IO.File]::WriteAllText((Join-Path $current 'lines.txt'), "before`nfirst`nsecond`n")
-    Wait-For { (Find-Card $current).Text -match '\+2\s+-0\b' } 'registered launch repository refresh' 40
+    Wait-For { (Find-Card $current).Text -match 'S\s+\+2/-0\b' } 'registered launch repository refresh' 40
     Wait-For { @([WtsDragProbe]::Cards($script:viewport)).Count -eq 8 } 'deduplicated current repository'
     Assert-Order $worktreeOrder 'Registering the launch repository does not duplicate its worktree'
     [IO.File]::WriteAllText((Join-Path $fixture 'final-order.txt'), (Card-Order))
     & $Binary remove $current
     if ($LASTEXITCODE -ne 0) { throw 'Removing launch registration failed' }
     [IO.File]::WriteAllText((Join-Path $current 'lines.txt'), "before`nfirst`nsecond`nthird`n")
-    Wait-For { (Find-Card $current).Text -match '\+3\s+-0\b' } 'unregistered launch repository refresh' 40
+    Wait-For { (Find-Card $current).Text -match 'S\s+\+3/-0\b' } 'unregistered launch repository refresh' 40
     Assert-Order $worktreeOrder 'Removing a registration keeps the current repository visible'
     Close-Dashboard
     $launchDirectory = $fixtureHome

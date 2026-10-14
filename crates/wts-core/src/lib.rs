@@ -4,7 +4,7 @@ mod model;
 mod poll;
 mod process;
 
-pub use model::{Counts, Error, ErrorKind, Head, RepoEntry, Snapshot, WorktreeEntry, WorktreeStats};
+pub use model::{Counts, Error, ErrorKind, Head, LineCounts, RepoEntry, Snapshot, WorktreeEntry, WorktreeStats};
 pub use poll::{Monitor, MonitorUpdate};
 pub use process::Cancel;
 

@@ -5,7 +5,7 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
-use wts_core::{Cancel, Counts, ErrorKind, Head, Service, WorktreeStats};
+use wts_core::{Cancel, Counts, ErrorKind, Head, LineCounts, Service, WorktreeStats};
 
 struct Fixture {
     _directory: TempDir,
@@ -45,6 +45,10 @@ impl Fixture {
     }
 }
 
+fn source_counts(additions: u64, deletions: u64, binaries: u64) -> Counts {
+    Counts { source: LineCounts { additions, deletions }, binaries, ..Counts::default() }
+}
+
 fn git(repo: &Path, args: &[&str]) -> Vec<u8> {
     let mut command = Command::new("git");
     command.arg("-C").arg(repo).args(args);
@@ -63,11 +67,38 @@ fn net_staged_unstaged_reverted_stage_and_untracked_lines() {
     fixture.write("lines.txt", "one\ntwo\nstaged\n");
     git(&fixture.repo, &["add", "lines.txt"]);
     fixture.write("lines.txt", "one\ntwo\nstaged\nunstaged\n");
-    assert_eq!(fixture.stats().counts, Counts { additions: 2, deletions: 0, binaries: 0 });
+    assert_eq!(fixture.stats().counts, source_counts(2, 0, 0));
     fixture.write("lines.txt", "one\ntwo\n");
-    assert_eq!(fixture.stats().counts, Counts { additions: 0, deletions: 0, binaries: 0 });
+    assert_eq!(fixture.stats().counts, source_counts(0, 0, 0));
     fixture.write("untracked 树.txt", "first\nlast");
-    assert_eq!(fixture.stats().counts, Counts { additions: 2, deletions: 0, binaries: 0 });
+    assert_eq!(fixture.stats().counts, source_counts(2, 0, 0));
+}
+
+#[test]
+fn categorized_staged_unstaged_untracked_rename_and_binary_changes_use_destination_paths() {
+    let fixture = Fixture::new("sha1");
+    fs::create_dir_all(fixture.repo.join("tests/tools")).unwrap();
+    fs::create_dir(fixture.repo.join("scripts")).unwrap();
+    fixture.write("source.txt", "one\ntwo\n");
+    fixture.write("tests/behavior.test.js", "old\n");
+    fixture.write("old-source.txt", "keep\nrename\nsame1\nsame2\nsame3\nsame4\nsame5\nsame6\nsame7\nsame8\n");
+    fixture.write("asset.bin", b"old\0data");
+    fixture.commit();
+    fixture.service().add(&fixture.repo).unwrap();
+    fixture.write("source.txt", "one\ntwo\nthree\n");
+    git(&fixture.repo, &["add", "source.txt"]);
+    fixture.write("tests/behavior.test.js", "old\nnew\n");
+    git(&fixture.repo, &["mv", "old-source.txt", "tests/renamed.test.js"]);
+    fixture.write("tests/renamed.test.js", "keep\nchanged\nsame1\nsame2\nsame3\nsame4\nsame5\nsame6\nsame7\nsame8\n");
+    fixture.write("scripts/new.ps1", "one\ntwo\n");
+    fixture.write("tests/tools/fixture.ps1", "one\n");
+    fixture.write("asset.bin", b"new\0data");
+    assert_eq!(fixture.stats().counts, Counts {
+        source: LineCounts { additions: 1, deletions: 0 },
+        test: LineCounts { additions: 3, deletions: 1 },
+        extra: LineCounts { additions: 2, deletions: 0 },
+        binaries: 1,
+    });
 }
 
 #[test]
@@ -81,7 +112,7 @@ fn attributes_ignored_and_binary_files_use_git_semantics() {
     fixture.write("forced.txt", "looks like text\n");
     fixture.write("ignored.txt", "must not count\n");
     fixture.write("tracked.bin", b"new\0data");
-    assert_eq!(fixture.stats().counts, Counts { additions: 0, deletions: 0, binaries: 2 });
+    assert_eq!(fixture.stats().counts, source_counts(0, 0, 2));
 }
 
 #[test]
@@ -104,7 +135,7 @@ fn monitoring_does_not_execute_fsmonitor_helpers() {
     git(&fixture.repo, &["diff", "--numstat", "HEAD", "--"]);
     assert!(fs::read_to_string(&marker).unwrap().starts_with("called\n"));
     fs::remove_file(&marker).unwrap();
-    assert_eq!(fixture.stats().counts, Counts { additions: 1, deletions: 0, binaries: 0 });
+    assert_eq!(fixture.stats().counts, source_counts(1, 0, 0));
     assert!(!marker.exists());
 }
 
@@ -119,7 +150,7 @@ fn unborn_sha1_and_sha256_with_staged_and_untracked_files() {
         fixture.service().add(&fixture.repo).unwrap();
         let stats = fixture.stats();
         assert_eq!(stats.head, Head::Unborn("main".into()));
-        assert_eq!(stats.counts, Counts { additions: 3, deletions: 0, binaries: 0 });
+        assert_eq!(stats.counts, source_counts(3, 0, 0));
         assert_eq!(git(&fixture.repo, &["rev-list", "--all"]), b"");
     }
 }
@@ -131,7 +162,7 @@ fn indexed_rename_is_zero_and_detached_head_is_visible() {
     fixture.commit();
     fixture.service().add(&fixture.repo).unwrap();
     git(&fixture.repo, &["mv", "old 树.txt", "new 树.txt"]);
-    assert_eq!(fixture.stats().counts, Counts { additions: 0, deletions: 0, binaries: 0 });
+    assert_eq!(fixture.stats().counts, source_counts(0, 0, 0));
     git(&fixture.repo, &["checkout", "--quiet", "--detach"]);
     let oid = String::from_utf8(git(&fixture.repo, &["rev-parse", "HEAD"])).unwrap().trim().to_owned();
     assert_eq!(fixture.stats().head, Head::Detached(oid));
@@ -231,7 +262,7 @@ fn missing_repository_is_error_not_zero_and_can_be_removed_by_old_root() {
     let snapshot = fixture.service().snapshot(&Cancel::new());
     assert!(snapshot.has_errors());
     assert!(snapshot.repos[0].worktrees.is_err());
-    assert!(!snapshot.text().contains("+0 -0"));
+    assert!(!snapshot.text().contains("S +0/-0"));
     assert!(fixture.service().remove(&fixture.repo).unwrap());
     assert_eq!(fixture.service().snapshot(&Cancel::new()).text(), "No registered repositories.\n");
 }
@@ -256,7 +287,7 @@ fn conflicted_worktree_returns_error_without_valid_counts() {
     let trees = snapshot.repos[0].worktrees.as_ref().unwrap();
     assert_eq!(trees[0].result.as_ref().unwrap_err().kind, ErrorKind::Conflict);
     assert!(snapshot.text().contains("Unresolved merge conflicts"));
-    assert!(!snapshot.text().contains("+0 -0"));
+    assert!(!snapshot.text().contains("S +0/-0"));
 }
 
 #[test]
@@ -284,7 +315,7 @@ fn scans_do_not_write_the_index_config_or_git_objects() {
     let index = fs::read(fixture.repo.join(".git/index")).unwrap();
     let config = fs::read(&fixture.config).unwrap();
     let before_objects = git(&fixture.repo, &["count-objects", "-v"]);
-    assert_eq!(fixture.stats().counts, Counts { additions: 1, deletions: 0, binaries: 0 });
+    assert_eq!(fixture.stats().counts, source_counts(1, 0, 0));
     assert_eq!(fs::read(fixture.repo.join(".git/index")).unwrap(), index);
     assert_eq!(fs::read(&fixture.config).unwrap(), config);
     assert_eq!(git(&fixture.repo, &["count-objects", "-v"]), before_objects);
@@ -320,7 +351,7 @@ fn submodule_contents_are_not_counted_recursively() {
     fixture.service().add(&fixture.repo).unwrap();
     fs::write(submodule.join("nested.txt"), "edited\nadded\n").unwrap();
     fs::write(submodule.join("untracked.txt"), "untracked\n").unwrap();
-    assert_eq!(fixture.stats().counts, Counts { additions: 0, deletions: 0, binaries: 0 });
+    assert_eq!(fixture.stats().counts, source_counts(0, 0, 0));
 }
 
 #[cfg(windows)]
@@ -337,7 +368,7 @@ fn unreadable_tracked_file_is_an_error_not_a_partial_count() {
     assert!(snapshot.has_errors(), "Unexpected successful scan: {}", snapshot.text());
     assert!(snapshot.repos[0].worktrees.as_ref().unwrap()[0].result.is_err());
     drop(locked);
-    assert_eq!(fixture.stats().counts, Counts { additions: 2, deletions: 1, binaries: 0 });
+    assert_eq!(fixture.stats().counts, source_counts(2, 1, 0));
 }
 
 #[cfg(windows)]
@@ -354,7 +385,7 @@ fn unreadable_untracked_file_is_an_error_not_a_partial_count() {
     assert!(snapshot.has_errors(), "Unexpected successful scan: {}", snapshot.text());
     assert!(snapshot.repos[0].worktrees.as_ref().unwrap()[0].result.is_err());
     drop(locked);
-    assert_eq!(fixture.stats().counts, Counts { additions: 1, deletions: 0, binaries: 0 });
+    assert_eq!(fixture.stats().counts, source_counts(1, 0, 0));
 }
 
 fn wait_for(monitor: &wts_core::Monitor, condition: impl Fn(&wts_core::MonitorUpdate) -> bool) {
@@ -400,7 +431,7 @@ fn launch_context_includes_the_real_root_from_a_nested_directory_without_registr
     assert_eq!(trees.len(), 1);
     assert_eq!(trees[0].path, dunce::canonicalize(&fixture.repo).unwrap());
     assert_eq!(trees[0].result.as_ref().unwrap().head, Head::Unborn("main".into()));
-    assert_eq!(trees[0].result.as_ref().unwrap().counts, Counts { additions: 2, deletions: 0, binaries: 0 });
+    assert_eq!(trees[0].result.as_ref().unwrap().counts, source_counts(2, 0, 0));
     assert!(!fixture.config.exists());
     assert_eq!(fixture.service().snapshot(&Cancel::new()).text(), "No registered repositories.\n");
     let mut normal = fixture.service().monitor().unwrap();
@@ -426,7 +457,7 @@ fn launch_from_a_linked_tree_discovers_siblings_and_deduplicates_registrations()
     assert_eq!(trees.len(), 2);
     let tree = trees.iter().find(|tree| tree.path == dunce::canonicalize(&linked).unwrap()).unwrap();
     assert!(matches!(tree.result.as_ref().unwrap().head, Head::Detached(_)));
-    assert_eq!(tree.result.as_ref().unwrap().counts.additions, 1);
+    assert_eq!(tree.result.as_ref().unwrap().counts.source.additions, 1);
     assert!(!fixture.config.exists());
     unregistered.stop().unwrap();
     fixture.service().add(&fixture.repo).unwrap();

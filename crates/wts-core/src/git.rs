@@ -1,6 +1,37 @@
 use crate::process::{self, args};
-use crate::{Cancel, Counts, Error, ErrorKind, Head, RepoEntry, Snapshot, WorktreeEntry, WorktreeStats};
+use crate::{Cancel, Counts, Error, ErrorKind, Head, LineCounts, RepoEntry, Snapshot, WorktreeEntry, WorktreeStats};
 use std::path::{Path, PathBuf};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Category { Source, Test, Extra }
+
+const TEST_DIRECTORIES: &[&str] = &[
+    "test", "tests", "__tests__", "e2e", "spec", "testdata", "__mocks__", "__fixtures__", "fixtures", "__snapshots__",
+];
+
+const EXTRA_DIRECTORIES: &[&str] = &["tools", "scripts", "development_tools", "development-tools", "tooling"];
+
+pub(crate) fn category(path: &Path) -> Category {
+    let normalized = path.to_string_lossy().replace('\\', "/").to_lowercase();
+    let parts: Vec<_> = normalized.split('/').collect();
+    if parts.iter().any(|part| TEST_DIRECTORIES.contains(part)) {
+        return Category::Test;
+    }
+    let name = parts.last().copied().unwrap_or_default();
+    if name.starts_with("test-") || name.starts_with("test_") || name.contains(".test.")
+        || name.contains(".spec.") || name.contains("_test.")
+        || ["ava", "cypress", "jest", "karma", "playwright", "vitest"].iter()
+            .any(|prefix| name.starts_with(prefix) && name[prefix.len()..].starts_with(".config."))
+        || ["test", "tests"].iter().any(|prefix| name.starts_with(prefix)
+            && (name[prefix.len()..].starts_with(".config.") || name[prefix.len()..].starts_with(".setup."))) {
+        return Category::Test;
+    }
+    if parts.iter().any(|part| EXTRA_DIRECTORIES.contains(part))
+        || [".ps1", ".sh", ".bash", ".bat", ".cmd"].iter().any(|suffix| name.ends_with(suffix)) {
+        return Category::Extra;
+    }
+    Category::Source
+}
 
 pub(crate) fn path(bytes: &[u8]) -> Result<PathBuf, Error> {
     if bytes.is_empty() { return Err(invalid("Git returned an empty path")); }
@@ -28,11 +59,13 @@ pub(crate) fn numstat(bytes: &[u8]) -> Result<Counts, Error> {
         let additions = columns.next().ok_or_else(|| invalid("Missing numstat additions"))?;
         let deletions = columns.next().ok_or_else(|| invalid("Missing numstat deletions"))?;
         let name = columns.next().ok_or_else(|| invalid("Missing numstat path"))?;
-        if name.is_empty() {
-            for _ in 0..2 {
-                if fields.next().is_none_or(|name| name.is_empty()) { return Err(invalid("Incomplete numstat rename")); }
-            }
-        }
+        let destination = if name.is_empty() {
+            let old = fields.next().ok_or_else(|| invalid("Incomplete numstat rename"))?;
+            let destination = fields.next().ok_or_else(|| invalid("Incomplete numstat rename"))?;
+            if old.is_empty() || destination.is_empty() { return Err(invalid("Incomplete numstat rename")); }
+            destination
+        } else { name };
+        let category = category(&path(destination)?);
         let entry = if additions == b"-" && deletions == b"-" {
             Counts { binaries: 1, ..Counts::default() }
         } else {
@@ -40,7 +73,12 @@ pub(crate) fn numstat(bytes: &[u8]) -> Result<Counts, Error> {
                 if bytes.is_empty() || !bytes.iter().all(u8::is_ascii_digit) { return Err(invalid("Invalid numstat count")); }
                 std::str::from_utf8(bytes).unwrap().parse().map_err(|_| invalid("Numstat count overflow"))
             };
-            Counts { additions: number(additions)?, deletions: number(deletions)?, binaries: 0 }
+            let lines = LineCounts { additions: number(additions)?, deletions: number(deletions)? };
+            match category {
+                Category::Source => Counts { source: lines, ..Counts::default() },
+                Category::Test => Counts { test: lines, ..Counts::default() },
+                Category::Extra => Counts { extra: lines, ..Counts::default() },
+            }
         };
         counts.add(entry)?;
     }

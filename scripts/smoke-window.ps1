@@ -119,7 +119,7 @@ function Has-Counts([int]$Added, [int]$Deleted) {
         $lines = @($_ -split "`r?`n")
         $lines.Count -ge 2 -and $lines[0] -eq $script:branch -and $lines[1].Replace('\', '/').ToLowerInvariant() -eq $path
     })
-    return $rows.Count -eq 1 -and $rows[0] -match "\+$Added\s+-$Deleted\b"
+    return $rows.Count -eq 1 -and $rows[0] -match "S\s+\+$Added/-$Deleted\b"
 }
 
 $fixture = Join-Path $env:LOCALAPPDATA "Temp/opencode/wts-window-$([Guid]::NewGuid().ToString('N'))"
@@ -176,7 +176,7 @@ try {
     $foregroundOnShow = [WtsWindowProbe]::GetForegroundWindow()
     if (($initialStyle -band 8) -eq 0) { throw 'Window is not always on top' }
     if ($foregroundOnShow -eq $script:handle) { throw 'Window took foreground focus' }
-    Wait-For { Has-Counts 1 0 } 'initial +1 -0 count'
+    Wait-For { Has-Counts 1 0 } 'initial source count'
     $initial = [WtsWindowProbe]::Text($script:handle)
     if ($initial -cmatch 'REPOSITORIES|WORKTREES|LINE CHANGES') { throw 'Dashboard still shows summary totals' }
     if ($initial -notmatch '5s\b') { throw 'Initial polling interval is not 5s' }
@@ -208,7 +208,7 @@ try {
     Wait-For { [WtsWindowProbe]::Text($script:handle) -match '30s\b' } 'unchanged polling backoff to 30s' 30
     [IO.File]::WriteAllText((Join-Path $fixture 'backoff.txt'), [WtsWindowProbe]::Text($script:handle))
     [IO.File]::WriteAllText((Join-Path $repo 'lines.txt'), "before`nadded`nanother`n")
-    Wait-For { Has-Counts 2 0 } 'live +2 -0 count'
+    Wait-For { Has-Counts 2 0 } 'live source count'
     $updated = [WtsWindowProbe]::Text($script:handle)
     if ([WtsWindowProbe]::ScrollPosition($viewport) -ne $beforeScroll) { throw 'Count-only refresh reset viewport scroll' }
     $updatedAnchor = [WtsWindowProbe]::Top($card) - [WtsWindowProbe]::Top($viewport)

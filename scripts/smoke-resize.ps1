@@ -136,7 +136,7 @@ try {
     $script:handle = [IntPtr]::Zero
     Wait-For { $script:handle = [WtsResizeProbe]::Find([uint32]$process.Id); $script:handle -ne [IntPtr]::Zero } 'window'
     $viewport = [WtsResizeProbe]::GetDlgItem($script:handle, 1001)
-    Wait-For { [WtsResizeProbe]::Geometry($viewport) -match 'infra-tools.*\+1' } 'fixture counts'
+    Wait-For { [WtsResizeProbe]::Geometry($viewport) -match 'infra-tools.*S\s+\+1/-0' } 'fixture counts'
     $index = 0
     foreach ($size in @(@(640, 540), @(800, 720), @(460, 330), @(740, 620), @(600, 130), @(640, 540), @(380, 620), @(800, 720))) {
         $index++

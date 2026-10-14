@@ -67,12 +67,7 @@ impl DisplayItem {
                 text
             }
             Self::Worktree { path, result } => match result {
-                Ok(stats) => {
-                    let counts = stats.counts;
-                    let binaries = if counts.binaries > 0 { format!(" · binaries: {}", counts.binaries) } else { String::new() };
-                    format!("{}\n{}\n+{} -{}{}", head_caption(&stats.head), path.display(),
-                        counts.additions, counts.deletions, binaries)
-                }
+                Ok(stats) => format!("{}\n{}\n{}", head_caption(&stats.head), path.display(), stats.counts),
                 Err(error) => format!("{}\nCounts unavailable · binaries unavailable\nERROR ({:?}): {}", path.display(), error.kind, error.message),
             },
             Self::Notice { title, message, .. } => format!("{title}\n{message}"),
