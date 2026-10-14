@@ -354,10 +354,11 @@ unsafe fn paint_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
                     let badge_width = wrapped_width(dc, lines[0], resources.fonts[0]).saturating_add(s(18))
                         .min(text_width).max(1);
                     let badge_left = inset;
+                    let badge_padding = s(8).min(badge_width / 2);
                     SelectObject(dc, resources.background);
                     SelectObject(dc, resources.border);
                     RoundRect(dc, badge_left, s(10), badge_left + badge_width, s(31), s(6), s(6));
-                    text(dc, lines[0], bounds(badge_left + s(8), s(13), badge_left + badge_width - s(5), s(30)), resources.fonts[0], TEAL, line);
+                    text(dc, lines[0], bounds(badge_left + badge_padding, s(13), badge_left + badge_width - badge_padding, s(30)), resources.fonts[0], TEAL, line);
                     let fitted_path = ellipsize_start(&path, text_width, |value| wrapped_width(dc, value, resources.fonts[0]));
                     text(dc, &fitted_path, bounds(inset, s(37), right, s(57)), resources.fonts[0], MUTED, DT_SINGLELINE);
                     let y = s(60);
