@@ -159,8 +159,8 @@ unsafe fn set_item(card: &mut Card, display: DisplayItem) {
 }
 
 unsafe fn create_card(parent: HWND, id: usize, action_id: Option<usize>, key: Option<ItemKey>, display: DisplayItem, resources: &Resources) -> Option<Card> {
-    let window = CreateWindowExW(0, wide("STATIC").as_ptr(), wide(&display.caption()).as_ptr(),
-        WS_CHILD | WS_VISIBLE | STATIC_OWNERDRAW | STATIC_NOTIFY, 0, 0, 1, 1, parent, id as _, GetModuleHandleW(null()), null());
+    let window = CreateWindowExW(WS_EX_CONTROLPARENT, wide("STATIC").as_ptr(), wide(&display.caption()).as_ptr(),
+        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | STATIC_OWNERDRAW | STATIC_NOTIFY, 0, 0, 1, 1, parent, id as _, GetModuleHandleW(null()), null());
     if window.is_null() { return None; }
     if key.as_ref().is_some_and(draggable) && SetWindowSubclass(window, Some(card_procedure), 1, 0) == 0 {
         DestroyWindow(window);
@@ -169,7 +169,7 @@ unsafe fn create_card(parent: HWND, id: usize, action_id: Option<usize>, key: Op
     SendMessageW(window, WM_SETFONT, resources.fonts[1] as WPARAM, 0);
     let action = if let Some(action_id) = action_id {
         let action = CreateWindowExW(0, wide("BUTTON").as_ptr(), wide("Hide").as_ptr(),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32, 0, 0, 1, 1, parent,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32, 0, 0, 1, 1, window,
             action_id as _, GetModuleHandleW(null()), null());
         if action.is_null() {
             DestroyWindow(window);
@@ -182,7 +182,6 @@ unsafe fn create_card(parent: HWND, id: usize, action_id: Option<usize>, key: Op
 }
 
 unsafe fn destroy_card(card: Card) {
-    if let Some(action) = card.action { DestroyWindow(action); }
     DestroyWindow(card.window);
 }
 
@@ -276,18 +275,10 @@ fn anchor(state: &State) -> Option<(ItemKey, i32)> {
 }
 
 unsafe fn position_cards(state: &State) {
-    let action_width = scaled(WORKTREE_ACTION_WIDTH, state.dpi).min(state.width.max(1));
-    let action_height = scaled(24, state.dpi).min(state.page.max(1));
-    let action_left = state.width.saturating_sub(action_width).saturating_sub(scaled(10, state.dpi));
-    let mut placements = Vec::with_capacity(state.cards.len() * 2);
+    let mut placements = Vec::with_capacity(state.cards.len());
     for card in &state.cards {
         let top = card.top - state.scroll;
         placements.push((card.window, RECT { left: 0, top, right: state.width, bottom: top + card.height }));
-        if let Some(action) = card.action {
-            let top = top + scaled(7, state.dpi);
-            placements.push((action, RECT { left: action_left, top, right: action_left + action_width,
-                bottom: top + action_height }));
-        }
     }
     let flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS;
     let mut batch = BeginDeferWindowPos(placements.len() as i32);
@@ -301,7 +292,17 @@ unsafe fn position_cards(state: &State) {
             SetWindowPos(window, null_mut(), rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, flags);
         }
     }
+    for card in &state.cards { position_action(card, state.width, state.dpi); }
     InvalidateRect(state.viewport, null(), 0);
+}
+
+unsafe fn position_action(card: &Card, width: i32, dpi: i32) {
+    let Some(action) = card.action else { return; };
+    let action_width = scaled(WORKTREE_ACTION_WIDTH, dpi).min(width.max(1));
+    let action_height = scaled(24, dpi).min(card.height.max(1));
+    let action_left = width.saturating_sub(action_width).saturating_sub(scaled(10, dpi));
+    SetWindowPos(action, null_mut(), action_left, scaled(7, dpi), action_width, action_height,
+        SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
 }
 
 unsafe fn scroll_to(state: &mut State, position: i32) {
@@ -911,6 +912,12 @@ unsafe fn finish_drag(pointer: *mut State, point: POINT) {
 }
 
 unsafe extern "system" fn card_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
+    if matches!(message, WM_COMMAND | WM_DRAWITEM) {
+        let viewport = GetParent(window);
+        if !viewport.is_null() && !(GetWindowLongPtrW(viewport, GWLP_USERDATA) as *mut State).is_null() {
+            return callback(viewport, message, wparam, lparam, true);
+        }
+    }
     if message == WM_ERASEBKGND { return 1; }
     if message == WM_NCDESTROY {
         let viewport = GetParent(window);
