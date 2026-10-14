@@ -676,7 +676,7 @@ unsafe fn draw_item(state: &State, lparam: LPARAM) -> LRESULT {
             return 1;
         }
     }
-    if draw.CtlType == ODT_BUTTON && state.cards.iter().any(|card| card.action == Some(draw.hwndItem)) {
+    if draw.CtlType == ODT_BUTTON {
         paint_button(draw, state);
         return 1;
     }
@@ -912,7 +912,7 @@ unsafe fn finish_drag(pointer: *mut State, point: POINT) {
 }
 
 unsafe extern "system" fn card_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
-    if matches!(message, WM_COMMAND | WM_DRAWITEM) {
+    if matches!(message, WM_COMMAND | WM_DRAWITEM | WM_CTLCOLORBTN) {
         let viewport = GetParent(window);
         if !viewport.is_null() && !(GetWindowLongPtrW(viewport, GWLP_USERDATA) as *mut State).is_null() {
             return callback(viewport, message, wparam, lparam, true);
@@ -1099,11 +1099,13 @@ unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, p
         }
         WM_COMMAND => command(window, &mut *pointer, wparam, lparam, viewport),
         WM_ERASEBKGND => 1,
-        WM_CTLCOLORSTATIC => {
+        WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
             if let Some(resources) = &(*pointer).resources {
-                SetBkColor(wparam as HDC, BACKGROUND);
+                let (color, brush) = if message == WM_CTLCOLORBTN { (SURFACE, resources.surface) }
+                    else { (BACKGROUND, resources.background) };
+                SetBkColor(wparam as HDC, color);
                 SetTextColor(wparam as HDC, WHITE);
-                resources.background as LRESULT
+                brush as LRESULT
             } else { DefWindowProcW(window, message, wparam, lparam) }
         }
         WM_DRAWITEM => draw_item(&*pointer, lparam),

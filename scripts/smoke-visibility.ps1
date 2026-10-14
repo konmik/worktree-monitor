@@ -16,6 +16,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 
 public static class WtsVisibilityNativeProbe {
     public struct Point { public int X, Y; }
@@ -82,6 +83,8 @@ public static class WtsVisibilityNativeProbe {
     [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr handle);
     [DllImport("user32.dll")] public static extern bool UpdateWindow(IntPtr handle);
     [DllImport("user32.dll")] public static extern bool ValidateRect(IntPtr handle, IntPtr rect);
+    [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr handle);
+    [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr handle, IntPtr dc);
     [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW")] public static extern IntPtr SendMessageTimeout(IntPtr handle, uint message, IntPtr wparam, IntPtr lparam, uint flags, uint timeout, out IntPtr result);
     [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr handle, uint message, IntPtr wparam, IntPtr lparam);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr handle, uint message, IntPtr wparam, IntPtr lparam);
@@ -90,6 +93,7 @@ public static class WtsVisibilityNativeProbe {
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr handle);
     [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint sourceThread, uint targetThread, bool attach);
     [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+    [DllImport("gdi32.dll")] public static extern uint GetPixel(IntPtr dc, int x, int y);
 
     public static Rect ClientBounds(IntPtr handle) {
         Rect rect;
@@ -206,6 +210,122 @@ public static class WtsVisibilityNativeProbe {
         IntPtr result;
         if (SendMessageTimeout(handle, message, wparam, lparam, 2, 3000, out result) == IntPtr.Zero) throw new InvalidOperationException("Native message timed out or failed");
         return result;
+    }
+
+    public sealed class ScreenSample {
+        public int X, Y, IntervalMilliseconds, Frames, BrightFrames, InvalidFrames, FirstBrightFrame;
+        public uint FirstColor, LastColor;
+        public bool DcReleased;
+    }
+
+    public sealed class ScreenSampler : IDisposable {
+        private readonly int x, y, intervalMilliseconds;
+        private readonly Thread thread;
+        private readonly ManualResetEventSlim ready = new ManualResetEventSlim(false);
+        private readonly ManualResetEventSlim stop = new ManualResetEventSlim(false);
+        private Exception failure;
+        private int frames, brightFrames, invalidFrames, firstBrightFrame = -1;
+        private uint firstColor, lastColor;
+        private bool hasFirstColor, dcReleased, started, disposed;
+
+        public ScreenSampler(int x, int y, int intervalMilliseconds) {
+            if (intervalMilliseconds < 1) throw new ArgumentOutOfRangeException("intervalMilliseconds");
+            this.x = x;
+            this.y = y;
+            this.intervalMilliseconds = intervalMilliseconds;
+            thread = new Thread(SampleLoop) { IsBackground = true };
+        }
+
+        public void Start() {
+            ThrowIfDisposed();
+            if (started) throw new InvalidOperationException("Screen sampler already started");
+            started = true;
+            thread.Start();
+            if (!ready.Wait(3000)) {
+                stop.Set();
+                if (!thread.Join(3000)) throw new InvalidOperationException("Screen sampler did not stop");
+                throw new InvalidOperationException("Screen sampler did not start");
+            }
+            ThrowFailure();
+        }
+
+        public ScreenSample Stop() {
+            ThrowIfDisposed();
+            if (!started) throw new InvalidOperationException("Screen sampler was not started");
+            stop.Set();
+            if (!thread.Join(3000)) throw new InvalidOperationException("Screen sampler did not stop");
+            ThrowFailure();
+            return new ScreenSample {
+                X = x,
+                Y = y,
+                IntervalMilliseconds = intervalMilliseconds,
+                Frames = frames,
+                BrightFrames = brightFrames,
+                InvalidFrames = invalidFrames,
+                FirstBrightFrame = firstBrightFrame,
+                FirstColor = firstColor,
+                LastColor = lastColor,
+                DcReleased = dcReleased
+            };
+        }
+
+        public void Dispose() {
+            if (disposed) return;
+            try {
+                if (started && thread.IsAlive) {
+                    stop.Set();
+                    if (!thread.Join(3000)) throw new InvalidOperationException("Screen sampler did not stop");
+                }
+            } finally {
+                ready.Dispose();
+                stop.Dispose();
+                disposed = true;
+            }
+        }
+
+        private void SampleLoop() {
+            var screen = IntPtr.Zero;
+            try {
+                screen = GetDC(IntPtr.Zero);
+                if (screen == IntPtr.Zero) throw new InvalidOperationException("Screen DC unavailable");
+                ready.Set();
+                while (!stop.IsSet) {
+                    var color = GetPixel(screen, x, y);
+                    frames++;
+                    lastColor = color;
+                    if (!hasFirstColor) {
+                        firstColor = color;
+                        hasFirstColor = true;
+                    }
+                    if (color == 0xffffffffu) {
+                        invalidFrames++;
+                    } else {
+                        var red = color & 0xffu;
+                        var green = (color >> 8) & 0xffu;
+                        var blue = (color >> 16) & 0xffu;
+                        if (red > 180u && green > 180u && blue > 180u) {
+                            brightFrames++;
+                            if (firstBrightFrame < 0) firstBrightFrame = frames;
+                        }
+                    }
+                    if (stop.Wait(intervalMilliseconds)) break;
+                }
+            } catch (Exception error) {
+                failure = error;
+                ready.Set();
+            } finally {
+                if (screen != IntPtr.Zero) ReleaseDC(IntPtr.Zero, screen);
+                dcReleased = true;
+            }
+        }
+
+        private void ThrowFailure() {
+            if (failure != null) throw new InvalidOperationException("Screen sampler failed", failure);
+        }
+
+        private void ThrowIfDisposed() {
+            if (disposed) throw new ObjectDisposedException("ScreenSampler");
+        }
     }
 
     public static void Click() {
@@ -621,6 +741,8 @@ function Invoke-ButtonClick($Button) {
     $point = [WtsVisibilityNativeProbe+Point]::new()
     $point.X = [int](($bounds.Left + $bounds.Right) / 2)
     $point.Y = [int](($bounds.Top + $bounds.Bottom) / 2)
+    [void][WtsVisibilityNativeProbe]::SetForegroundWindow($script:handle)
+    Start-Sleep -Milliseconds 50
     if (-not [WtsVisibilityNativeProbe]::SetCursorPos($point.X, $point.Y)) { throw 'Could not position the mouse over the button' }
     $hit = [WtsVisibilityNativeProbe]::WindowFromPoint($point)
     [uint32]$owner = 0
@@ -646,6 +768,122 @@ function Invoke-VisibilityActivation($Button, [bool]$Keyboard) {
             -not [WtsVisibilityNativeProbe]::IsWindow($Button.Handle) -or [WtsVisibilityNativeProbe]::Text($Button.Handle) -cne $caption
         }
     } "activation of $caption" 10
+}
+
+function Get-ButtonScreenSamplePoint($Button) {
+    $bounds = [WtsVisibilityNativeProbe]::WindowBounds($Button.Handle)
+    $dpi = [Math]::Max(96, [int][WtsVisibilityNativeProbe]::GetDpiForWindow($script:handle))
+    $inset = [Math]::Max(1, [int][Math]::Ceiling(4 * $dpi / 96))
+    $x = $bounds.Left + $inset
+    $y = [int](($bounds.Top + $bounds.Bottom) / 2)
+    if ($x -ge $bounds.Right -or $y -le $bounds.Top -or $y -ge $bounds.Bottom) { throw 'Visibility button has no usable background sample point' }
+    [pscustomobject]@{
+        X = $x
+        Y = $y
+        Dpi = $dpi
+        InsetLogical = 4
+        InsetPixels = $inset
+        Bounds = $bounds
+    }
+}
+
+function Invoke-VisibilityFrameProbe($Button, [bool]$BaselineMode) {
+    $handle = $Button.Handle
+    $initialCaption = [WtsVisibilityNativeProbe]::Text($handle)
+    if ($initialCaption -cne 'Unhide') { throw "Live frame probe started with $initialCaption instead of Unhide" }
+    $initialBounds = [WtsVisibilityNativeProbe]::WindowBounds($handle)
+    $point = Get-ButtonScreenSamplePoint $Button
+    [void][WtsVisibilityNativeProbe]::SetForegroundWindow($script:handle)
+    Start-Sleep -Milliseconds 100
+    $screenPoint = [WtsVisibilityNativeProbe+Point]::new()
+    $screenPoint.X = $point.X
+    $screenPoint.Y = $point.Y
+    $hit = [WtsVisibilityNativeProbe]::WindowFromPoint($screenPoint)
+    if ($hit -ne $handle) { throw 'Visibility button background sample point is not visible on screen' }
+    $sampler = $null
+    $measurement = $null
+    $completed = 0
+    $cycles = 8
+    $captions = [Collections.Generic.List[string]]::new()
+    $cleanupError = $null
+    try {
+        $sampler = [WtsVisibilityNativeProbe+ScreenSampler]::new($point.X, $point.Y, 1)
+        $sampler.Start()
+        foreach ($index in 1..$cycles) {
+            $expected = if (($index % 2) -eq 1) { 'Hide' } else { 'Unhide' }
+            [void][WtsVisibilityNativeProbe]::Send($handle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
+            Wait-For {
+                [WtsVisibilityNativeProbe]::IsWindow($handle) -and [WtsVisibilityNativeProbe]::Text($handle) -ceq $expected
+            } "BM_CLICK caption $expected" 10
+            if (-not (Rect-Same $initialBounds ([WtsVisibilityNativeProbe]::WindowBounds($handle)))) {
+                throw 'Visibility button bounds changed while Show all was enabled'
+            }
+            [void]$captions.Add($expected)
+            $completed++
+            Start-Sleep -Milliseconds 40
+        }
+        $measurement = $sampler.Stop()
+    } finally {
+        try {
+            if ($null -ne $sampler) { $sampler.Dispose() }
+        } catch {
+            $cleanupError = $_
+        }
+        try {
+            if ([WtsVisibilityNativeProbe]::IsWindow($handle) -and [WtsVisibilityNativeProbe]::Text($handle) -cne $initialCaption) {
+                [void][WtsVisibilityNativeProbe]::Send($handle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
+                Wait-For {
+                    [WtsVisibilityNativeProbe]::IsWindow($handle) -and [WtsVisibilityNativeProbe]::Text($handle) -ceq $initialCaption
+                } 'restoration of Unhide after live frame probe' 10
+            }
+        } catch {
+            if ($null -eq $cleanupError) { $cleanupError = $_ }
+        }
+        if ($null -ne $cleanupError) { throw $cleanupError }
+    }
+    if ($null -eq $measurement -or -not $measurement.DcReleased) { throw 'Live frame sampler did not release its screen DC' }
+    if ($measurement.Frames -le 0) { throw 'Live frame sampler captured no screen frames' }
+    if ($measurement.InvalidFrames -ne 0) { throw 'Live frame sampler could not read every screen sample' }
+    if (-not [WtsVisibilityNativeProbe]::IsWindow($handle) -or [WtsVisibilityNativeProbe]::Text($handle) -cne $initialCaption) {
+        throw 'Live frame probe did not leave the original Unhide caption'
+    }
+    $brightFrames = [int]$measurement.BrightFrames
+    $result = if ($brightFrames -gt 0) {
+        if ($BaselineMode) { 'REPRODUCED' } else { 'FAIL' }
+    } elseif ($BaselineMode) {
+        'INCONCLUSIVE'
+    } else {
+        'PASS'
+    }
+    [ordered]@{
+        result = $result
+        activation = 'BM_CLICK'
+        cycles = $cycles
+        completed_cycles = $completed
+        initial_caption = $initialCaption
+        final_caption = [WtsVisibilityNativeProbe]::Text($handle)
+        captions = @($captions.ToArray())
+        handle = $handle.ToInt64()
+        handle_stable = [WtsVisibilityNativeProbe]::IsWindow($handle)
+        bounds = Rect-Record $initialBounds
+        sample_point = [ordered]@{
+            x = $point.X
+            y = $point.Y
+            dpi = $point.Dpi
+            inset_logical = $point.InsetLogical
+            inset_pixels = $point.InsetPixels
+        }
+        sample_interval_ms = $measurement.IntervalMilliseconds
+        bright_threshold_rgb = 180
+        frames = $measurement.Frames
+        bright_frames = $brightFrames
+        invalid_frames = $measurement.InvalidFrames
+        first_bright_frame = $measurement.FirstBrightFrame
+        first_color = $measurement.FirstColor
+        last_color = $measurement.LastColor
+        dc_released = [bool]$measurement.DcReleased
+        limitation = if ($BaselineMode -and $brightFrames -eq 0) { 'No bright frame was observed in this bounded run; baseline reproduction is inconclusive.' } else { $null }
+    }
 }
 
 function Get-PointsForCard($Card) {
@@ -967,7 +1205,7 @@ function Select-SafeTarget([array]$Candidates) {
     throw 'No drag target stayed away from the viewport scroll edges'
 }
 
-function Invoke-VisibilityTest([array]$InitialRows, [switch]$Keyboard) {
+function Invoke-VisibilityTest([array]$InitialRows, [switch]$Keyboard, [bool]$BaselineMode = $false) {
     $fullExpected = @(Get-ExpectedVisibleRows '')
     Assert-RowSnapshot $InitialRows $fullExpected 'Initial exact rows'
     $initialSurface = Assert-NativeVisibilitySurface $InitialRows ''
@@ -1029,6 +1267,7 @@ function Invoke-VisibilityTest([array]$InitialRows, [switch]$Keyboard) {
     if ($unhideRow.Count -ne 1) { throw 'Hidden worktree was not shown by Show all' }
     $unhideButton = @(Find-VisibilityButton $unhideRow[0].Card 'Unhide')
     if ($unhideButton.Count -ne 1) { throw 'Show all did not expose one native Unhide button' }
+    $flicker = Invoke-VisibilityFrameProbe $unhideButton[0] $BaselineMode
     Invoke-VisibilityActivation $unhideButton[0] $Keyboard
     $afterUnhide = Wait-For-ExpectedRows $fullExpected 'Unhide exact rows' 10
     $afterUnhideSurface = Assert-NativeVisibilitySurface $afterUnhide '' $true
@@ -1053,7 +1292,7 @@ function Invoke-VisibilityTest([array]$InitialRows, [switch]$Keyboard) {
     Assert-FileSnapshot $visibilityAfterUnhide $script:visibilityPath 'Permanent Unhide visibility configuration'
     Assert-StableConfiguration
     [ordered]@{
-        result = 'PASS'
+        result = if ($flicker.result -eq 'FAIL') { 'FAIL' } elseif ($flicker.result -eq 'INCONCLUSIVE') { 'INCONCLUSIVE' } else { 'PASS' }
         top_button_class = 'Button'
         initial_surface = $initialSurface
         after_hide_surface = $afterHideSurface
@@ -1061,6 +1300,7 @@ function Invoke-VisibilityTest([array]$InitialRows, [switch]$Keyboard) {
         after_show_all_surface = $afterShowAllSurface
         after_show_all_restart_hidden_surface = $afterShowAllRestartHiddenSurface
         after_show_all_again_surface = $afterShowAllAgainSurface
+        flicker = $flicker
         after_unhide_surface = $afterUnhideSurface
         after_return_surface = $afterReturnSurface
         after_final_restart_surface = $afterFinalRestartSurface
@@ -1141,11 +1381,14 @@ try {
         [void](Assert-NativeVisibilitySurface $initialRows '')
     }
     if ($VisibilityOnly) {
-        $proof.visibility = Invoke-VisibilityTest $initialRows
+        $proof.visibility = Invoke-VisibilityTest $initialRows -BaselineMode ([bool]$Baseline)
+        if ($proof.visibility.result -eq 'FAIL') { throw 'Live visibility frame regression found bright screen frames' }
         $keyboardRows = Wait-For-ExpectedRows (Get-ExpectedVisibleRows '') 'rows before keyboard visibility checks' 10
-        $proof.keyboard_visibility = Invoke-VisibilityTest $keyboardRows -Keyboard
-        $proof.result = 'PASS'
-        Write-Host "PASS. Visibility controls passed. Evidence at $Output"
+        $proof.keyboard_visibility = Invoke-VisibilityTest $keyboardRows -Keyboard -BaselineMode ([bool]$Baseline)
+        if ($proof.keyboard_visibility.result -eq 'FAIL') { throw 'Live visibility frame regression found bright screen frames' }
+        $visibilityRuns = @($proof.visibility, $proof.keyboard_visibility)
+        $proof.result = if ($Baseline -and @($visibilityRuns | Where-Object { $_.result -eq 'INCONCLUSIVE' }).Count -gt 0) { 'INCONCLUSIVE' } else { 'PASS' }
+        Write-Host "$($proof.result). Visibility control evidence at $Output"
         return
     }
     $worktreeRows = @($initialRows | Where-Object { $_.Kind -eq 'worktree' })
@@ -1200,7 +1443,8 @@ try {
             metric = $metric
             edge_scroll = $edgeScroll
         }
-        $proof.visibility = Invoke-VisibilityTest $postPaintRows
+        $proof.visibility = Invoke-VisibilityTest $postPaintRows -BaselineMode ([bool]$Baseline)
+        if ($proof.visibility.result -eq 'FAIL') { throw 'Live visibility frame regression found bright screen frames' }
         $proof.result = 'PASS'
         Write-Host "PASS. Visibility regression and paint checks passed. Evidence at $Output"
     }
