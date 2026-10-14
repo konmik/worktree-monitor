@@ -189,7 +189,7 @@ unsafe fn item_height(card: &Card, dc: HDC, width: i32, dpi: i32, resources: &Re
         DisplayItem::Worktree { path, result, .. } => {
             let path_height = wrapped_height(dc, &path.display().to_string(), text_width, resources.fonts[0]).min(s(44));
             match result {
-                Ok(_) => s(80) + path_height,
+                Ok(_) => s(60) + path_height,
                 Err(error) => s(76) + path_height + wrapped_height(dc, &format!("ERROR ({:?}): {}", error.kind, error.message), text_width, resources.fonts[1]),
             }
         }
@@ -364,16 +364,6 @@ unsafe fn paint_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
                         resources.fonts[1], RED, line);
                     text(dc, &binaries, bounds(inset + addition_width + deletion_width + s(28), y, width - inset, y + s(20)),
                         resources.fonts[0], MUTED, line);
-                    if let Some(detail) = lines.get(4) {
-                        text(dc, detail, bounds(inset, y + s(21), width - inset, height - s(5)), resources.fonts[0], MUTED, line);
-                    }
-                    let total = u128::from(stats.counts.additions) + u128::from(stats.counts.deletions);
-                    let available = (width - inset * 2).max(0);
-                    if let Some(green_width) = (available as u128 * u128::from(stats.counts.additions)).checked_div(total) {
-                        let green_width = green_width as i32;
-                        fill(dc, bounds(inset, height - s(4), inset + green_width, height - s(2)), resources.green);
-                        fill(dc, bounds(inset + green_width, height - s(4), width - inset, height - s(2)), resources.red);
-                    }
                 }
                 Err(_) => {
                     text(dc, lines[0], bounds(inset, s(12), width - inset, s(36)), resources.fonts[2], WHITE, line);

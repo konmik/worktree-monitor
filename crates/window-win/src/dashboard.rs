@@ -46,12 +46,8 @@ impl DisplayItem {
             Self::Worktree { name, path, result } => match result {
                 Ok(stats) => {
                     let counts = stats.counts;
-                    let mut text = format!("{}\n{name}\n{}\n+{} -{} · binaries: {}", stats.head, path.display(),
-                        counts.additions, counts.deletions, counts.binaries);
-                    if counts.additions == 0 && counts.deletions == 0 {
-                        text.push_str(if counts.binaries == 0 { "\nZero measured changes" } else { "\nBinary changes · No measured line changes" });
-                    } else { text.push_str("\nMeasured line changes"); }
-                    text
+                    format!("{}\n{name}\n{}\n+{} -{} · binaries: {}", stats.head, path.display(),
+                        counts.additions, counts.deletions, counts.binaries)
                 }
                 Err(error) => format!("{name}\n{}\nCounts unavailable · binaries unavailable\nERROR ({:?}): {}", path.display(), error.kind, error.message),
             },

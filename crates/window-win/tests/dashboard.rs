@@ -69,8 +69,8 @@ fn empty_bare_scanning_and_zero_measurements_are_truthful() {
         tree("/zero", Head::Branch("main".into()), 0, 0, 0),
         tree("/binary", Head::Branch("main".into()), 0, 0, 2),
     ])] });
-    assert_eq!(rows.items[1].display.caption(), "branch main\nzero\n/zero\n+0 -0 · binaries: 0\nZero measured changes");
-    assert_eq!(rows.items[2].display.caption(), "branch main\nbinary\n/binary\n+0 -0 · binaries: 2\nBinary changes · No measured line changes");
+    assert_eq!(rows.items[1].display.caption(), "branch main\nzero\n/zero\n+0 -0 · binaries: 0");
+    assert_eq!(rows.items[2].display.caption(), "branch main\nbinary\n/binary\n+0 -0 · binaries: 2");
     assert!(matches!(rows.items[2].display, DisplayItem::Worktree { .. }));
 }
 
@@ -82,7 +82,7 @@ fn count_only_changes_keep_item_keys_and_row_failure_keeps_discovery_complete() 
     let before = DashboardView::from_snapshot(&first);
     let changed = DashboardView::from_snapshot(&second);
     assert_eq!(before.items.iter().map(|item| &item.key).collect::<Vec<_>>(), changed.items.iter().map(|item| &item.key).collect::<Vec<_>>());
-    assert_eq!(changed.items[1].display.caption(), "branch main\nrepo\n/repo\n+8 -3 · binaries: 2\nMeasured line changes");
+    assert_eq!(changed.items[1].display.caption(), "branch main\nrepo\n/repo\n+8 -3 · binaries: 2");
     second.repos[0].worktrees.as_mut().unwrap()[0].result = Err(failure());
     let after = DashboardView::from_snapshot(&second);
     assert_eq!(before.items.iter().map(|item| &item.key).collect::<Vec<_>>(), after.items.iter().map(|item| &item.key).collect::<Vec<_>>());
