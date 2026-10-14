@@ -457,7 +457,7 @@ function Get-NativeButtons {
 
 function Find-VisibilityButton($Card, [string]$Caption) {
     @((Get-NativeButtons) | Where-Object {
-        $_.Text -ceq $Caption -and (Rect-Overlaps $_.Bounds $Card.Bounds)
+        $_.Text -ceq $Caption -and $_.Parent -eq $Card.Handle
     })
 }
 
@@ -633,10 +633,19 @@ function Invoke-ButtonClick($Button) {
 }
 
 function Invoke-VisibilityActivation($Button, [bool]$Keyboard) {
+    $caption = [WtsVisibilityNativeProbe]::Text($Button.Handle)
+    $checked = [WtsVisibilityNativeProbe]::Send($Button.Handle, 0x00F0, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64()
     if ($Keyboard) {
         $result = Invoke-KeyboardButton $Button
         if ($result.result -cne 'PASS') { throw "Could not verify keyboard activation of $($Button.Text)" }
     } else { Invoke-ButtonClick $Button }
+    Wait-For {
+        if ($caption -ceq 'Show all') {
+            [WtsVisibilityNativeProbe]::Send($Button.Handle, 0x00F0, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64() -ne $checked
+        } else {
+            -not [WtsVisibilityNativeProbe]::IsWindow($Button.Handle) -or [WtsVisibilityNativeProbe]::Text($Button.Handle) -cne $caption
+        }
+    } "activation of $caption" 10
 }
 
 function Get-PointsForCard($Card) {
