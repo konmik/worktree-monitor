@@ -1,7 +1,7 @@
 # Local deployment
 
-Deploy the release build from the repository root:
+Deploy both release executables, `wts` and `wts-ui`, from the repository root:
 
 ```powershell
-cargo install --path crates/wts --locked
+cargo install --path crates/wts --locked --bins
 ```
