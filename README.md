@@ -1,6 +1,6 @@
 # wts
 
-Track changed lines across registered Git repositories and their worktrees. The Windows live view stays above other windows without taking focus from your editor.
+Track changed lines across registered Git repositories and their worktrees. The Windows hacker dashboard uses dark repository cards, colored change counters, branch labels, and summary metrics. It stays above other windows without taking focus from your editor.
 
 ## Run
 
@@ -38,5 +38,7 @@ pwsh -NoProfile -File scripts/smoke-window.ps1
 ```
 
 The smoke checks use isolated temporary repositories and configuration. The window check needs an interactive Windows desktop. It checks the real window, live counts, polling backoff, registry reload, and closing.
+
+`pwsh -NoProfile -File scripts/capture-window.ps1 -Client` creates three real Git fixtures, verifies native accessibility, and captures the actual dashboard without surrounding desktop content. It leaves the image and fixture evidence under the OpenCode temporary directory and closes its own window.
 
 To check discovery against an existing repository with multiple worktrees, run `pwsh -NoProfile -File scripts/smoke-worktrees.ps1 -Repository C:\src\project`. This check uses an isolated registry and does not create or modify worktrees.

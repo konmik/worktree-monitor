@@ -8,6 +8,7 @@ using System.Text;
 using System.Runtime.InteropServices;
 public static class WtsWindowProbe {
     public struct Rect { public int Left, Top, Right, Bottom; }
+    public struct ScrollInfo { public uint Size, Mask; public int Min, Max; public uint Page; public int Position, TrackPosition; }
     public delegate bool EnumProc(IntPtr handle, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumProc callback, IntPtr data);
@@ -22,6 +23,9 @@ public static class WtsWindowProbe {
     [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr handle, uint message, IntPtr wparam, IntPtr lparam);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr handle, IntPtr after, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr handle, out Rect rect);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr handle, out Rect rect);
+    [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr handle, int id);
+    [DllImport("user32.dll")] public static extern bool GetScrollInfo(IntPtr handle, int bar, ref ScrollInfo info);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr handle, uint message, IntPtr wparam, IntPtr lparam);
     public static IntPtr Find(uint pid) {
         IntPtr found = IntPtr.Zero;
@@ -47,15 +51,25 @@ public static class WtsWindowProbe {
         }, IntPtr.Zero);
         return all.ToString();
     }
-    public static IntPtr Edit(IntPtr parent) {
+    public static IntPtr FirstCard(IntPtr parent) {
         IntPtr found = IntPtr.Zero;
         EnumChildWindows(parent, (handle, data) => {
             var name = new StringBuilder(128);
             GetClassName(handle, name, name.Capacity);
-            if (name.ToString().Equals("EDIT", StringComparison.OrdinalIgnoreCase)) { found = handle; return false; }
+            if (name.ToString().Equals("STATIC", StringComparison.OrdinalIgnoreCase)) { found = handle; return false; }
             return true;
         }, IntPtr.Zero);
         return found;
+    }
+    public static int ScrollPosition(IntPtr handle) {
+        var info = new ScrollInfo { Size = (uint)Marshal.SizeOf(typeof(ScrollInfo)), Mask = 7 };
+        if (!GetScrollInfo(handle, 1, ref info)) { throw new InvalidOperationException("Viewport scroll state unavailable"); }
+        return info.Position;
+    }
+    public static int Top(IntPtr handle) {
+        Rect rect;
+        if (!GetWindowRect(handle, out rect)) { throw new InvalidOperationException("Card bounds unavailable"); }
+        return rect.Top;
     }
     public static int Height(IntPtr handle) {
         Rect rect;
@@ -119,35 +133,44 @@ try {
     $initial = [WtsWindowProbe]::Text($script:handle)
     if ($initial -notmatch '5s\b') { throw 'Initial polling interval is not 5s' }
     [IO.File]::WriteAllText((Join-Path $fixture 'initial.txt'), $initial)
-    $edit = [WtsWindowProbe]::Edit($script:handle)
-    if ($edit -eq [IntPtr]::Zero) { throw 'Status text control is missing' }
+    $viewport = [WtsWindowProbe]::GetDlgItem($script:handle, 1001)
+    if ($viewport -eq [IntPtr]::Zero) { throw 'Dashboard viewport is missing' }
     if (-not [WtsWindowProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, 600, 130, 22)) { throw 'Window resize failed' }
-    [void][WtsWindowProbe]::SendMessage($edit, 0x00B6, [IntPtr]::Zero, [IntPtr]1)
-    $beforeScroll = [WtsWindowProbe]::SendMessage($edit, 0x00CE, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64()
-    if ($beforeScroll -le 0) { throw 'Status text did not scroll in the resized window' }
+    $card = [WtsWindowProbe]::FirstCard($viewport)
+    if ($card -eq [IntPtr]::Zero) { throw 'Visible dashboard cards are missing' }
+    $cardBefore = [WtsWindowProbe]::Top($card) - [WtsWindowProbe]::Top($viewport)
+    [void][WtsWindowProbe]::SendMessage($viewport, 0x0115, [IntPtr]1, [IntPtr]::Zero)
+    $beforeScroll = [WtsWindowProbe]::ScrollPosition($viewport)
+    $cardScrolled = [WtsWindowProbe]::Top($card) - [WtsWindowProbe]::Top($viewport)
+    if ($beforeScroll -le 0 -or $cardScrolled -ge $cardBefore) { throw 'Viewport scroll did not move the real cards' }
     Wait-For {
         $text = [WtsWindowProbe]::Text($script:handle)
-        $line = [WtsWindowProbe]::SendMessage($edit, 0x00CE, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64()
-        $height = [WtsWindowProbe]::Height($edit)
+        $line = [WtsWindowProbe]::ScrollPosition($viewport)
+        $height = [WtsWindowProbe]::Height($viewport)
         $focus = [WtsWindowProbe]::GetForegroundWindow().ToInt64()
         [IO.File]::AppendAllText((Join-Path $fixture 'scroll-trace.txt'), "$line`t$height`t$focus`t$($text.Replace("`r", '').Replace("`n", '\n'))`n")
         $text -match '10s\b'
     } 'unchanged polling backoff to 10s' 15
-    $afterScroll = [WtsWindowProbe]::SendMessage($edit, 0x00CE, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64()
+    $afterScroll = [WtsWindowProbe]::ScrollPosition($viewport)
     [IO.File]::WriteAllText((Join-Path $fixture 'scroll.txt'), "before=$beforeScroll`nafter=$afterScroll`n")
     if ($afterScroll -ne $beforeScroll) { throw "Unchanged refresh reset the scroll position from $beforeScroll to $afterScroll" }
-    if (-not [WtsWindowProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, 600, 400, 22)) { throw 'Window resize restoration failed' }
+    $unchangedAnchor = [WtsWindowProbe]::Top($card) - [WtsWindowProbe]::Top($viewport)
+    if ($unchangedAnchor -ne $cardScrolled) { throw "Unchanged refresh moved the card anchor from $cardScrolled to $unchangedAnchor" }
     Wait-For { [WtsWindowProbe]::Text($script:handle) -match '20s\b' } 'unchanged polling backoff to 20s' 20
     Wait-For { [WtsWindowProbe]::Text($script:handle) -match '30s\b' } 'unchanged polling backoff to 30s' 30
     [IO.File]::WriteAllText((Join-Path $fixture 'backoff.txt'), [WtsWindowProbe]::Text($script:handle))
     [IO.File]::WriteAllText((Join-Path $repo 'lines.txt'), "before`nadded`nanother`n")
     Wait-For { Has-Counts 2 0 } 'live +2 -0 count'
     $updated = [WtsWindowProbe]::Text($script:handle)
+    if ([WtsWindowProbe]::ScrollPosition($viewport) -ne $beforeScroll) { throw 'Count-only refresh reset viewport scroll' }
+    $updatedAnchor = [WtsWindowProbe]::Top($card) - [WtsWindowProbe]::Top($viewport)
+    if ($updatedAnchor -ne $cardScrolled) { throw "Count-only refresh moved the card anchor from $cardScrolled to $updatedAnchor" }
     if ($updated -notmatch '5s\b') { throw 'Polling did not reset to 5s after a change' }
     $foregroundOnRefresh = [WtsWindowProbe]::GetForegroundWindow()
     if ($foregroundOnRefresh -eq $script:handle) { throw 'Refresh took foreground focus' }
     if (([WtsWindowProbe]::GetWindowLongPtr($script:handle, -20).ToInt64() -band 0x08000000) -ne 0) { throw 'Window cannot be activated by clicking' }
     [IO.File]::WriteAllText((Join-Path $fixture 'updated.txt'), $updated)
+    if (-not [WtsWindowProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, 600, 400, 22)) { throw 'Window resize restoration failed' }
     $validConfig = [IO.File]::ReadAllText($config)
     [IO.File]::WriteAllText($config, '{broken')
     Wait-For { [WtsWindowProbe]::Text($script:handle) -match '(?i)error' -and (Has-Counts 2 0) } 'invalid config with last-good rows retained'

@@ -1,3 +1,5 @@
+pub mod dashboard;
+
 #[cfg(windows)]
 mod native;
 

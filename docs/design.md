@@ -21,11 +21,24 @@ Two designs were compared. An independent reviewer agreed with the native Window
 | Native Win32 and installed Git | Selected. It follows Herald's existing Windows pattern and uses Git's own counting, ignore rules, attributes, and repository formats. |
 | eframe and libgit2 | Rejected. It adds a renderer and C dependency, differs from installed Git, and cannot interrupt one in-process diff. |
 
-The selected shape uses a normal captioned, resizable window. Herald's nonactivating show and topmost positioning prevent initial display and refresh from taking focus. Clicking the window may focus it for scrolling or selecting text. Its animation, layered popup, and full-monitor canvas are not copied.
+The selected shape uses a normal captioned, resizable window. Herald's nonactivating show and topmost positioning prevent initial display and refresh from taking focus. Clicking the window may focus it for scrolling. Its animation, layered popup, and full-monitor canvas are not copied.
 
 The competing design contributed the successful worktree object, immediate first publication, and last-good configuration behavior. A sortable table, custom process launcher, file watcher, and interchangeable Git engines were rejected as unnecessary scope.
 
 Codex's worktree and Git utilities supplied a second local precedent for subprocesses, NUL-delimited worktree records, inherited-environment isolation, and disabling filesystem-monitor helpers. WTS keeps ordinary ignore rules and binary attributes while disabling fsmonitor during polling.
+
+## Dashboard
+
+The Windows dashboard projects structured snapshots into summary metrics, repository sections, and worktree rows. It does not parse CLI output. Known totals include successful rows only, with incomplete data explicitly marked when scans fail. Zero changed lines are not presented as proof of a clean Git status.
+
+The visual design uses charcoal surfaces, monospace typography, acid-green additions, coral-red deletions and errors, and teal branch labels. Native owner-drawn controls retain real captions for accessibility. A clipped native viewport owns scrolling, while the header and summary remain fixed. There are no invented history charts, activity scores, or decorative animations.
+
+| Dashboard alternative | Choice |
+| --- | --- |
+| Native repository cards | Selected for clear hierarchy, colored counters, branch badges, and an actual visual redesign. |
+| Dark terminal ledger | Rejected because a recolored text buffer still makes long paths and worktrees harder to scan. |
+
+The terminal sketch contributed the vivid green and teal palette and WTS wordmark. Core scanning, configuration, CLI output, and monitor ownership remain unchanged. The viewport preserves scroll on unchanged and count-only updates.
 
 ## Evidence and tradeoffs
 

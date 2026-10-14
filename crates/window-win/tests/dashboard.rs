@@ -1,0 +1,105 @@
+use std::path::PathBuf;
+use window_win::dashboard::{DashboardView, DisplayItem, Health, ItemKey};
+use wts_core::{Counts, Error, ErrorKind, Head, RepoEntry, Snapshot, WorktreeEntry, WorktreeStats};
+
+fn tree(path: &str, head: Head, additions: u64, deletions: u64, binaries: u64) -> WorktreeEntry {
+    WorktreeEntry { path: path.into(), result: Ok(WorktreeStats { head, counts: Counts { additions, deletions, binaries } }) }
+}
+
+fn repo(trees: Vec<WorktreeEntry>) -> RepoEntry {
+    RepoEntry { common_dir: "/repo/.git".into(), path: "/repo".into(), worktrees: Ok(trees) }
+}
+
+fn failure() -> Error { Error { kind: ErrorKind::Git, message: "Cannot inspect worktree".into() } }
+
+#[test]
+fn maps_totals_without_u64_overflow() {
+    let snapshot = Snapshot { config_error: None, repos: vec![repo(vec![
+        tree("/repo", Head::Branch("main".into()), u64::MAX, 9, 2),
+        tree("/second", Head::Branch("topic".into()), 7, 3, 1),
+    ])] };
+    let view = DashboardView::from_snapshot(&snapshot);
+    assert_eq!([view.totals.repositories.value, view.totals.worktrees.value, view.totals.additions.value,
+        view.totals.deletions.value, view.totals.binaries.value], [Some(1), Some(2), Some(18446744073709551622), Some(12), Some(3)]);
+    assert_eq!(view.health, Health::Live);
+    assert!(!view.totals.additions.partial);
+    assert_eq!(view.items[1].key, ItemKey::Worktree(PathBuf::from("/repo/.git"), PathBuf::from("/repo")));
+}
+
+#[test]
+fn partial_errors_preserve_known_counts_and_missing_values() {
+    let mut entries = vec![tree("/repo", Head::Branch("main".into()), 4, 2, 1)];
+    entries.push(WorktreeEntry { path: "/broken".into(), result: Err(failure()) });
+    let snapshot = Snapshot { config_error: Some(Error { kind: ErrorKind::Config, message: "Invalid config".into() }),
+        repos: vec![repo(entries), RepoEntry { common_dir: "/lost/.git".into(), path: "/lost".into(), worktrees: Err(failure()) }] };
+    let view = DashboardView::from_snapshot(&snapshot);
+    assert_eq!([view.totals.repositories.value, view.totals.worktrees.value, view.totals.additions.value,
+        view.totals.deletions.value, view.totals.binaries.value], [Some(2), Some(2), Some(4), Some(2), Some(1)]);
+    assert_eq!([view.totals.repositories.partial, view.totals.worktrees.partial, view.totals.additions.partial,
+        view.totals.deletions.partial, view.totals.binaries.partial], [true; 5]);
+    assert_eq!(view.health.caption(20), "ERROR · Polling interval 20s");
+    assert!(view.items[0].display.caption().contains("Using last good registrations."));
+    assert_eq!(view.items[3].display.caption(), "broken\n/broken\nCounts unavailable · binaries unavailable\nERROR (Git): Cannot inspect worktree");
+    assert_eq!(view.items[4].display.caption(), "lost · ? worktrees");
+}
+
+#[test]
+fn branch_detached_and_unborn_are_distinct() {
+    let snapshot = Snapshot { config_error: None, repos: vec![repo(vec![
+        tree("/main", Head::Branch("main".into()), 1, 2, 0),
+        tree("/detached", Head::Detached("abc123".into()), 0, 0, 0),
+        tree("/new", Head::Unborn("next".into()), 0, 0, 0),
+    ])] };
+    let view = DashboardView::from_snapshot(&snapshot);
+    let heads: Vec<_> = view.items.iter().skip(1).map(|item| item.display.caption().lines().next().unwrap().to_owned()).collect();
+    assert_eq!(heads, ["branch main", "detached abc123", "unborn next"]);
+}
+
+#[test]
+fn empty_bare_scanning_and_zero_measurements_are_truthful() {
+    let empty = DashboardView::from_snapshot(&Snapshot::default());
+    assert_eq!(empty.items[0].display.caption(), "No registered repositories.\n");
+    assert_eq!(empty.totals.worktrees.value, Some(0));
+    assert_eq!(empty.health.caption(5), "LIVE · Polling interval 5s");
+    let scanning = DashboardView::scanning();
+    assert_eq!(scanning.totals.repositories.value, None);
+    let bare = DashboardView::from_snapshot(&Snapshot { repos: vec![repo(vec![])], config_error: None });
+    assert_eq!(bare.items[0].display.caption(), "repo · 0 worktrees\nNo working trees (bare repository).");
+    let rows = DashboardView::from_snapshot(&Snapshot { config_error: None, repos: vec![repo(vec![
+        tree("/zero", Head::Branch("main".into()), 0, 0, 0),
+        tree("/binary", Head::Branch("main".into()), 0, 0, 2),
+    ])] });
+    assert_eq!(rows.items[1].display.caption(), "branch main\nzero\n/zero\n+0 -0 · binaries: 0\nZero measured changes");
+    assert_eq!(rows.items[2].display.caption(), "branch main\nbinary\n/binary\n+0 -0 · binaries: 2\nBinary changes · No measured line changes");
+    assert!(matches!(rows.items[2].display, DisplayItem::Worktree { .. }));
+}
+
+#[test]
+fn count_only_changes_keep_item_keys_and_row_failure_keeps_discovery_complete() {
+    let first = Snapshot { repos: vec![repo(vec![tree("/repo", Head::Branch("main".into()), 1, 0, 0)])], config_error: None };
+    let mut second = first.clone();
+    second.repos[0].worktrees = Ok(vec![tree("/repo", Head::Branch("main".into()), 8, 3, 2)]);
+    let before = DashboardView::from_snapshot(&first);
+    let changed = DashboardView::from_snapshot(&second);
+    assert_eq!(before.items.iter().map(|item| &item.key).collect::<Vec<_>>(), changed.items.iter().map(|item| &item.key).collect::<Vec<_>>());
+    assert_eq!(changed.items[1].display.caption(), "branch main\nrepo\n/repo\n+8 -3 · binaries: 2\nMeasured line changes");
+    second.repos[0].worktrees.as_mut().unwrap()[0].result = Err(failure());
+    let after = DashboardView::from_snapshot(&second);
+    assert_eq!(before.items.iter().map(|item| &item.key).collect::<Vec<_>>(), after.items.iter().map(|item| &item.key).collect::<Vec<_>>());
+    assert!(!after.totals.worktrees.partial);
+    assert!(after.totals.additions.partial);
+    assert_eq!(after.totals.additions.value, Some(0));
+}
+
+#[test]
+fn repository_failure_does_not_invent_discovered_worktrees() {
+    let snapshot = Snapshot { config_error: None, repos: vec![RepoEntry {
+        common_dir: "/lost/.git".into(), path: "/lost".into(), worktrees: Err(failure()),
+    }] };
+    let view = DashboardView::from_snapshot(&snapshot);
+    assert_eq!([view.totals.repositories.partial, view.totals.worktrees.partial, view.totals.additions.partial], [false, true, true]);
+    let captions: Vec<_> = view.metrics().iter().map(DisplayItem::caption).collect();
+    assert_eq!(captions, ["REPOSITORIES\n1\nRegistered", "WORKTREES\n0\nKnown · partial", "LINE CHANGES\n+0 -0\nKnown · partial"]);
+    assert_eq!(view.items[0].display.caption(), "lost · ? worktrees");
+    assert_eq!(view.items[1].display.caption(), "Repository error · counts unavailable\n/lost\nGit: Cannot inspect worktree");
+}
