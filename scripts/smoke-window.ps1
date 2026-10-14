@@ -27,6 +27,13 @@ public static class WtsWindowProbe {
     [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr handle, int id);
     [DllImport("user32.dll")] public static extern bool GetScrollInfo(IntPtr handle, int bar, ref ScrollInfo info);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr handle, uint message, IntPtr wparam, IntPtr lparam);
+    [DllImport("kernel32.dll")] public static extern uint GetConsoleProcessList(uint[] processIds, uint count);
+    public static bool SharesConsole(uint processId) {
+        var ids = new uint[256];
+        var count = GetConsoleProcessList(ids, (uint)ids.Length);
+        if (count == 0 || count > ids.Length) { throw new InvalidOperationException("Console process list unavailable"); }
+        return Array.IndexOf(ids, processId, 0, (int)count) >= 0;
+    }
     public static IntPtr Find(uint pid) {
         IntPtr found = IntPtr.Zero;
         EnumWindows((handle, data) => {
@@ -125,6 +132,7 @@ try {
     $process = Start-Process -FilePath $Binary -ArgumentList '--live' -NoNewWindow -PassThru
     $script:handle = [IntPtr]::Zero
     Wait-For { $script:handle = [WtsWindowProbe]::Find([uint32]$process.Id); $script:handle -ne [IntPtr]::Zero } 'visible window'
+    if ([WtsWindowProbe]::SharesConsole([uint32]$process.Id)) { throw 'Live window is still attached to the launching terminal' }
     $initialStyle = [WtsWindowProbe]::GetWindowLongPtr($script:handle, -20).ToInt64()
     $foregroundOnShow = [WtsWindowProbe]::GetForegroundWindow()
     if (($initialStyle -band 8) -eq 0) { throw 'Window is not always on top' }
