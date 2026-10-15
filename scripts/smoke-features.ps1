@@ -20,6 +20,7 @@ public static class WtsFeatureProbe {
     public struct Rect { public int Left, Top, Right, Bottom; }
     public struct Size { public int Width, Height; }
     public struct Point { public int X, Y; }
+    public struct GuiInfo { public uint Size, Flags; public IntPtr Active, Focus, Capture, MenuOwner, MoveSize, Caret; public Rect CaretRect; }
     public delegate bool EnumProc(IntPtr window, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumProc callback, IntPtr data);
@@ -27,8 +28,13 @@ public static class WtsFeatureProbe {
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr window, StringBuilder text, int count);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr window, StringBuilder text, int count);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr window, int id);
+    [DllImport("user32.dll")] public static extern bool GetGUIThreadInfo(uint thread, ref GuiInfo info);
+    [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
     [DllImport("user32.dll")] public static extern bool EnableWindow(IntPtr window, bool enabled);
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
+    [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point point);
+    [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr window, uint flags);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr window);
     [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr window);
@@ -285,6 +291,95 @@ function Write-Placement($Value) {
     $Value | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $placementPath -Encoding utf8NoBOM
 }
 
+function Move-Pointer([int]$X, [int]$Y) {
+    Wait-For { [WtsFeatureProbe]::SetCursorPos($X, $Y) } 'pointer move'
+}
+
+function Click-Control([IntPtr]$Control) {
+    $rect = Bounds $Control
+    Move-Pointer ([int](($rect.Left + $rect.Right) / 2)) ([int](($rect.Top + $rect.Bottom) / 2))
+    [WtsFeatureProbe]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+    [WtsFeatureProbe]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+}
+
+function Assert-Hover {
+    $cursor = [WtsFeatureProbe+Point]::new()
+    [void][WtsFeatureProbe]::GetCursorPos([ref]$cursor)
+    $toggle = [WtsFeatureProbe]::GetDlgItem($script:window, 1004)
+    try {
+        foreach ($width in @(760, 380)) {
+            [void][WtsFeatureProbe]::SetWindowPos($script:window, [IntPtr]::Zero, $target.Left, $target.Top, $width, 540, 20)
+            $button = [WtsFeatureProbe]::FindCount($script:window, 'Hide')
+            $cardBounds = Bounds $script:card
+            $toggleBounds = Bounds $toggle
+            $buttonBounds = Bounds $button
+            Move-Pointer ($target.Left - 20) ($target.Top - 20)
+            Wait-For { -not [WtsFeatureProbe]::IsWindowVisible($toggle) -and -not [WtsFeatureProbe]::IsWindowVisible($button) } 'controls hidden outside window'
+            Move-Pointer ($target.Left + 20) ($target.Top + 400)
+            Wait-For { [WtsFeatureProbe]::IsWindowVisible($toggle) -and [WtsFeatureProbe]::IsWindowVisible($button) } 'controls visible inside window'
+            if (-not (Same-Bounds $cardBounds (Bounds $script:card)) -or -not (Same-Bounds $toggleBounds (Bounds $toggle)) -or
+                -not (Same-Bounds $buttonBounds (Bounds $button))) { throw 'Hover changed layout' }
+            foreach ($control in @($script:card, $toggle, $button, [WtsFeatureProbe]::GetDlgItem($script:window, 1002))) {
+                $rect = Bounds $control
+                Move-Pointer ([int](($rect.Left + $rect.Right) / 2)) ([int](($rect.Top + $rect.Bottom) / 2))
+                $sample = 0
+                $deadline = [DateTime]::UtcNow.AddSeconds(20)
+                while ($sample -lt 10 -and [DateTime]::UtcNow -lt $deadline) {
+                    $position = [WtsFeatureProbe+Point]::new()
+                    [void][WtsFeatureProbe]::GetCursorPos([ref]$position)
+                    $under = [WtsFeatureProbe]::WindowFromPoint($position)
+                    if ([WtsFeatureProbe]::GetAncestor($under, 2) -ne $script:window) {
+                        Move-Pointer ([int](($rect.Left + $rect.Right) / 2)) ([int](($rect.Top + $rect.Bottom) / 2))
+                        Wait-For { [WtsFeatureProbe]::IsWindowVisible($toggle) -and [WtsFeatureProbe]::IsWindowVisible($button) } 'controls after pointer return'
+                        continue
+                    }
+                    if (-not [WtsFeatureProbe]::IsWindowVisible($toggle) -or -not [WtsFeatureProbe]::IsWindowVisible($button)) {
+                        throw 'Child transition hid controls while pointer remained inside window'
+                    }
+                    $sample++
+                    Start-Sleep -Milliseconds 20
+                }
+                if ($sample -ne 10) { throw 'Pointer did not remain inside the test window' }
+            }
+            Click-Control $button
+            Wait-For { [WtsFeatureProbe]::FindCount($script:window, $expectedCaption) -eq [IntPtr]::Zero } 'Hide click'
+            Click-Control $toggle
+            Wait-For {
+                $script:card = [WtsFeatureProbe]::FindCount($script:window, $expectedCaption)
+                $script:card -ne [IntPtr]::Zero
+            } 'Show all click'
+            Move-Pointer ($target.Left - 20) ($target.Top - 20)
+            Wait-For { -not [WtsFeatureProbe]::IsWindowVisible($toggle) } 'checked toggle hidden'
+            $thread = [WtsFeatureProbe]::GetWindowThreadProcessId($script:window, [ref]([uint32]0))
+            $focus = [WtsFeatureProbe+GuiInfo]::new()
+            $focus.Size = [Runtime.InteropServices.Marshal]::SizeOf($focus)
+            if (-not [WtsFeatureProbe]::GetGUIThreadInfo($thread, [ref]$focus) -or
+                $focus.Focus -eq $toggle -or -not [WtsFeatureProbe]::IsWindowVisible($focus.Focus)) { throw 'Focus remained on a hidden control' }
+            if ([WtsFeatureProbe]::SendMessage($toggle, 0x00f0, [IntPtr]::Zero, [IntPtr]::Zero) -ne [IntPtr]1) { throw 'Hover reset checkbox state' }
+            Move-Pointer ($target.Left + 20) ($target.Top + 400)
+            Wait-For { [WtsFeatureProbe]::IsWindowVisible($toggle) } 'checked toggle restored'
+            $unhide = [WtsFeatureProbe]::FindCount($script:window, 'Unhide')
+            Click-Control $unhide
+            Wait-For { [WtsFeatureProbe]::FindCount($script:window, 'Hide') -ne [IntPtr]::Zero } 'Unhide click'
+            Click-Control $toggle
+            Wait-For { [WtsFeatureProbe]::SendMessage($toggle, 0x00f0, [IntPtr]::Zero, [IntPtr]::Zero) -eq [IntPtr]::Zero } 'Show all unchecked'
+            [void][WtsFeatureProbe]::SetWindowPos($script:window, [IntPtr]::Zero, $target.Left, $target.Top, $width, 100, 20)
+            $scrollbar = [WtsFeatureProbe]::GetDlgItem($script:window, 1003)
+            Wait-For { [WtsFeatureProbe]::IsWindowVisible($scrollbar) } 'scrollbar visible'
+            $rect = Bounds $scrollbar
+            Move-Pointer ([int](($rect.Left + $rect.Right) / 2)) ([int](($rect.Top + $rect.Bottom) / 2))
+            for ($sample = 0; $sample -lt 10; $sample++) {
+                if (-not [WtsFeatureProbe]::IsWindowVisible($toggle)) { throw 'Scrollbar transition hid controls' }
+                Start-Sleep -Milliseconds 20
+            }
+            $proof.checks += [ordered]@{ name = 'whole-window hover'; width = $width; stable_layout = $true; child_transitions = $true; clicks = $true; checkbox_preserved = $true }
+        }
+    } finally {
+        [void][WtsFeatureProbe]::SetWindowPos($script:window, [IntPtr]::Zero, $target.Left, $target.Top, 760, 540, 20)
+        [void][WtsFeatureProbe]::SetCursorPos($cursor.X, $cursor.Y)
+    }
+}
+
 function Assert-Colors {
     $outer = Bounds $script:window
     $card = Bounds $script:card
@@ -373,6 +468,7 @@ try {
     [void][WtsFeatureProbe]::SendMessage($script:window, 0x0232, [IntPtr]::Zero, [IntPtr]::Zero)
     $savedMove = Get-Content $placementPath -Raw | ConvertFrom-Json
     if (-not (Same-Bounds $target $savedMove.normal)) { throw 'Completed move did not save its bounds' }
+    Assert-Hover
     Assert-Colors
     Close-Window
     Start-Window 'normal restart'

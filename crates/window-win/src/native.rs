@@ -19,7 +19,7 @@ use windows_sys::Win32::UI::Controls::{SetScrollInfo, SetWindowTheme, DRAWITEMST
     ODT_BUTTON, ODT_STATIC, ODS_CHECKED, ODS_DISABLED, ODS_FOCUS, ODS_GRAYED,
     ODS_HOTLIGHT, ODS_SELECTED, BST_CHECKED, WM_MOUSELEAVE};
 use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetCapture, GetFocus, IsWindowEnabled, ReleaseCapture, SetCapture, SetFocus};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetCapture, GetFocus, IsWindowEnabled, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE, TME_NONCLIENT};
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use wts_core::{Monitor, MonitorUpdate, Service};
@@ -132,6 +132,7 @@ struct State {
     visibility_write_failed: bool,
     visibility_check: Instant,
     show_all_button: HWND,
+    controls_visible: bool,
     next_action_id: usize,
     drag: Option<Drag>,
 }
@@ -189,7 +190,7 @@ unsafe fn create_card(parent: HWND, id: usize, action_id: Option<usize>, key: Op
     SendMessageW(window, WM_SETFONT, resources.font as WPARAM, 0);
     let action = if let Some(action_id) = action_id {
         let action = CreateWindowExW(0, wide("BUTTON").as_ptr(), wide("Hide").as_ptr(),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32, 0, 0, 1, 1, window,
+            WS_CHILD | WS_TABSTOP | BS_OWNERDRAW as u32, 0, 0, 1, 1, window,
             action_id as _, GetModuleHandleW(null()), null());
         if action.is_null() {
             DestroyWindow(window);
@@ -242,6 +243,7 @@ unsafe fn reconcile(state: &mut State) -> bool {
             if let Some(mut card) = create_card(state.viewport, state.next_card_id, action_id, Some(item.key.clone()), item.display.clone(), resources) {
                 state.next_card_id += 1;
                 set_action(&mut card, &state.visibility);
+                if let Some(action) = card.action { ShowWindow(action, if state.controls_visible { SW_SHOWNOACTIVATE } else { SW_HIDE }); }
                 state.cards.push(card);
             } else { succeeded = false; break; }
         }
@@ -941,7 +943,37 @@ unsafe fn edge_hit_transparent(window: HWND, point: POINT) -> bool {
     resize_hit(root, point).is_some()
 }
 
+unsafe fn update_control_visibility(window: HWND, state: &mut State) {
+    let mut point: POINT = std::mem::zeroed();
+    let visible = IsWindowVisible(window) != 0 && IsIconic(window) == 0 && GetCursorPos(&mut point) != 0
+        && GetAncestor(WindowFromPoint(point), GA_ROOT) == window;
+    if visible == state.controls_visible { return; }
+    state.controls_visible = visible;
+    let focus = GetFocus();
+    if !visible && (focus == state.show_all_button || state.cards.iter().any(|card| card.action == Some(focus))) {
+        SetFocus(if GetForegroundWindow() == window && IsIconic(window) == 0 { state.viewport } else { null_mut() });
+    }
+    ShowWindow(state.show_all_button, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE });
+    for card in &state.cards {
+        if let Some(action) = card.action { ShowWindow(action, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE }); }
+    }
+}
+
+unsafe fn track_controls(window: HWND, message: u32) {
+    if !matches!(message, WM_MOUSEMOVE | WM_NCMOUSEMOVE | WM_MOUSELEAVE | WM_NCMOUSELEAVE) { return; }
+    if matches!(message, WM_MOUSEMOVE | WM_NCMOUSEMOVE) {
+        let mut tracking = TRACKMOUSEEVENT { cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+            dwFlags: TME_LEAVE | if message == WM_NCMOUSEMOVE { TME_NONCLIENT } else { 0 },
+            hwndTrack: window, dwHoverTime: 0 };
+        TrackMouseEvent(&mut tracking);
+    }
+    let root = GetAncestor(window, GA_ROOT);
+    let pointer = GetWindowLongPtrW(root, GWLP_USERDATA) as *mut State;
+    if !pointer.is_null() { update_control_visibility(root, &mut *pointer); }
+}
+
 unsafe extern "system" fn edge_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
+    track_controls(window, message);
     if message == WM_NCDESTROY { RemoveWindowSubclass(window, Some(edge_procedure), 1); }
     if message == WM_NCHITTEST && edge_hit_transparent(window, mouse_point(lparam)) {
         return HTTRANSPARENT as LRESULT;
@@ -1017,6 +1049,7 @@ unsafe fn paint_scrollbar(window: HWND, state: &State, message: u32, wparam: WPA
 }
 
 unsafe extern "system" fn scrollbar_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, data: usize) -> LRESULT {
+    track_controls(window, message);
     if message == WM_NCDESTROY { RemoveWindowSubclass(window, Some(scrollbar_procedure), 1); }
     if message == WM_NCHITTEST {
         let point = mouse_point(lparam);
@@ -1214,7 +1247,7 @@ unsafe fn command(window: HWND, state: &mut State, wparam: WPARAM, lparam: LPARA
         if let Some((repository, worktree)) = target {
             let focused = GetFocus() == control;
             toggle_visibility(GetParent(window), state, repository, worktree);
-            if focused && GetFocus() != control { SetFocus(state.show_all_button); }
+            if focused && GetFocus() != control { SetFocus(if state.controls_visible { state.show_all_button } else { state.viewport }); }
             return 0;
         }
     }
@@ -1242,6 +1275,7 @@ unsafe fn finish_drag(pointer: *mut State, point: POINT) {
 }
 
 unsafe extern "system" fn card_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
+    track_controls(window, message);
     if matches!(message, WM_COMMAND | WM_DRAWITEM | WM_CTLCOLORBTN) {
         let viewport = GetParent(window);
         if !viewport.is_null() && !(GetWindowLongPtrW(viewport, GWLP_USERDATA) as *mut State).is_null() {
@@ -1300,6 +1334,7 @@ unsafe extern "system" fn card_procedure(window: HWND, message: u32, wparam: WPA
 }
 
 unsafe extern "system" fn show_all_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, data: usize) -> LRESULT {
+    track_controls(window, message);
     if message == WM_ERASEBKGND { return 1; }
     if message == WM_NCDESTROY { RemoveWindowSubclass(window, Some(show_all_procedure), 1); }
     if message == WM_NCHITTEST && edge_hit_transparent(window, mouse_point(lparam)) {
@@ -1350,6 +1385,7 @@ unsafe fn callback(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, v
 }
 
 unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, pointer: *mut State, viewport: bool) -> LRESULT {
+    track_controls(window, message);
     match message {
         WM_NCCALCSIZE if !viewport => 0,
         WM_NCACTIVATE if !viewport => DefWindowProcW(window, message, wparam, -1),
@@ -1410,6 +1446,7 @@ unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, p
         }
         WM_TIMER if !viewport => {
             let state = &mut *pointer;
+            update_control_visibility(window, state);
             if state.scrollbar_idle.is_some_and(|deadline| Instant::now() >= deadline)
                 && GetCapture() != state.scrollbar {
                 ShowWindow(state.scrollbar, SW_HIDE);
@@ -1513,7 +1550,7 @@ unsafe fn controls(window: HWND, state: &mut State) -> bool {
         state.fixed.push(card);
     }
     state.show_all_button = CreateWindowExW(0, wide("BUTTON").as_ptr(), wide("Show all").as_ptr(),
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX as u32, 0, 0, 1, 1, window, 1004 as _, GetModuleHandleW(null()), null());
+        WS_CHILD | WS_TABSTOP | BS_AUTOCHECKBOX as u32, 0, 0, 1, 1, window, 1004 as _, GetModuleHandleW(null()), null());
     if state.show_all_button.is_null() { return false; }
     if SetWindowSubclass(state.show_all_button, Some(show_all_procedure), 1, state as *const State as usize) == 0 { return false; }
     SendMessageW(state.show_all_button, WM_SETFONT, resources.font as WPARAM, 0);
@@ -1549,7 +1586,7 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
         dpi: 96, scroll: 0, content: 0, page: 0, scrollbar_idle: None, width: 0, wheel_remainder: 0, next_card_id: 2000, failure: None,
         order_path, placement_path, starting: true, order, order_warning, order_write_failed: false, order_check: Instant::now(),
         visibility_path, visibility, visibility_warning, visibility_write_failed: false, visibility_check: Instant::now(),
-        show_all_button: null_mut(), next_action_id: 3000, drag: None });
+        show_all_button: null_mut(), controls_visible: false, next_action_id: 3000, drag: None });
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let instance = GetModuleHandleW(null());
