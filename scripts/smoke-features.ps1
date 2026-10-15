@@ -328,12 +328,16 @@ function Assert-Hover {
                     $position = [WtsFeatureProbe+Point]::new()
                     [void][WtsFeatureProbe]::GetCursorPos([ref]$position)
                     $under = [WtsFeatureProbe]::WindowFromPoint($position)
-                    if ([WtsFeatureProbe]::GetAncestor($under, 2) -ne $script:window) {
+                    if ([WtsFeatureProbe]::GetAncestor($under, 2) -ne $script:window -or
+                        $position.X -ne [int](($rect.Left + $rect.Right) / 2) -or $position.Y -ne [int](($rect.Top + $rect.Bottom) / 2)) {
                         Move-Pointer ([int](($rect.Left + $rect.Right) / 2)) ([int](($rect.Top + $rect.Bottom) / 2))
                         Wait-For { [WtsFeatureProbe]::IsWindowVisible($toggle) -and [WtsFeatureProbe]::IsWindowVisible($button) } 'controls after pointer return'
                         continue
                     }
                     if (-not [WtsFeatureProbe]::IsWindowVisible($toggle) -or -not [WtsFeatureProbe]::IsWindowVisible($button)) {
+                        $currentPosition = [WtsFeatureProbe+Point]::new()
+                        [void][WtsFeatureProbe]::GetCursorPos([ref]$currentPosition)
+                        if ($currentPosition.X -ne $position.X -or $currentPosition.Y -ne $position.Y) { continue }
                         throw 'Child transition hid controls while pointer remained inside window'
                     }
                     $sample++
