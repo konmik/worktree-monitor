@@ -290,7 +290,7 @@ function Assert-Colors {
     $card = Bounds $script:card
     $dpi = [WtsFeatureProbe]::GetDpiForWindow($script:card)
     $x = $card.Left - $outer.Left + [int][Math]::Floor(14 * $dpi / 96)
-    $top = $card.Top - $outer.Top + [int][Math]::Floor(8 * $dpi / 96) + [int][Math]::Round(12 * 1.2 * $dpi / 96)
+    $top = $card.Top - $outer.Top + [int][Math]::Round(12 * 1.2 * $dpi / 96)
     $bottom = $card.Bottom - $outer.Top - [int][Math]::Floor(8 * $dpi / 96)
     $image = [Drawing.Bitmap]::new($outer.Right - $outer.Left, $outer.Bottom - $outer.Top)
     $graphics = [Drawing.Graphics]::FromImage($image)
@@ -304,7 +304,7 @@ function Assert-Colors {
         $buttonBounds = Bounds $button
         $corner = $image.GetPixel($buttonBounds.Left - $outer.Left, $buttonBounds.Top - $outer.Top)
         if ($corner.R -ne 11 -or $corner.G -ne 16 -or $corner.B -ne 18) { throw "Hide corner differs from terminal background" }
-        $headingTop = $card.Top - $outer.Top + [int][Math]::Floor(8 * $dpi / 96)
+        $headingTop = $card.Top - $outer.Top
         $proof.rendered_font = [WtsFeatureProbe]::AssertFont($script:window, $script:card, $image, $x, $headingTop)
         $rejectedShift = $false
         try { [void][WtsFeatureProbe]::AssertFont($script:window, $script:card, $image, $x, $headingTop, 1) }

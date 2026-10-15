@@ -141,7 +141,7 @@ public static class WtsResizeProbe {
                 DrawText(dc, "Mg", 2, ref cell, 0x0c20);
                 int advance = (int)Math.Round(12 * 1.2 * dpi / 96, MidpointRounding.AwayFromZero);
                 int lineCount = 2 + lines.Count + (card.Right < 360 * dpi / 96 ? 1 : 0);
-                int expected = 2 * (8 * dpi / 96) + (lineCount - 1) * advance + cell.Bottom;
+                int expected = 8 * dpi / 96 + (lineCount - 1) * advance + cell.Bottom;
                 if (card.Bottom != expected) throw new InvalidOperationException("Wrapped error height " + card.Bottom + " disagrees with independently measured height " + expected + " at DPI " + dpi + " and width " + card.Right);
                 if (verifyPixels) {
                     int textHeight = (lines.Count - 1) * advance + cell.Bottom;
@@ -173,7 +173,7 @@ public static class WtsResizeProbe {
                             }
                         }
                         using (var actual = Capture(handle)) {
-                            int top = 8 * dpi / 96 + 2 * advance;
+                            int top = 2 * advance;
                             int ink = 0;
                             for (int y = 0; y < textHeight; y++) {
                                 for (int x = 0; x < measured.Right; x++) {

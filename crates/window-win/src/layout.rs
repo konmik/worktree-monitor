@@ -1,5 +1,5 @@
 use std::io;
-use crate::typography::Typography;
+use crate::typography::{RowSpacing, Typography};
 use std::sync::{Mutex, MutexGuard};
 use yoga_sys::*;
 use yoga_sys::YGDirection::YGDirectionLTR;
@@ -31,6 +31,7 @@ pub(crate) struct DashboardLayout {
 pub(crate) struct RowSize {
     pub height: i32,
     pub action: bool,
+    pub spacing: RowSpacing,
 }
 
 pub(crate) struct RowLayout {
@@ -144,14 +145,14 @@ pub(crate) fn content(width: i32, dpi: i32, typography: Typography, sizes: &[Row
             let height = size.height.max(1);
             YGNodeStyleSetHeight(row, height as f32);
             YGNodeStyleSetFlexShrink(row, 0.0);
-            if index + 1 < sizes.len() { YGNodeStyleSetMargin(row, YGEdgeBottom, s(8) as f32); }
+            if index + 1 < sizes.len() { YGNodeStyleSetMargin(row, YGEdgeBottom, size.spacing.gap_after as f32); }
             let action = if size.action {
                 let action = tree.child(row)?;
                 let action_width = s(78).min(width);
                 let action_height = typography.cell.max(typography.advance).min(height);
                 YGNodeStyleSetPositionType(action, YGPositionTypeAbsolute);
                 YGNodeStyleSetPosition(action, YGEdgeRight, s(10).min(width - action_width) as f32);
-                YGNodeStyleSetPosition(action, YGEdgeTop, typography.top(0).min(height - action_height) as f32);
+                YGNodeStyleSetPosition(action, YGEdgeTop, size.spacing.top.min(height - action_height) as f32);
                 YGNodeStyleSetWidth(action, action_width as f32);
                 YGNodeStyleSetHeight(action, action_height as f32);
                 Some(action)
@@ -191,7 +192,8 @@ mod tests {
     fn rows_stack_and_actions_stay_inside_measured_rows() {
         for dpi in [96, 120, 144, 192] {
             for width in [1, 20, 120, 800] {
-                let sizes = [RowSize { height: 40, action: false }, RowSize { height: 64, action: true }, RowSize { height: 220, action: true }];
+                let spacing = RowSpacing::new(Typography::new(dpi, 15 * dpi / 96), false, false);
+                let sizes = [RowSize { height: 40, action: false, spacing }, RowSize { height: 64, action: true, spacing }, RowSize { height: 220, action: true, spacing }];
                 let layout = content(width, dpi, Typography::new(dpi, 15 * dpi / 96), &sizes).unwrap();
                 let mut bottom = 0;
                 for (index, row) in layout.rows.iter().enumerate() {
@@ -209,5 +211,35 @@ mod tests {
             }
         }
         assert_eq!(content(800, 96, Typography::new(96, 15), &[]).unwrap().height, 0);
+    }
+
+    #[test]
+    fn first_branch_attaches_to_heading_without_changing_other_gaps() {
+        for (dpi, cell, boundary) in [(96, 15, 15), (120, 18, 18), (144, 22, 22), (192, 30, 30), (96, 12, 14)] {
+            let typography = Typography::new(dpi, cell);
+            let heading = RowSpacing::new(typography, false, true);
+            let branch = RowSpacing::new(typography, true, false);
+            let separate = RowSpacing::new(typography, false, false);
+            for heading_lines in [1, 2, 3] {
+                let sizes = [
+                    RowSize { height: heading.height(typography, heading_lines), action: false, spacing: heading },
+                    RowSize { height: branch.height(typography, 3), action: true, spacing: branch },
+                    RowSize { height: separate.height(typography, 2), action: true, spacing: separate },
+                    RowSize { height: separate.height(typography, 1), action: false, spacing: separate },
+                ];
+                let layout = content(800, dpi, typography, &sizes).unwrap();
+                let rows = &layout.rows;
+                let heading_origin = rows[0].rect.top + heading.top(typography, heading_lines - 1);
+                let branch_origin = rows[1].rect.top + branch.top(typography, 0);
+                assert_eq!(branch_origin - heading_origin, boundary);
+                assert_eq!(rows[1].rect.top, rows[0].rect.top + rows[0].rect.height);
+                assert_eq!(rows[1].action.unwrap().top, branch.top(typography, 0));
+                for index in [2, 3] {
+                    assert_eq!(rows[index].rect.top - rows[index - 1].rect.top - rows[index - 1].rect.height, 8 * dpi / 96);
+                }
+                assert_eq!(rows[2].action.unwrap().top, separate.top(typography, 0));
+                assert_eq!(rows[1].rect.height - branch.top(typography, 2), cell + 8 * dpi / 96);
+            }
+        }
     }
 }

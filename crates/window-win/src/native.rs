@@ -3,7 +3,7 @@ use crate::order::{Order, OrderMove};
 use crate::placement_win;
 use crate::layout::{self, Rect, RowSize};
 use crate::visibility::Visibility;
-use crate::typography::{self, Typography, FONT_SIZE};
+use crate::typography::{self, RowSpacing, Typography, FONT_SIZE};
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -96,6 +96,7 @@ struct Card {
     top: i32,
     height: i32,
     action_rect: Option<Rect>,
+    spacing: RowSpacing,
 }
 
 struct State {
@@ -203,7 +204,8 @@ unsafe fn create_card(parent: HWND, id: usize, action_id: Option<usize>, key: Op
         if matches!(display, DisplayItem::PendingWorktree { .. }) { EnableWindow(action, 0); }
         Some(action)
     } else { None };
-    Some(Card { window, action, action_hidden: None, key, display, refreshing: false, top: 0, height: 0, action_rect: None })
+    Some(Card { window, action, action_hidden: None, key, display, refreshing: false, top: 0, height: 0, action_rect: None,
+        spacing: RowSpacing::new(resources.typography, false, false) })
 }
 
 unsafe fn destroy_card(card: Card) {
@@ -271,7 +273,7 @@ unsafe fn wrapped_lines(dc: HDC, text: &str, width: i32, font: HFONT) -> Vec<Str
 
 unsafe fn item_height(card: &Card, dc: HDC, width: i32, dpi: i32, resources: &Resources) -> i32 {
     let s = |value| scaled(value, dpi);
-    let indicator_lines = usize::from(width < s(360));
+    let indicator_lines = usize::from(!inline_refresh(&card.display, card.spacing, width, dpi));
     let lines = match &card.display {
         DisplayItem::Repository { bare, .. } => 1 + usize::from(*bare) + indicator_lines,
         DisplayItem::PendingWorktree { .. } => 2 + indicator_lines,
@@ -288,7 +290,43 @@ unsafe fn item_height(card: &Card, dc: HDC, width: i32, dpi: i32, resources: &Re
         },
         _ => 1,
     };
-    resources.typography.height(lines)
+    card.spacing.height(resources.typography, lines)
+}
+
+fn attached_rows(previous: &DisplayItem, next: &DisplayItem) -> bool {
+    matches!(previous, DisplayItem::Repository { .. })
+        && matches!(next, DisplayItem::Worktree { .. } | DisplayItem::PendingWorktree { .. })
+}
+
+fn inline_refresh(display: &DisplayItem, spacing: RowSpacing, width: i32, dpi: i32) -> bool {
+    width >= scaled(360, dpi) || spacing.gap_after == 0 && matches!(display, DisplayItem::Repository { bare: false, .. })
+}
+
+#[cfg(test)]
+mod row_tests {
+    use super::*;
+
+    #[test]
+    fn attached_narrow_heading_keeps_refresh_inline() {
+        let repository = DisplayItem::Repository { name: "repository".into(), bare: false };
+        let branch = DisplayItem::PendingWorktree { path: PathBuf::from("branch") };
+        let notice = DisplayItem::Notice { title: "error".into(), message: "failure".into(), error: true };
+        assert!(attached_rows(&repository, &branch));
+        assert!(!attached_rows(&repository, &notice));
+        assert!(!attached_rows(&branch, &branch));
+        for dpi in [96, 120, 144, 192] {
+            let resources = unsafe { Resources::new(dpi) }.unwrap();
+            let typography = resources.typography;
+            let spacing = RowSpacing::new(typography, false, true);
+            let card = Card { window: null_mut(), action: None, action_hidden: None, key: None,
+                display: repository.clone(), refreshing: false, top: 0, height: 0, action_rect: None, spacing };
+            assert!(inline_refresh(&repository, spacing, scaled(180, dpi), dpi));
+            assert!(!inline_refresh(&branch, spacing, scaled(180, dpi), dpi));
+            assert!(!inline_refresh(&repository, RowSpacing::new(typography, false, false), scaled(180, dpi), dpi));
+            assert_eq!(unsafe { item_height(&card, null_mut(), scaled(180, dpi), dpi, &resources) },
+                typography.padding + typography.cell.max(typography.advance));
+        }
+    }
 }
 
 fn anchor(state: &State) -> Option<(ItemKey, i32)> {
@@ -387,9 +425,14 @@ unsafe fn layout(window: HWND, state: &mut State, restore: Option<(ItemKey, i32)
     state.width = viewport.right.max(1);
     state.page = viewport.bottom.max(1);
     let resources = state.resources.as_ref().unwrap();
+    let attachments: Vec<_> = state.cards.windows(2).map(|cards| attached_rows(&cards[0].display, &cards[1].display)).collect();
+    for (index, card) in state.cards.iter_mut().enumerate() {
+        card.spacing = RowSpacing::new(resources.typography,
+            index > 0 && attachments[index - 1], attachments.get(index).copied().unwrap_or(false));
+    }
     let dc = GetDC(window);
     let sizes: Vec<_> = state.cards.iter().map(|card| RowSize {
-        height: item_height(card, dc, state.width, state.dpi, resources), action: card.action.is_some(),
+        height: item_height(card, dc, state.width, state.dpi, resources), action: card.action.is_some(), spacing: card.spacing,
     }).collect();
     ReleaseDC(window, dc);
     let content = match layout::content(state.width, state.dpi, resources.typography, &sizes) {
@@ -464,10 +507,10 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
     let lines: Vec<_> = caption.lines().collect();
     let bounds = |left, top, right, bottom| RECT { left: rect.left + left, top: rect.top + top,
         right: rect.left + right, bottom: rect.top + bottom };
-    let inline_indicator = width >= s(360);
+    let inline_indicator = inline_refresh(&card.display, card.spacing, width, state.dpi);
     let typography = resources.typography;
     let line_bounds = |left, index, right| {
-        let top = typography.top(index);
+        let top = card.spacing.top(typography, index);
         bounds(left, top, right, top + typography.cell)
     };
     let indicator_right = if matches!(card.display, DisplayItem::Repository { .. }) { width - s(12) }
@@ -495,7 +538,7 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
             match result {
                 Ok(stats) => {
                     text(dc, lines[0], line_bounds(inset, 0, inset + heading_width), resources.font, if dragging { GREEN } else { WHITE }, line);
-                    let y = typography.top(1);
+                    let y = card.spacing.top(typography, 1);
                     let mut parts = vec![
                         ("S ".to_owned(), MUTED),
                         (format!("+{}", stats.counts.source.additions), GREEN),
@@ -538,7 +581,7 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
     }
     if card.refreshing {
         let indicator = if inline_indicator { line_bounds(indicator_left, 0, indicator_right) }
-            else { bounds(s(14), height - typography.padding - typography.cell, width - s(12), height - typography.padding) };
+            else { bounds(s(14), height - card.spacing.bottom - typography.cell, width - s(12), height - card.spacing.bottom) };
         text(dc, "*", indicator, resources.font, TEAL, DT_SINGLELINE);
     }
     if let Some(target) = state.drag.as_ref().and_then(|drag| drag.target.as_ref()) {
