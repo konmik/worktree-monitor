@@ -1,6 +1,7 @@
 param(
     [string]$Binary = "$PSScriptRoot/../target/debug/wts-ui.exe",
-    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wts-refreshing-$([Guid]::NewGuid().ToString('N'))"
+    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wts-refreshing-$([Guid]::NewGuid().ToString('N'))",
+    [switch]$SavedOrder
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,6 +36,7 @@ public static class WtsRefreshingProbe {
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr wparam, IntPtr lparam);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr window, out Rect rect);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out Rect rect);
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr window, ref Point point);
     [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("dwmapi.dll")] public static extern int DwmFlush();
@@ -55,17 +57,19 @@ public static class WtsRefreshingProbe {
         return found;
     }
     public static string[] Captions(IntPtr parent) {
-        var captions = new List<string>();
+        var captions = new List<Tuple<int, string>>();
         EnumChildWindows(parent, (window, data) => {
             var name = new StringBuilder(128);
             GetClassName(window, name, name.Capacity);
             if (IsWindowVisible(window) && String.Equals(name.ToString(), "STATIC", StringComparison.OrdinalIgnoreCase)) {
                 var text = Text(window);
-                if (text.Length != 0) captions.Add(text);
+                Rect rect;
+                if (text.Length != 0 && GetWindowRect(window, out rect)) captions.Add(Tuple.Create(rect.Top, text));
             }
             return true;
         }, IntPtr.Zero);
-        return captions.ToArray();
+        captions.Sort((left, right) => left.Item1.CompareTo(right.Item1));
+        return captions.ConvertAll(entry => entry.Item2).ToArray();
     }
 }
 '@
@@ -176,6 +180,15 @@ function Sample {
     }
     $sample = [pscustomobject]@{ start_ms = $start; end_ms = $clock.Elapsed.TotalMilliseconds; rows = $rows; captions = $captions; active_gates = $activeGates }
     $samples.Add($sample)
+    if ($SavedOrder) {
+        $actual = @(foreach ($caption in $captions) {
+            foreach ($key in $startupOrder) { if ($rows.ContainsKey($key) -and $rows[$key] -ceq $caption) { $key } }
+        })
+        $wanted = @($startupOrder | Where-Object { $rows.ContainsKey($_) })
+        if (($actual -join ',') -ne ($wanted -join ',')) {
+            throw "Startup order changed while scanning. Expected $($wanted -join ','); got $($actual -join ',')."
+        }
+    }
     return $sample
 }
 
@@ -251,6 +264,14 @@ try {
         }
         & $CliBinary add $repo | Out-Null
         if ($LASTEXITCODE -ne 0) { throw 'Isolated repository registration failed.' }
+    }
+    $startupOrder = @('repo:beta', 'tree:beta-topic', 'tree:beta-main', 'repo:alpha', 'tree:alpha-topic', 'tree:alpha-main')
+    if ($SavedOrder) {
+        $preferences = [ordered]@{ version = 1; repositories = @((Join-Path $fixture 'beta/.git'), (Join-Path $fixture 'alpha/.git')); worktrees = @(
+            @{ repository = Join-Path $fixture 'beta/.git'; paths = @((Join-Path $fixture 'beta-tree'), (Join-Path $fixture 'beta')) },
+            @{ repository = Join-Path $fixture 'alpha/.git'; paths = @((Join-Path $fixture 'alpha-tree'), (Join-Path $fixture 'alpha')) }
+        ) }
+        $preferences | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $fixtureHome '.config/wts/config.order.json') -Encoding utf8NoBOM
     }
     $env:WTS_REFRESH_GATES = $gates
     $env:WTS_REFRESH_REAL_GIT = $git
