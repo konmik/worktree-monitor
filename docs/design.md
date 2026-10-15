@@ -39,9 +39,11 @@ The Windows dashboard projects structured snapshots into repository sections and
 
 Line counts are grouped into source, tests, and scripts or tooling when Git's numstat records are parsed. Renames use the destination path. Test classification takes precedence over tooling classification, following the OpenCode line-changes plugin. The groups are the only stored line counts. Both text output and accessible window captions use `S +n/-n · T +n/-n · X +n/-n`. Only source numbers receive addition and deletion colors.
 
-The visual design uses charcoal surfaces, monospace typography, acid-green additions, coral-red deletions and errors, and teal branch labels. Native owner-drawn controls retain real captions for accessibility. A clipped native viewport owns scrolling, while the header stays fixed. Drag handles move whole repository sections or worktrees within their own section. Saved display order does not change registrations or create worktrees. There are no invented history charts, activity scores, or decorative animations.
+The visual design uses charcoal surfaces, monospace typography, acid-green additions, coral-red deletions and errors, and teal branch labels. Native owner-drawn controls retain real captions for accessibility. A clipped native viewport owns scrolling, while the header stays fixed. Dragging a repository header moves its whole section. Dragging a worktree card reorders it within its section. Saved display order does not change registrations or create worktrees. There are no invented history charts, activity scores, or decorative animations.
 
-Drag movement redraws only the source handle and changed drop-marker strips. Edge scrolling batches child-window moves and buffers each card before display. Polling-time updates redraw the fixed status row without rebuilding the list. Native Hide and Unhide buttons support keyboard activation, and Show all temporarily overrides the visibility filter.
+Drag movement redraws only the source card and changed drop-marker strips. Edge scrolling batches child-window moves and buffers each card before display. Polling-time updates redraw the fixed status row without rebuilding the list. Native Hide and Unhide buttons support keyboard activation, and Show all temporarily overrides the visibility filter.
+
+Monitor updates carry scan targets and retained scan activities separately from completed snapshots. Activity starts before discovery or worktree scanning and finishes with the result. Repository activity includes scans of its worktrees. The dashboard holds each Refreshing indicator for at least one second without delaying the scanner or clearing prior counts.
 
 | Dashboard alternative | Choice |
 | --- | --- |

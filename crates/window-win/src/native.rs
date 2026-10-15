@@ -1,8 +1,8 @@
-use crate::dashboard::{ellipsize_start, DashboardView, DisplayItem, Health, ItemKey};
+use crate::dashboard::{ellipsize_start, DashboardView, DisplayItem, Health, ItemKey, RefreshTracker};
 use crate::order::{Order, OrderMove};
 use crate::placement_win;
 use crate::visibility::Visibility;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
@@ -17,7 +17,7 @@ use windows_sys::Win32::UI::Controls::{SetScrollInfo, SetWindowTheme, DRAWITEMST
     ODT_BUTTON, ODT_STATIC, ODS_CHECKED, ODS_DISABLED, ODS_FOCUS, ODS_GRAYED,
     ODS_HOTLIGHT, ODS_SELECTED, BST_CHECKED};
 use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetCapture, GetFocus, IsWindowEnabled, ReleaseCapture, SetCapture, SetFocus};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetCapture, GetFocus, IsWindowEnabled, ReleaseCapture, SetCapture, SetFocus};
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use wts_core::{Monitor, MonitorUpdate, Service};
@@ -87,6 +87,7 @@ struct Card {
     action_hidden: Option<bool>,
     key: Option<ItemKey>,
     display: DisplayItem,
+    refreshing: bool,
     top: i32,
     height: i32,
 }
@@ -99,6 +100,8 @@ struct State {
     resources: Option<Resources>,
     view: DashboardView,
     latest: Option<Arc<MonitorUpdate>>,
+    refresh_tracker: RefreshTracker,
+    refreshing: HashSet<ItemKey>,
     dpi: i32,
     scroll: i32,
     content: i32,
@@ -145,14 +148,17 @@ impl Drop for State {
 
 fn wide(text: &str) -> Vec<u16> { text.encode_utf16().chain(Some(0)).collect() }
 fn scaled(value: i32, dpi: i32) -> i32 { (value * dpi / 96).max(1) }
-fn worktree_inset(width: i32, dpi: i32) -> i32 { scaled(30, dpi).min(width.saturating_sub(1) / 2) }
+fn worktree_inset(width: i32, dpi: i32) -> i32 { scaled(14, dpi).min(width.saturating_sub(1) / 2) }
 fn worktree_text_width(width: i32, dpi: i32) -> i32 {
     (width - worktree_inset(width, dpi) * 2).max(1)
 }
 
 unsafe fn set_item(card: &mut Card, display: DisplayItem) {
     if card.display != display {
-        SetWindowTextW(card.window, wide(&display.caption()).as_ptr());
+        if matches!(card.display, DisplayItem::PendingWorktree { .. }) != matches!(display, DisplayItem::PendingWorktree { .. }) {
+            if let Some(action) = card.action { EnableWindow(action, i32::from(!matches!(display, DisplayItem::PendingWorktree { .. }))); }
+        }
+        SetWindowTextW(card.window, wide(&display.caption_with_refresh(card.refreshing)).as_ptr());
         card.display = display;
         InvalidateRect(card.window, null(), 0);
     }
@@ -176,9 +182,10 @@ unsafe fn create_card(parent: HWND, id: usize, action_id: Option<usize>, key: Op
             return None;
         }
         SendMessageW(action, WM_SETFONT, resources.fonts[1] as WPARAM, 0);
+        if matches!(display, DisplayItem::PendingWorktree { .. }) { EnableWindow(action, 0); }
         Some(action)
     } else { None };
-    Some(Card { window, action, action_hidden: None, key, display, top: 0, height: 0 })
+    Some(Card { window, action, action_hidden: None, key, display, refreshing: false, top: 0, height: 0 })
 }
 
 unsafe fn destroy_card(card: Card) {
@@ -252,13 +259,15 @@ unsafe fn wrapped_height(dc: HDC, text: &str, width: i32, font: HFONT) -> i32 {
 
 unsafe fn item_height(card: &Card, dc: HDC, width: i32, dpi: i32, resources: &Resources) -> i32 {
     let s = |value| scaled(value, dpi);
+    let indicator_height = if width < s(360) { 20 } else { 0 };
     match &card.display {
-        DisplayItem::Repository { bare, .. } => s(if *bare { 66 } else { 40 }),
+        DisplayItem::Repository { bare, .. } => s((if *bare { 66 } else { 40 }) + indicator_height),
+        DisplayItem::PendingWorktree { .. } => s(WORKTREE_SUCCESS_HEIGHT + indicator_height),
         DisplayItem::Worktree { result, .. } => {
             let text_width = worktree_text_width(width, dpi);
             match result {
-                Ok(_) => s(WORKTREE_SUCCESS_HEIGHT),
-                Err(error) => s(WORKTREE_ERROR_HEIGHT) + wrapped_height(dc, &format!("ERROR ({:?}): {}", error.kind, error.message), text_width, resources.fonts[1]),
+                Ok(_) => s(WORKTREE_SUCCESS_HEIGHT + indicator_height),
+                Err(error) => s(WORKTREE_ERROR_HEIGHT + indicator_height) + wrapped_height(dc, &format!("ERROR ({:?}): {}", error.kind, error.message), text_width, resources.fonts[1]),
             }
         }
         DisplayItem::Notice { message, .. } => s(42) + if message.is_empty() { 0 } else {
@@ -300,9 +309,13 @@ unsafe fn position_action(card: &Card, width: i32, dpi: i32) {
     let Some(action) = card.action else { return; };
     let action_width = scaled(WORKTREE_ACTION_WIDTH, dpi).min(width.max(1));
     let action_height = scaled(24, dpi).min(card.height.max(1));
-    let action_left = width.saturating_sub(action_width).saturating_sub(scaled(10, dpi));
+    let action_left = worktree_action_left(width, dpi);
     SetWindowPos(action, null_mut(), action_left, scaled(7, dpi), action_width, action_height,
         SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
+}
+
+fn worktree_action_left(width: i32, dpi: i32) -> i32 {
+    (width - scaled(WORKTREE_ACTION_WIDTH, dpi).min(width.max(1)) - scaled(10, dpi)).max(0)
 }
 
 unsafe fn scroll_to(state: &mut State, position: i32) {
@@ -319,7 +332,7 @@ unsafe fn scroll_to(state: &mut State, position: i32) {
 }
 
 unsafe fn layout(window: HWND, state: &mut State, restore: Option<(ItemKey, i32)>) {
-    let Some(resources) = &state.resources else { return; };
+    if state.resources.is_none() { return; }
     if state.fixed.len() != 1 || state.viewport.is_null() { return; }
     let mut client: RECT = std::mem::zeroed();
     if GetClientRect(window, &mut client) == 0 || client.right <= 0 || client.bottom <= 0 { return; }
@@ -343,27 +356,8 @@ unsafe fn layout(window: HWND, state: &mut State, restore: Option<(ItemKey, i32)
     GetClientRect(state.viewport, &mut viewport);
     state.width = viewport.right.max(1);
     state.page = viewport.bottom.max(1);
-    let dc = GetDC(window);
-    let mut y: i32 = 0;
-    for card in &mut state.cards {
-        card.top = y;
-        card.height = item_height(card, dc, state.width, state.dpi, resources);
-        y = y.saturating_add(card.height).saturating_add(s(8));
-    }
-    ReleaseDC(window, dc);
-    state.content = y.saturating_sub(s(8)).max(0);
-    if let Some((key, offset)) = &restore {
-        if let Some(card) = state.cards.iter().find(|card| card.key.as_ref() == Some(key)) {
-            state.scroll = card.top.saturating_add(*offset);
-        }
-    }
-    state.scroll = state.scroll.clamp(0, (state.content - state.page).max(0));
-    let info = SCROLLINFO { cbSize: std::mem::size_of::<SCROLLINFO>() as u32, fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
-        nMin: 0, nMax: (state.content - 1).max(0), nPage: state.page as u32, nPos: state.scroll, ..std::mem::zeroed() };
-    SetScrollInfo(state.viewport, SB_VERT, &info, 1);
-    GetClientRect(state.viewport, &mut viewport);
-    if state.width != viewport.right.max(1) {
-        state.width = viewport.right.max(1);
+    for pass in 0..2 {
+        let resources = state.resources.as_ref().unwrap();
         let dc = GetDC(window);
         let mut y: i32 = 0;
         for card in &mut state.cards {
@@ -379,14 +373,19 @@ unsafe fn layout(window: HWND, state: &mut State, restore: Option<(ItemKey, i32)
             }
         }
         state.scroll = state.scroll.clamp(0, (state.content - state.page).max(0));
-        let info = SCROLLINFO { nMax: (state.content - 1).max(0), nPos: state.scroll, ..info };
+        let info = SCROLLINFO { cbSize: std::mem::size_of::<SCROLLINFO>() as u32, fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
+            nMin: 0, nMax: (state.content - 1).max(0), nPage: state.page as u32, nPos: state.scroll, ..std::mem::zeroed() };
         SetScrollInfo(state.viewport, SB_VERT, &info, 1);
+        GetClientRect(state.viewport, &mut viewport);
+        if state.width == viewport.right.max(1) || pass == 1 { break; }
+        state.width = viewport.right.max(1);
     }
     position_cards(state);
     RedrawWindow(window, null(), null_mut(), RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME);
 }
 
 unsafe fn text(dc: HDC, value: &str, rect: RECT, font: HFONT, color: COLORREF, flags: u32) {
+    if rect.right <= rect.left || rect.bottom <= rect.top { return; }
     SelectObject(dc, font);
     SetTextColor(dc, color);
     SetBkMode(dc, TRANSPARENT as i32);
@@ -428,6 +427,11 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
     let lines: Vec<_> = caption.lines().collect();
     let bounds = |left, top, right, bottom| RECT { left: rect.left + left, top: rect.top + top,
         right: rect.left + right, bottom: rect.top + bottom };
+    let inline_indicator = width >= s(360);
+    let indicator_right = if matches!(card.display, DisplayItem::Repository { .. }) { width - s(12) }
+        else { worktree_action_left(width, state.dpi) - s(8) };
+    let indicator_left = (indicator_right - wrapped_width(dc, "Refreshing", resources.fonts[0])).max(s(14));
+    let heading_right = if inline_indicator { indicator_left - s(8) } else { indicator_right };
     fill(dc, rect, resources.background);
     match &card.display {
         DisplayItem::Status { health, .. } => {
@@ -439,22 +443,22 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
             text(dc, &caption, bounds(s(17), y, width, y + s(20)), resources.fonts[0], color, line);
         }
         DisplayItem::Repository { bare, .. } => {
-            text(dc, lines[0], bounds(s(30), s(8), width - s(12), s(32)), resources.fonts[2], TEAL, line);
-            if *bare { text(dc, lines[1], bounds(s(30), s(36), width - s(12), height), resources.fonts[0], MUTED, line); }
+            text(dc, lines[0], bounds(s(14), s(8), if inline_indicator { heading_right } else { width - s(12) }, s(32)), resources.fonts[2], TEAL, line);
+            if *bare { text(dc, lines[1], bounds(s(14), s(36), width - s(12), height), resources.fonts[0], MUTED, line); }
         }
         DisplayItem::Worktree { path, result } => {
             SelectObject(dc, resources.surface);
-            SelectObject(dc, resources.border);
+            SelectObject(dc, if state.drag.as_ref().is_some_and(|drag| drag.source_handle == card.window) { resources.accent } else { resources.border });
             RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, s(10), s(10));
             let inset = worktree_inset(width, state.dpi);
             let text_width = worktree_text_width(width, state.dpi);
             let right = inset + text_width;
-            let heading_width = (width - s(WORKTREE_ACTION_WIDTH + 18) - inset).max(1).min(text_width);
+            let heading_width = (heading_right - inset).max(0).min(text_width);
             let path = path.display().to_string();
             match result {
                 Ok(stats) => {
                     let badge_width = wrapped_width(dc, lines[0], resources.fonts[0]).saturating_add(s(18))
-                        .min(heading_width).max(1);
+                        .min(heading_width).max(0);
                     let badge_left = inset;
                     let badge_padding = s(8).min(badge_width / 2);
                     SelectObject(dc, resources.background);
@@ -486,9 +490,19 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
                     let fitted_path = ellipsize_start(&path, heading_width, |value| wrapped_width(dc, value, resources.fonts[0]));
                     text(dc, &fitted_path, bounds(inset, s(12), inset + heading_width, s(32)), resources.fonts[0], MUTED, DT_SINGLELINE);
                     text(dc, lines[1], bounds(inset, s(36), right, s(57)), resources.fonts[0], MUTED, line);
-                    text(dc, &lines[2..].join("\n"), bounds(inset, s(60), right, height - s(8)), resources.fonts[1], RED, DT_WORDBREAK);
+                    text(dc, &lines[2..].join("\n"), bounds(inset, s(60), right, height - s(if inline_indicator { 8 } else { 28 })), resources.fonts[1], RED, DT_WORDBREAK);
                 }
             }
+        }
+        DisplayItem::PendingWorktree { path } => {
+            SelectObject(dc, resources.surface);
+            SelectObject(dc, resources.border);
+            RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, s(10), s(10));
+            let inset = worktree_inset(width, state.dpi);
+            let heading_width = (heading_right - inset).max(0);
+            let fitted = ellipsize_start(&path.display().to_string(), heading_width, |value| wrapped_width(dc, value, resources.fonts[0]));
+            text(dc, &fitted, bounds(inset, s(12), inset + heading_width, s(32)), resources.fonts[0], MUTED, DT_SINGLELINE);
+            text(dc, lines[1], bounds(inset, s(36), width - inset, s(57)), resources.fonts[0], MUTED, line);
         }
         DisplayItem::Notice { title, message, error } => {
             SelectObject(dc, resources.surface);
@@ -498,12 +512,10 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
             text(dc, message, bounds(s(14), s(42), width - s(14), height - s(10)), resources.fonts[1], if *error { RED } else { MUTED }, DT_WORDBREAK);
         }
     }
-    if card.key.as_ref().is_some_and(draggable) {
-        let active = state.drag.as_ref().is_some_and(|drag| drag.source_handle == card.window);
-        let brush = if active { resources.teal } else { resources.muted };
-        for y in [14, 19, 24] {
-            for x in [8, 13] { fill(dc, bounds(s(x), s(y), s(x + 2), s(y + 2)), brush); }
-        }
+    if card.refreshing {
+        let indicator = if inline_indicator { bounds(indicator_left, s(12), indicator_right, s(32)) }
+            else { bounds(s(14), height - s(24), width - s(12), height - s(4)) };
+        text(dc, "Refreshing", indicator, resources.fonts[0], TEAL, line);
     }
     if let Some(target) = state.drag.as_ref().and_then(|drag| drag.target.as_ref()) {
         let y = if target.marker == card.top { Some(0) }
@@ -570,7 +582,7 @@ unsafe fn draw_button(draw: &DRAWITEMSTRUCT, state: &State) {
     let fill_brush = if disabled || pressed { resources.background } else { resources.surface };
     let border_pen = if disabled { resources.border }
         else if checked { resources.checked } else if focused || pressed || hot { resources.accent } else { resources.border };
-    fill(draw.hDC, rect, resources.background);
+    fill(draw.hDC, rect, resources.surface);
     SelectObject(draw.hDC, fill_brush);
     SelectObject(draw.hDC, border_pen);
     RoundRect(draw.hDC, body.left, body.top, body.right, body.bottom, radius, radius);
@@ -709,6 +721,19 @@ unsafe fn keyboard(state: &mut State, key: WPARAM) -> bool {
 
 fn draggable(key: &ItemKey) -> bool { matches!(key, ItemKey::Repository(_) | ItemKey::Worktree(_, _)) }
 
+fn reorderable(state: &State, key: &ItemKey) -> bool {
+    let Some(update) = &state.latest else { return false; };
+    match key {
+        ItemKey::Repository(repository) => update.snapshot.repos.iter()
+            .any(|repo| crate::order::identity(&repo.common_dir) == *repository),
+        ItemKey::Worktree(repository, path) => update.snapshot.repos.iter()
+            .find(|repo| crate::order::identity(&repo.common_dir) == *repository)
+            .and_then(|repo| repo.worktrees.as_ref().ok())
+            .is_some_and(|trees| trees.iter().any(|tree| crate::order::identity(&tree.path) == *path)),
+        _ => false,
+    }
+}
+
 fn mouse_point(lparam: LPARAM) -> POINT {
     POINT { x: (lparam as u16 as i16) as i32, y: ((lparam >> 16) as u16 as i16) as i32 }
 }
@@ -731,8 +756,7 @@ fn same_rect(left: Option<&RECT>, right: Option<&RECT>) -> bool {
 
 unsafe fn invalidate_drag(state: &State, source_handle: Option<HWND>, old_marker: Option<RECT>, new_marker: Option<RECT>) {
     if let Some(source_handle) = source_handle {
-        let handle = RECT { left: 0, top: 0, right: scaled(24, state.dpi), bottom: scaled(30, state.dpi) };
-        InvalidateRect(source_handle, &handle, 0);
+        InvalidateRect(source_handle, null(), 0);
     }
     if !same_rect(old_marker.as_ref(), new_marker.as_ref()) {
         for marker in old_marker.as_ref().into_iter().chain(new_marker.as_ref()) {
@@ -754,7 +778,8 @@ fn drop_target(state: &State, source: &ItemKey, point: POINT) -> Option<DropTarg
     let y = point.y + state.scroll;
     match source {
         ItemKey::Repository(repository) => {
-            let groups: Vec<_> = state.cards.iter().filter(|card| matches!(card.key, Some(ItemKey::Repository(_)))).collect();
+            let groups: Vec<_> = state.cards.iter().filter(|card| matches!(card.key, Some(ItemKey::Repository(_)))
+                && card.key.as_ref().is_some_and(|key| reorderable(state, key))).collect();
             for (index, card) in groups.iter().enumerate() {
                 let next = groups.get(index + 1);
                 let end = next.map_or(state.content, |card| card.top);
@@ -771,7 +796,8 @@ fn drop_target(state: &State, source: &ItemKey, point: POINT) -> Option<DropTarg
         }
         ItemKey::Worktree(repository, worktree) => {
             let siblings: Vec<_> = state.cards.iter().filter(|card| matches!(&card.key,
-                Some(ItemKey::Worktree(repo, _)) if repo == repository)).collect();
+                Some(ItemKey::Worktree(repo, _)) if repo == repository)
+                && card.key.as_ref().is_some_and(|key| reorderable(state, key))).collect();
             for (index, card) in siblings.iter().enumerate() {
                 if y < card.top || y >= card.top + card.height { continue; }
                 let Some(ItemKey::Worktree(_, target)) = &card.key else { return None; };
@@ -813,11 +839,25 @@ unsafe fn set_status(state: &mut State) {
     }
 }
 
+unsafe fn refresh_indicators(state: &mut State) {
+    if let Some(update) = &state.latest {
+        state.refreshing = state.refresh_tracker.update(&update.scan_activities, Instant::now());
+    }
+    for card in &mut state.cards {
+        let refreshing = card.key.as_ref().is_some_and(|key| state.refreshing.contains(key));
+        if card.refreshing != refreshing {
+            card.refreshing = refreshing;
+            SetWindowTextW(card.window, wide(&card.display.caption_with_refresh(refreshing)).as_ptr());
+            InvalidateRect(card.window, null(), 0);
+        }
+    }
+}
+
 unsafe fn refresh(window: HWND, state: &mut State) {
     let mut view = if let Some(update) = &state.latest {
         let mut snapshot = (*update.snapshot).clone();
         state.order.apply(&mut snapshot);
-        let mut view = DashboardView::from_snapshot_with_visibility(&snapshot, &state.visibility, show_all_checked(state));
+        let mut view = DashboardView::from_scan(&snapshot, &update.scan_targets, &state.visibility, show_all_checked(state));
         if let Some(error) = &update.launch_error { view.launch_error(error); }
         view
     } else { DashboardView::scanning() };
@@ -836,6 +876,7 @@ unsafe fn refresh(window: HWND, state: &mut State) {
         layout(window, state, saved);
     }
     for card in &mut state.cards { set_action(card, &state.visibility); }
+    refresh_indicators(state);
     set_status(state);
 }
 
@@ -864,7 +905,8 @@ unsafe fn command(window: HWND, state: &mut State, wparam: WPARAM, lparam: LPARA
         return 0;
     }
     if viewport {
-        let target = state.cards.iter().find(|card| card.action == Some(control)).and_then(|card| match &card.key {
+        let target = state.cards.iter().find(|card| card.action == Some(control)
+            && !matches!(card.display, DisplayItem::PendingWorktree { .. })).and_then(|card| match &card.key {
             Some(ItemKey::Worktree(repository, worktree)) => Some((repository.clone(), worktree.clone())),
             _ => None,
         });
@@ -916,7 +958,7 @@ unsafe extern "system" fn card_procedure(window: HWND, message: u32, wparam: WPA
         ScreenToClient(window, &mut point);
         let mut rect: RECT = std::mem::zeroed();
         GetClientRect(window, &mut rect);
-        if point.x >= 0 && point.x < scaled(24, GetDpiForWindow(window).max(96) as i32).min(rect.right)
+        if point.x >= 0 && point.x < rect.right
             && point.y >= 0 && point.y < rect.bottom { return HTCLIENT as LRESULT; }
     }
     if message == WM_LBUTTONDOWN {
@@ -925,9 +967,11 @@ unsafe extern "system" fn card_procedure(window: HWND, message: u32, wparam: WPA
         if !pointer.is_null() {
             let result = catch_unwind(AssertUnwindSafe(|| {
                 let mut point = mouse_point(lparam);
-                if point.x < 0 || point.x >= scaled(24, (*pointer).dpi) { return false; }
+                let mut rect: RECT = std::mem::zeroed();
+                GetClientRect(window, &mut rect);
+                if point.x < 0 || point.x >= rect.right || point.y < 0 || point.y >= rect.bottom { return false; }
                 let source = (*pointer).cards.iter().find(|card| card.window == window).and_then(|card| card.key.clone());
-                if let Some(source) = source.filter(draggable) {
+                if let Some(source) = source.filter(|key| reorderable(&*pointer, key)) {
                     cancel_drag(pointer);
                     MapWindowPoints(window, viewport, &mut point, 1);
                     SetFocus(viewport);
@@ -1028,15 +1072,12 @@ unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, p
         }
         WM_TIMER if !viewport => {
             let state = &mut *pointer;
+            if let Some(update) = state.monitor.latest() {
+                state.latest = Some(update);
+            }
             if let Some((point, active)) = state.drag.as_ref().map(|drag| (drag.position, drag.active)) {
-                if let Some(update) = state.monitor.latest() {
-                    let metric_only = state.latest.as_ref().is_some_and(|old| Arc::ptr_eq(&old.snapshot, &update.snapshot)
-                        && old.launch_error == update.launch_error);
-                    if metric_only && state.latest.as_ref().is_none_or(|old| !Arc::ptr_eq(old, &update)) {
-                        state.latest = Some(update);
-                        set_status(state);
-                    }
-                }
+                refresh_indicators(state);
+                set_status(state);
                 if active && point.x >= 0 && point.x < state.width && point.y >= 0 && point.y < state.page {
                     let edge = scaled(24, state.dpi);
                     if point.y < edge { scroll_to(state, state.scroll - edge); }
@@ -1067,11 +1108,6 @@ unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, p
                     Err(error) => { state.visibility_warning = Some(format!("Cannot load worktree visibility: {error}")); }
                 }
                 state.visibility_check = Instant::now() + Duration::from_secs(1);
-            }
-            if let Some(update) = state.monitor.latest() {
-                if state.latest.as_ref().is_none_or(|old| !Arc::ptr_eq(old, &update)) {
-                    state.latest = Some(update);
-                }
             }
             refresh(window, state);
             0
@@ -1163,6 +1199,7 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
     };
     let mut state = Box::new(State { monitor: service.monitor_from(launch_directory).map_err(io::Error::other)?, viewport: null_mut(),
         fixed: Vec::new(), cards: Vec::new(), resources: None, view: DashboardView::scanning(), latest: None,
+        refresh_tracker: RefreshTracker::default(), refreshing: HashSet::new(),
         dpi: 96, scroll: 0, content: 0, page: 0, width: 0, wheel_remainder: 0, next_card_id: 2000, failure: None,
         order_path, placement_path, starting: true, order, order_warning, order_write_failed: false, order_check: Instant::now(),
         visibility_path, visibility, visibility_warning, visibility_write_failed: false, visibility_check: Instant::now(),

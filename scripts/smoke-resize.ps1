@@ -32,6 +32,13 @@ public static class WtsResizeProbe {
     [DllImport("user32.dll")] public static extern bool RedrawWindow(IntPtr handle, IntPtr rect, IntPtr region, uint flags);
     [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr handle, uint message, IntPtr wparam, IntPtr lparam);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr handle, uint message, IntPtr wparam, IntPtr lparam);
+    [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr handle);
+    [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr handle);
+    [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr handle, IntPtr dc);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int DrawText(IntPtr dc, string text, int length, ref Rect rect, uint flags);
+    [DllImport("gdi32.dll")] public static extern IntPtr SelectObject(IntPtr dc, IntPtr handle);
+    [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr CreateFontW(int height, int width, int escapement, int orientation, int weight, uint italic, uint underline, uint strikeout, uint charset, uint outputPrecision, uint clipPrecision, uint quality, uint pitchAndFamily, string face);
+    [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr handle);
     [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll", EntryPoint="SystemParametersInfoW")] public static extern bool SystemParametersInfo(uint action, uint parameter, out Rect rect, uint flags);
     [DllImport("dwmapi.dll")] public static extern int DwmFlush();
@@ -67,6 +74,31 @@ public static class WtsResizeProbe {
         var bitmap = new Bitmap(rect.Right, rect.Bottom);
         using (var graphics = Graphics.FromImage(bitmap)) { graphics.CopyFromScreen(origin.X, origin.Y, 0, 0, bitmap.Size); }
         return bitmap;
+    }
+    public static int ErrorHeight(IntPtr parent) {
+        int height = 0;
+        EnumChildWindows(parent, (handle, data) => {
+            var caption = Text(handle);
+            int start = caption.IndexOf("ERROR (");
+            if (GetParent(handle) != parent || start < 0) return true;
+            Rect card;
+            if (!GetClientRect(handle, out card)) throw new InvalidOperationException("Error bounds unavailable");
+            int dpi = (int)GetDpiForWindow(handle);
+            int inset = Math.Min(14 * dpi / 96, (card.Right - 1) / 2);
+            var measured = new Rect { Right = Math.Max(1, card.Right - inset * 2) };
+            var dc = GetDC(handle);
+            var font = CreateFontW(-14 * dpi / 96, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 49, "Consolas");
+            var old = SelectObject(dc, font);
+            try {
+                var error = caption.Substring(start).Replace("\nRefreshing", "");
+                DrawText(dc, error, error.Length, ref measured, 0x0c10);
+                int baseHeight = card.Right < 360 * dpi / 96 ? 96 : 76;
+                if (card.Bottom != baseHeight * dpi / 96 + measured.Bottom) throw new InvalidOperationException("Wrapped error height " + card.Bottom + " disagrees with measured height " + measured.Bottom + " at DPI " + dpi + " and width " + card.Right);
+                height = card.Bottom;
+            } finally { SelectObject(dc, old); DeleteObject(font); ReleaseDC(handle, dc); }
+            return true;
+        }, IntPtr.Zero);
+        return height;
     }
     public static int Difference(Bitmap first, Bitmap second, Rect excluded) {
         int changed = 0;
@@ -155,7 +187,7 @@ try {
     $viewport = [WtsResizeProbe]::GetDlgItem($script:handle, 1001)
     Wait-For {
         $geometry = [WtsResizeProbe]::Geometry($viewport)
-        $geometry -match '(?m)^.*infra-tools \[1\].*$' -and $geometry -match '(?m)^.*S\s+\+1/-0.*$'
+        $geometry -match '(?m)^.*infra-tools \[1\].*$' -and [regex]::Matches($geometry, 'S\s+\+1/-0').Count -eq 3 -and $geometry -notmatch 'Refreshing'
     } 'fixture counts'
     $workArea = [WtsResizeProbe+Rect]::new()
     if (-not [WtsResizeProbe]::SystemParametersInfo(0x0030, 0, [ref]$workArea, 0)) { throw 'Work area unavailable' }
@@ -168,6 +200,16 @@ try {
         Compare-Repaint "$index-scroll-down"
         [void][WtsResizeProbe]::SendMessage($viewport, 0x0115, [IntPtr]6, [IntPtr]::Zero)
         Compare-Repaint "$index-scroll-top"
+    }
+    [IO.File]::WriteAllText((Join-Path $repo '.git/index'), 'broken index for wrapped error layout')
+    Wait-For { [WtsResizeProbe]::ErrorHeight($viewport) -gt 0 -and [WtsResizeProbe]::Geometry($viewport) -notmatch 'Refreshing' } 'wrapped worktree error'
+    $narrowHeight = 0
+    foreach ($width in @(180, 260, 380, 800)) {
+        if (-not [WtsResizeProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, $workArea.Left + 32, $workArea.Top + 32, $width, 720, 20)) { throw 'Error resize failed' }
+        $height = [WtsResizeProbe]::ErrorHeight($viewport)
+        if ($width -eq 180) { $narrowHeight = $height }
+        if ($width -eq 800 -and $height -ge $narrowHeight) { throw 'Narrow error did not wrap to a greater height' }
+        Compare-Repaint "error-$width"
     }
     $failed = @($results | Where-Object { $_.changed_pixels -ne 0 -or -not $_.geometry_unchanged })
     [ordered]@{ binary = $Binary; sha256 = (Get-FileHash $Binary).Hash; results = $results.ToArray(); result = $(if ($failed.Count) { 'FAIL' } else { 'PASS' }) } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $Output 'proof.json')

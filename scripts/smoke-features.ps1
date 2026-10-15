@@ -19,12 +19,16 @@ using System.Text;
 public static class WtsFeatureProbe {
     public struct Rect { public int Left, Top, Right, Bottom; }
     public struct Size { public int Width, Height; }
+    public struct Point { public int X, Y; }
     public delegate bool EnumProc(IntPtr window, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumProc callback, IntPtr data);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr window, StringBuilder text, int count);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] public static extern bool EnableWindow(IntPtr window, bool enabled);
+    [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr window);
     [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr window);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
@@ -96,8 +100,42 @@ public static class WtsFeatureProbe {
         }
         return counts;
     }
+    public static void ButtonStates(IntPtr button, string output) {
+        Rect rect;
+        if (!GetWindowRect(button, out rect)) throw new InvalidOperationException("Button bounds unavailable");
+        Point cursor;
+        GetCursorPos(out cursor);
+        try {
+            foreach (uint state in new uint[] { 0, 0x0040, 0x0001, 0x0004 }) {
+                SetCursorPos(state == 0x0040 ? (rect.Left + rect.Right) / 2 : rect.Left - 10,
+                    state == 0x0040 ? (rect.Top + rect.Bottom) / 2 : rect.Top - 10);
+                EnableWindow(button, state != 4);
+                SendMessage(button, 0x00f3, new IntPtr(state == 1 ? 1 : 0), IntPtr.Zero);
+                System.Threading.Thread.Sleep(100);
+                RedrawWindow(button, IntPtr.Zero, IntPtr.Zero, 0x0181);
+                DwmFlush();
+                using (var image = new Bitmap(rect.Right - rect.Left, rect.Bottom - rect.Top)) {
+                    using (var graphics = Graphics.FromImage(image)) {
+                        graphics.CopyFromScreen(rect.Left, rect.Top, 0, 0, image.Size);
+                    }
+                    image.Save(System.IO.Path.Combine(output, "button-state-" + state + ".png"));
+                    var surface = Color.FromArgb(23, 30, 34).ToArgb();
+                    if (image.GetPixel(0, 0).ToArgb() != surface || image.GetPixel(image.Width - 1, 0).ToArgb() != surface ||
+                        image.GetPixel(0, image.Height - 1).ToArgb() != surface || image.GetPixel(image.Width - 1, image.Height - 1).ToArgb() != surface)
+                        throw new InvalidOperationException("Button corners differ from card surface in owner-draw state " + state);
+                    var body = state == 1 || state == 4 ? Color.FromArgb(11, 16, 18).ToArgb() : surface;
+                    if (image.GetPixel(image.Width / 2, image.Height - 5).ToArgb() != body)
+                        throw new InvalidOperationException("Button body color is wrong in owner-draw state " + state);
+                }
+            }
+        } finally {
+            EnableWindow(button, true);
+            SendMessage(button, 0x00f3, IntPtr.Zero, IntPtr.Zero);
+            SetCursorPos(cursor.X, cursor.Y);
+        }
+    }
 }
-'@ -ReferencedAssemblies @([Drawing.Bitmap].Assembly.Location, [Drawing.Rectangle].Assembly.Location)
+'@ -ReferencedAssemblies System.Drawing.Common, System.Drawing.Primitives, System.Private.Windows.GdiPlus, System.Private.Windows.Core, System.Threading.Thread
 
 function Wait-For([scriptblock]$Condition, [string]$Label) {
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
@@ -178,7 +216,7 @@ function Assert-Colors {
     $outer = Bounds $script:window
     $card = Bounds $script:card
     $dpi = [WtsFeatureProbe]::GetDpiForWindow($script:card)
-    $x = $card.Left - $outer.Left + [int][Math]::Floor(30 * $dpi / 96)
+    $x = $card.Left - $outer.Left + [int][Math]::Floor(14 * $dpi / 96)
     $top = $card.Top - $outer.Top + [int][Math]::Floor(37 * $dpi / 96)
     $bottom = $card.Top - $outer.Top + [int][Math]::Floor(57 * $dpi / 96)
     $image = [Drawing.Bitmap]::new($outer.Right - $outer.Left, $outer.Bottom - $outer.Top)
@@ -188,6 +226,14 @@ function Assert-Colors {
         [void][WtsFeatureProbe]::DwmFlush()
         $graphics.CopyFromScreen($outer.Left, $outer.Top, 0, 0, $image.Size)
         $image.Save((Join-Path $Output 'counts.png'))
+        $button = [WtsFeatureProbe]::FindCount($script:card, 'Hide')
+        if ($button -eq [IntPtr]::Zero) { throw 'Hide button unavailable' }
+        $buttonBounds = Bounds $button
+        $corner = $image.GetPixel($buttonBounds.Left - $outer.Left, $buttonBounds.Top - $outer.Top)
+        if ($corner.R -ne 23 -or $corner.G -ne 30 -or $corner.B -ne 34) { throw "Hide corner is $($corner.R),$($corner.G),$($corner.B), not card surface 23,30,34" }
+        [WtsFeatureProbe]::ButtonStates($button, $Output)
+        $proof.button_corners_match_card = $true
+        $proof.button_states = @('normal', 'hover', 'pressed', 'disabled')
         $proof.colors = @()
         foreach ($part in @('S +4/-1', 'T +5/-1', 'X +6/-1')) {
             $width = [WtsFeatureProbe]::Measure($script:card, $part)

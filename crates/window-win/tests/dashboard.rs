@@ -1,8 +1,9 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
-use std::time::Duration;
-use window_win::dashboard::{DashboardView, DisplayItem, Health, ItemKey};
+use std::time::{Duration, Instant};
+use window_win::dashboard::{DashboardView, DisplayItem, Health, ItemKey, RefreshTracker};
 use window_win::order::identity;
-use wts_core::{Counts, Error, ErrorKind, Head, LineCounts, RepoEntry, Snapshot, WorktreeEntry, WorktreeStats};
+use wts_core::{Counts, Error, ErrorKind, Head, LineCounts, RepoEntry, ScanActivity, ScanTarget, Snapshot, WorktreeEntry, WorktreeStats};
 
 fn tree(path: &str, head: Head, additions: u64, deletions: u64, binaries: u64) -> WorktreeEntry {
     WorktreeEntry { path: path.into(), result: Ok(WorktreeStats { head,
@@ -180,4 +181,176 @@ fn visibility_save_warning_preserves_rows_and_reports_error_health() {
         title: "Worktree visibility warning".into(), message: "Cannot lock worktree visibility".into(), error: true,
     });
     assert_eq!(&view.items[1..], rows.as_slice());
+}
+
+fn scan(path: &str, generation: u64, started_at: Instant, finished_at: Option<Instant>) -> ScanActivity {
+    ScanActivity { target: ScanTarget::Worktree { repository: "/repo/.git".into(), path: path.into() },
+        generation, started_at, finished_at }
+}
+
+fn refreshing_tree(path: &str) -> ItemKey {
+    ItemKey::Worktree(identity(&PathBuf::from("/repo/.git")), identity(&PathBuf::from(path)))
+}
+
+#[test]
+fn refresh_completed_before_first_observation_lasts_one_second_and_expires_without_snapshot_change() {
+    let start = Instant::now();
+    let observed = start + Duration::from_secs(10);
+    let activities = [scan("/repo", 1, start, Some(start + Duration::from_millis(1)))];
+    let mut tracker = RefreshTracker::default();
+    assert_eq!(tracker.update(&activities, observed), HashSet::from([refreshing_tree("/repo")]));
+    assert_eq!(tracker.update(&activities, observed + Duration::from_millis(999)), HashSet::from([refreshing_tree("/repo")]));
+    assert_eq!(tracker.update(&activities, observed + Duration::from_secs(1)), HashSet::new());
+    assert_eq!(tracker.update(&activities, observed + Duration::from_secs(20)), HashSet::new());
+}
+
+#[test]
+fn refresh_long_running_activity_stays_visible_until_finished_without_restarting() {
+    let start = Instant::now();
+    let mut activities = [scan("/repo", 1, start, None)];
+    let mut tracker = RefreshTracker::default();
+    assert_eq!(tracker.update(&activities, start), HashSet::from([refreshing_tree("/repo")]));
+    assert_eq!(tracker.update(&activities, start + Duration::from_secs(5)), HashSet::from([refreshing_tree("/repo")]));
+    activities[0].finished_at = Some(start + Duration::from_secs(6));
+    assert_eq!(tracker.update(&activities, start + Duration::from_secs(6)), HashSet::new());
+}
+
+#[test]
+fn refresh_completion_within_minimum_visibility_does_not_restart_deadline() {
+    let start = Instant::now();
+    let mut activities = [scan("/repo", 1, start, None)];
+    let mut tracker = RefreshTracker::default();
+    assert_eq!(tracker.update(&activities, start), HashSet::from([refreshing_tree("/repo")]));
+    activities[0].finished_at = Some(start + Duration::from_millis(500));
+    assert_eq!(tracker.update(&activities, start + Duration::from_millis(500)), HashSet::from([refreshing_tree("/repo")]));
+    assert_eq!(tracker.update(&activities, start + Duration::from_secs(1)), HashSet::new());
+}
+
+#[test]
+fn refresh_sibling_generations_have_independent_deadlines() {
+    let start = Instant::now();
+    let mut activities = [scan("/repo", 1, start, Some(start)), scan("/sibling", 2, start, Some(start))];
+    let mut tracker = RefreshTracker::default();
+    assert_eq!(tracker.update(&activities, start), HashSet::from([refreshing_tree("/repo"), refreshing_tree("/sibling")]));
+    activities[1].generation = 3;
+    assert_eq!(tracker.update(&activities, start + Duration::from_millis(500)), HashSet::from([refreshing_tree("/repo"), refreshing_tree("/sibling")]));
+    assert_eq!(tracker.update(&activities, start + Duration::from_secs(1)), HashSet::from([refreshing_tree("/sibling")]));
+    assert_eq!(tracker.update(&activities, start + Duration::from_millis(1500)), HashSet::new());
+    activities[0].generation = 4;
+    assert_eq!(tracker.update(&activities, start + Duration::from_secs(2)), HashSet::from([refreshing_tree("/repo")]));
+    assert_eq!(tracker.update(&activities, start + Duration::from_secs(3)), HashSet::new());
+}
+
+#[test]
+fn refresh_child_generation_relatches_repository_and_child_but_not_sibling() {
+    let start = Instant::now();
+    let repository = ItemKey::Repository(identity(&PathBuf::from("/repo/.git")));
+    let mut activities = [
+        ScanActivity { target: ScanTarget::Repository { common_dir: "/repo/.git".into(), path: "/display".into() },
+            generation: 1, started_at: start, finished_at: Some(start) },
+        scan("/repo", 2, start, Some(start)),
+        scan("/sibling", 3, start, Some(start)),
+    ];
+    let mut tracker = RefreshTracker::default();
+    assert_eq!(tracker.update(&activities, start), HashSet::from([repository.clone(), refreshing_tree("/repo"), refreshing_tree("/sibling")]));
+    assert_eq!(tracker.update(&activities, start + Duration::from_secs(1)), HashSet::new());
+    activities[0].generation = 4;
+    activities[1].generation = 4;
+    assert_eq!(tracker.update(&activities, start + Duration::from_secs(2)), HashSet::from([repository.clone(), refreshing_tree("/repo")]));
+    assert_eq!(tracker.update(&activities, start + Duration::from_millis(2999)), HashSet::from([repository, refreshing_tree("/repo")]));
+    assert_eq!(tracker.update(&activities, start + Duration::from_secs(3)), HashSet::new());
+}
+
+#[test]
+fn refresh_removed_activity_is_pruned_and_reappearance_is_observed_again() {
+    let start = Instant::now();
+    let mut activities = [scan("/repo", 1, start, Some(start))];
+    let mut tracker = RefreshTracker::default();
+    assert_eq!(tracker.update(&activities, start), HashSet::from([refreshing_tree("/repo")]));
+    assert_eq!(tracker.update(&[], start + Duration::from_millis(100)), HashSet::new());
+    assert_eq!(tracker.update(&activities, start + Duration::from_secs(2)), HashSet::from([refreshing_tree("/repo")]));
+    assert_eq!(tracker.update(&activities, start + Duration::from_secs(3)), HashSet::new());
+    assert_eq!(tracker.update(&[], start + Duration::from_secs(4)), HashSet::new());
+    activities[0].generation = 2;
+    assert_eq!(tracker.update(&activities, start + Duration::from_secs(5)), HashSet::from([refreshing_tree("/repo")]));
+    assert_eq!(tracker.update(&activities, start + Duration::from_secs(6)), HashSet::new());
+}
+
+#[cfg(windows)]
+#[test]
+fn refresh_path_aliases_share_identity_and_do_not_restart_deadline() {
+    let start = Instant::now();
+    let mut activities = [
+        ScanActivity { target: ScanTarget::Repository { common_dir: r"\\?\C:\Repo\.git".into(), path: r"C:\Display".into() },
+            generation: 1, started_at: start, finished_at: Some(start) },
+        ScanActivity { target: ScanTarget::Worktree { repository: r"\\?\C:\Repo\.git".into(), path: r"\\?\C:\Repo".into() },
+            generation: 2, started_at: start, finished_at: Some(start) },
+    ];
+    let expected = HashSet::from([ItemKey::Repository("c:/repo/.git".into()), ItemKey::Worktree("c:/repo/.git".into(), "c:/repo".into())]);
+    let mut tracker = RefreshTracker::default();
+    assert_eq!(tracker.update(&activities, start), expected);
+    activities[0].target = ScanTarget::Repository { common_dir: "c:/repo/.git".into(), path: "c:/other-display".into() };
+    activities[1].target = ScanTarget::Worktree { repository: "c:/repo/.git".into(), path: "c:/repo".into() };
+    assert_eq!(tracker.update(&activities, start + Duration::from_millis(500)), expected);
+    assert_eq!(tracker.update(&activities, start + Duration::from_secs(1)), HashSet::new());
+}
+
+fn pending_targets() -> Vec<ScanTarget> {
+    vec![ScanTarget::Repository { common_dir: "/repo/.git".into(), path: "/repo".into() },
+        ScanTarget::Worktree { repository: "/repo/.git".into(), path: "/repo".into() },
+        ScanTarget::Worktree { repository: "/repo/.git".into(), path: "/second".into() }]
+}
+
+#[test]
+fn pending_scan_projects_known_repository_and_discovered_paths_without_fake_counts_or_errors() {
+    let view = DashboardView::from_scan(&Snapshot::default(), &pending_targets(), &Default::default(), false);
+    assert_eq!(view.health, Health::Scanning);
+    assert_eq!(view.items.len(), 3);
+    assert_eq!(view.items[0].display.caption(), "repo [2]");
+    assert_eq!(view.items[1].key, refreshing_tree("/repo"));
+    assert_eq!(view.items[1].display.caption(), "/repo\nBranch pending · counts pending · binaries pending");
+    assert!(matches!(view.items[2].display, DisplayItem::PendingWorktree { .. }));
+    assert!(!view.items.iter().any(|item| matches!(item.display, DisplayItem::Notice { error: true, .. })));
+}
+
+#[test]
+fn scan_projection_keeps_completed_counts_and_identity_as_pending_rows_complete() {
+    let targets = pending_targets();
+    let first = Snapshot { config_error: None, repos: vec![repo(vec![tree("/repo", Head::Branch("main".into()), 8, 3, 1)])] };
+    let view = DashboardView::from_scan(&first, &targets, &Default::default(), false);
+    assert_eq!(view.items[0].display.caption(), "repo [2]");
+    assert_eq!(view.items[1].display.caption(), "main\nS +8/-3 · T +0/-0 · X +0/-0 · binaries: 1");
+    assert_eq!(view.items[1].display.caption_with_refresh(true), "main\nS +8/-3 · T +0/-0 · X +0/-0 · binaries: 1\nRefreshing");
+    assert_eq!(view.items[1].display.caption_with_refresh(false), view.items[1].display.caption());
+    let second = Snapshot { config_error: None, repos: vec![repo(vec![tree("/repo", Head::Branch("main".into()), 8, 3, 1),
+        tree("/second", Head::Branch("topic".into()), 2, 0, 0)])] };
+    let completed = DashboardView::from_scan(&second, &targets, &Default::default(), false);
+    assert_eq!(view.items.iter().map(|item| &item.key).collect::<Vec<_>>(), completed.items.iter().map(|item| &item.key).collect::<Vec<_>>());
+    assert_eq!(completed.health, Health::Live);
+}
+
+#[test]
+fn scan_projection_does_not_invent_trees_after_discovery_error_or_lose_notices() {
+    let snapshot = Snapshot { config_error: Some(failure()), repos: vec![RepoEntry {
+        common_dir: "/repo/.git".into(), path: "/repo".into(), worktrees: Err(failure()),
+    }] };
+    let expected = DashboardView::from_snapshot(&snapshot);
+    let view = DashboardView::from_scan(&snapshot, &pending_targets(), &Default::default(), false);
+    assert_eq!(view, expected);
+}
+
+#[test]
+fn scan_projection_respects_hidden_pending_rows_and_show_all() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("visibility.json");
+    let repository = directory.path().join("repo/.git");
+    let tree = directory.path().join("repo");
+    let visibility = window_win::visibility::Visibility::persist_toggle(&path, &repository, &tree).unwrap();
+    let targets = vec![ScanTarget::Repository { common_dir: repository.clone(), path: tree.clone() },
+        ScanTarget::Worktree { repository, path: tree }];
+    let hidden = DashboardView::from_scan(&Snapshot::default(), &targets, &visibility, false);
+    assert_eq!(hidden.items.len(), 1);
+    let shown = DashboardView::from_scan(&Snapshot::default(), &targets, &visibility, true);
+    assert_eq!(shown.items.len(), 2);
+    assert!(matches!(shown.items[1].display, DisplayItem::PendingWorktree { .. }));
 }

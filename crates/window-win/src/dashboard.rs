@@ -1,8 +1,9 @@
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use crate::order::identity;
 use crate::visibility::Visibility;
-use wts_core::{Error, Head, Snapshot, WorktreeStats};
-use std::time::Duration;
+use wts_core::{Error, Head, ScanActivity, ScanTarget, Snapshot, WorktreeStats};
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Health { Scanning, Live, Errors }
@@ -31,11 +32,40 @@ pub enum ItemKey {
     Worktree(PathBuf, PathBuf),
 }
 
+#[derive(Default)]
+pub struct RefreshTracker {
+    entries: HashMap<ItemKey, (u64, Instant)>,
+}
+
+impl RefreshTracker {
+    pub fn update(&mut self, activities: &[ScanActivity], now: Instant) -> HashSet<ItemKey> {
+        let mut present = HashSet::new();
+        let mut refreshing = HashSet::new();
+        for activity in activities {
+            let key = match &activity.target {
+                ScanTarget::Repository { common_dir, .. } => ItemKey::Repository(identity(common_dir)),
+                ScanTarget::Worktree { repository, path } => ItemKey::Worktree(identity(repository), identity(path)),
+            };
+            present.insert(key.clone());
+            let entry = self.entries.entry(key.clone()).or_insert_with(|| (activity.generation, now + Duration::from_secs(1)));
+            if entry.0 != activity.generation {
+                *entry = (activity.generation, now + Duration::from_secs(1));
+            }
+            if activity.finished_at.is_none() || now < entry.1 {
+                refreshing.insert(key);
+            }
+        }
+        self.entries.retain(|key, _| present.contains(key));
+        refreshing
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DisplayItem {
     Status { health: Health, polling_time_last_minute: Duration },
     Repository { name: String, worktrees: Option<usize>, bare: bool },
     Worktree { path: PathBuf, result: Result<WorktreeStats, Error> },
+    PendingWorktree { path: PathBuf },
     Notice { title: String, message: String, error: bool },
 }
 
@@ -63,6 +93,12 @@ fn head_caption(head: &Head) -> String {
 }
 
 impl DisplayItem {
+    pub fn caption_with_refresh(&self, refreshing: bool) -> String {
+        let mut caption = self.caption();
+        if refreshing { caption.push_str("\nRefreshing"); }
+        caption
+    }
+
     pub fn caption(&self) -> String {
         match self {
             Self::Status { health, polling_time_last_minute } => health.caption(*polling_time_last_minute),
@@ -75,6 +111,7 @@ impl DisplayItem {
                 Ok(stats) => format!("{}\n{}", head_caption(&stats.head), stats.counts),
                 Err(error) => format!("{}\nCounts unavailable · binaries unavailable\nERROR ({:?}): {}", path.display(), error.kind, error.message),
             },
+            Self::PendingWorktree { path } => format!("{}\nBranch pending · counts pending · binaries pending", path.display()),
             Self::Notice { title, message, .. } => format!("{title}\n{message}"),
         }
     }
@@ -140,6 +177,53 @@ impl DashboardView {
             }
         }
         Self { health: if snapshot.has_errors() { Health::Errors } else { Health::Live }, items }
+    }
+
+    pub fn from_scan(snapshot: &Snapshot, targets: &[ScanTarget], visibility: &Visibility, show_all: bool) -> Self {
+        let mut view = Self::from_snapshot_with_visibility(snapshot, visibility, show_all);
+        for target in targets {
+            let ScanTarget::Repository { common_dir, path } = target else { continue; };
+            let key = ItemKey::Repository(identity(common_dir));
+            if !view.items.iter().any(|item| item.key == key) {
+                view.items.push(ViewItem { key, display: DisplayItem::Repository {
+                    name: name(path), worktrees: None, bare: false,
+                } });
+            }
+        }
+        for target in targets {
+            let ScanTarget::Worktree { repository, path } = target else { continue; };
+            let repository = identity(repository);
+            let key = ItemKey::Worktree(repository.clone(), identity(path));
+            if view.items.iter().any(|item| item.key == key)
+                || (!show_all && visibility.contains(&repository, path))
+                || snapshot.repos.iter().any(|repo| identity(&repo.common_dir) == repository && repo.worktrees.is_err()) {
+                continue;
+            }
+            let Some(header) = view.items.iter().position(|item| item.key == ItemKey::Repository(repository.clone())) else { continue; };
+            let end = view.items.iter().enumerate().skip(header + 1)
+                .find(|(_, item)| matches!(item.key, ItemKey::Repository(_))).map_or(view.items.len(), |(index, _)| index);
+            view.items.insert(end, ViewItem { key, display: DisplayItem::PendingWorktree { path: path.clone() } });
+        }
+        for item in &mut view.items {
+            let ItemKey::Repository(repository) = &item.key else { continue; };
+            if snapshot.repos.iter().any(|repo| identity(&repo.common_dir) == *repository && repo.worktrees.is_err()) { continue; }
+            let discovered = targets.iter().filter(|target| matches!(target,
+                ScanTarget::Worktree { repository: common, .. } if identity(common) == *repository)).count();
+            if discovered > 0 {
+                if let DisplayItem::Repository { worktrees, bare, .. } = &mut item.display {
+                    *worktrees = Some(discovered);
+                    *bare = false;
+                }
+            }
+        }
+        if view.items.iter().any(|item| matches!(item.key, ItemKey::Repository(_))) {
+            view.items.retain(|item| item.key != ItemKey::Empty);
+        }
+        if !snapshot.has_errors() && view.items.iter().any(|item| matches!(item.display,
+            DisplayItem::PendingWorktree { .. } | DisplayItem::Repository { worktrees: None, .. })) {
+            view.health = Health::Scanning;
+        }
+        view
     }
 
     pub fn launch_error(&mut self, error: &Error) {

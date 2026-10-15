@@ -17,7 +17,7 @@ Plain `wts` prints one current snapshot. `wts-ui` opens the Windows status windo
 
 `cargo install --path crates/wts --locked` installs both `wts` and `wts-ui`.
 
-The live window includes the repository you launch it from, even when it is not registered. This does not register it. Drag a repository's handle to move its whole group. Drag a worktree's handle to reorder it within its repository. The window remembers these positions across refreshes and restarts. Change counts appear on individual worktrees, without summary totals.
+The live window includes the repository you launch it from, even when it is not registered. This does not register it. Drag a repository header to move its whole group. Drag a worktree card to reorder it within its repository. The window remembers these positions across refreshes and restarts. Change counts appear on individual worktrees, without summary totals.
 
 Use **Hide** on a worktree to remove it from the list. **Show all** reveals hidden worktrees without clearing their saved settings. Use **Unhide** to keep a revealed worktree visible when you turn **Show all** off. Hiding a worktree does not unregister it or stop monitoring it.
 
@@ -28,6 +28,8 @@ Each worktree shows its branch and `S +n/-n · T +n/-n · X +n/-n`. `S` counts s
 Git's ignore rules and binary attributes apply. Binary files have a separate count, not an invented line count. Ignored untracked files and submodule contents are not counted. Missing or unreadable worktrees show errors rather than zero changes.
 
 WTS installs filesystem monitors before scanning all worktrees once at startup. Later scan passes include only changed or newly discovered worktrees. All discovery and scanning runs serially, with at least ten seconds between the end of one pass and the start of the next. Changes during a pass remain queued for the next pass. Unchanged worktrees are not scanned again. There is no periodic rescan, backoff, or debounce. The window shows time spent scanning and discovering repositories during the last minute, not CPU time or time waiting between passes.
+
+Repository headers and worktree cards show **Refreshing** during scans. Each indicator stays visible for at least one second. Existing counts remain visible while a worktree refreshes.
 
 ## Configuration
 
@@ -51,6 +53,7 @@ pwsh -NoProfile -File scripts/smoke-dashboard.ps1
 pwsh -NoProfile -File scripts/smoke-resize.ps1
 pwsh -NoProfile -File scripts/smoke-features.ps1
 pwsh -NoProfile -File scripts/smoke-visibility.ps1
+pwsh -NoProfile -File scripts/smoke-refreshing.ps1
 ```
 
 The smoke checks use isolated temporary repositories and configuration. The window checks need an interactive Windows desktop. They check the real window, live counts, polling time, registry reload, saved visibility, drag redraws, and closing.

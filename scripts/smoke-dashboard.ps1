@@ -105,31 +105,72 @@ public static class WtsDragProbe {
         return new IntPtr(unchecked((int)(((uint)(ushort)point.Y << 16) | (ushort)point.X)));
     }
     public static void Drag(IntPtr source, IntPtr target, bool cancel) {
-        DragAt(source, target, cancel, false, 0x0100);
+        DragAt(source, target, cancel, false, 0x0100, "heading");
     }
     public static void DragBelow(IntPtr source, IntPtr target) {
-        DragAt(source, target, false, true, 0);
+        DragAt(source, target, false, true, 0, "right");
     }
     public static void CancelDrag(IntPtr source, IntPtr target, uint message) {
-        DragAt(source, target, true, false, message);
+        DragAt(source, target, true, false, message, "heading");
     }
-    private static void DragAt(IntPtr source, IntPtr target, bool cancel, bool below, uint cancelMessage) {
+    public static void DragFrom(IntPtr source, IntPtr target, string region) {
+        DragAt(source, target, false, false, 0, region);
+    }
+    private static Point StartPoint(IntPtr source, string region) {
+        Rect rect;
+        if (!GetClientRect(source, out rect)) { throw new InvalidOperationException("Card bounds unavailable"); }
+        int scale = (int)GetDpiForWindow(source);
+        return new Point { X = region == "right" ? rect.Right - 20 * scale / 96 : 50 * scale / 96,
+            Y = (region == "counts" || (region == "right" && rect.Bottom > 40 * scale / 96) ? 44 : 20) * scale / 96 };
+    }
+    private static IntPtr Begin(IntPtr source, Point start) {
+        var screen = start;
+        if (!ClientToScreen(source, ref screen)) { throw new InvalidOperationException("Card coordinates unavailable"); }
+        if (Send(source, 0x0084, IntPtr.Zero, Position(screen)).ToInt64() != 1) { throw new InvalidOperationException("Card body rejects mouse hit testing"); }
+        var parentPoint = screen;
+        var parent = GetParent(source);
+        if (!ScreenToClient(parent, ref parentPoint) || ChildWindowFromPointEx(parent, parentPoint, 7) != source ||
+            ChildWindowFromPointEx(source, start, 7) != source) { throw new InvalidOperationException("Card body mouse target is not the card"); }
+        Send(source, 0x0201, new IntPtr(1), Position(start));
+        if (Captured(source) != parent) { throw new InvalidOperationException("Card body did not capture to viewport"); }
+        return parent;
+    }
+    public static void ClickBody(IntPtr source, bool move) {
+        var point = StartPoint(source, "heading");
+        var capture = Begin(source, point);
+        if (!ClientToScreen(source, ref point) || !ScreenToClient(capture, ref point)) { throw new InvalidOperationException("Click coordinates unavailable"); }
+        if (move) {
+            point.X++;
+            point.Y++;
+            Send(capture, 0x0200, new IntPtr(1), Position(point));
+        }
+        Send(capture, 0x0202, IntPtr.Zero, Position(point));
+        if (Captured(source) != IntPtr.Zero) { throw new InvalidOperationException("Click left capture active"); }
+    }
+    public static void ClickAction(IntPtr source) {
+        IntPtr button = IntPtr.Zero;
+        EnumChildWindows(source, (handle, data) => {
+            if (GetParent(handle) == source && (Text(handle) == "Hide" || Text(handle) == "Unhide")) { button = handle; return false; }
+            return true;
+        }, IntPtr.Zero);
+        Rect rect;
+        if (button == IntPtr.Zero || !GetClientRect(button, out rect)) { throw new InvalidOperationException("Native action button unavailable"); }
+        var point = new Point { X = rect.Right / 2, Y = rect.Bottom / 2 };
+        var bodyPoint = point;
+        if (!ClientToScreen(button, ref bodyPoint) || !ScreenToClient(source, ref bodyPoint) ||
+            ChildWindowFromPointEx(source, bodyPoint, 7) != button) { throw new InvalidOperationException("Card intercepts native action button"); }
+        var root = GetAncestor(source, 2);
+        Send(button, 0x0201, new IntPtr(1), Position(point));
+        if (Captured(root) != button) { throw new InvalidOperationException("Native button did not own capture"); }
+        Send(button, 0x0202, IntPtr.Zero, Position(point));
+        if (Captured(root) != IntPtr.Zero) { throw new InvalidOperationException("Native button left capture active"); }
+    }
+    private static void DragAt(IntPtr source, IntPtr target, bool cancel, bool below, uint cancelMessage, string region) {
         var root = GetAncestor(source, 2);
         if (root == IntPtr.Zero) { throw new InvalidOperationException("Dashboard root unavailable"); }
         int scale = (int)GetDpiForWindow(source);
-        var start = new Point { X = 12 * scale / 96, Y = 20 * scale / 96 };
-        var hit = start;
-        var parent = GetParent(source);
-        if (!ClientToScreen(source, ref hit) || !ScreenToClient(parent, ref hit)) { throw new InvalidOperationException("Handle coordinates unavailable"); }
-        var handle = ChildWindowFromPointEx(parent, hit, 7);
-        if (handle == IntPtr.Zero || handle == parent) { throw new InvalidOperationException("Drag handle unavailable"); }
-        var screenStart = start;
-        if (!ClientToScreen(source, ref screenStart)) { throw new InvalidOperationException("Handle hit-test coordinates unavailable"); }
-        if (Send(handle, 0x0084, IntPtr.Zero, Position(screenStart)).ToInt64() != 1) { throw new InvalidOperationException("Drag handle does not accept real mouse hit testing"); }
-        if (!ClientToScreen(parent, ref hit) || !ScreenToClient(handle, ref hit)) { throw new InvalidOperationException("Handle coordinates unavailable"); }
-        Send(handle, 0x0201, new IntPtr(1), Position(hit));
-        var capture = Captured(root);
-        if (capture == IntPtr.Zero) { throw new InvalidOperationException("Drag handle did not capture the mouse"); }
+        var start = StartPoint(source, region);
+        var capture = Begin(source, start);
         Rect targetRect;
         if (!GetClientRect(target, out targetRect)) { throw new InvalidOperationException("Drop target bounds unavailable"); }
         var end = new Point { X = 12 * scale / 96, Y = Math.Max(2, targetRect.Bottom * (below ? 3 : 1) / 4) };
@@ -211,7 +252,10 @@ function Start-Dashboard([int]$ExpectedCards = 8) {
     $dpi = [WtsDragProbe]::GetDpiForWindow($script:handle)
     if (-not [WtsDragProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, (800 * $dpi / 96), (1400 * $dpi / 96), 20)) { throw 'Dashboard resize failed' }
     $script:viewport = [WtsDragProbe]::GetDlgItem($script:handle, 1001)
-    Wait-For { @([WtsDragProbe]::Cards($script:viewport)).Count -eq $ExpectedCards } "$ExpectedCards repository and worktree cards"
+    Wait-For {
+        $cards = @([WtsDragProbe]::Cards($script:viewport))
+        $cards.Count -eq $ExpectedCards -and ($cards.Text -join "`n") -notmatch 'counts pending|Refreshing'
+    } "$ExpectedCards repository and worktree cards"
 }
 
 function Close-Dashboard {
@@ -219,7 +263,7 @@ function Close-Dashboard {
     if (-not $script:process.WaitForExit(10000) -or $script:process.ExitCode -ne 0) { throw 'Dashboard did not close cleanly' }
 }
 
-function Find-Card([string]$Name, [switch]$Repository) {
+function Find-Card([string]$Name, [switch]$Repository, [switch]$Optional) {
     $cards = @([WtsDragProbe]::Cards($script:viewport))
     if ($Repository) {
         $cards = @($cards | Where-Object { $_.Text.StartsWith("$Name [") })
@@ -238,6 +282,7 @@ function Find-Card([string]$Name, [switch]$Repository) {
         }
         $cards = $cardMatches.ToArray()
     }
+    if ($Optional -and $cards.Count -eq 0) { return $null }
     if ($cards.Count -ne 1) { throw "Expected one card for $Name, found $($cards.Count)" }
     return $cards[0]
 }
@@ -324,30 +369,38 @@ try {
     Assert-Order $initialOrder 'Unregistered launch repository is appended to registered groups'
     $initial = Card-Order
     [IO.File]::WriteAllText((Join-Path $fixture 'initial-order.txt'), $initial)
+    foreach ($repository in @($true, $false)) {
+        $card = if ($repository) { Find-Card 'alpha' -Repository } else { Find-Card $alpha }
+        foreach ($move in @($false, $true)) {
+            [WtsDragProbe]::ClickBody($card.Handle, $move)
+            Assert-Order $initial 'Click and below-threshold motion preserve order'
+            if (Test-Path $preferences) { throw 'Click or below-threshold motion wrote presentation order' }
+        }
+    }
     $source = Find-Card 'beta' -Repository
     $target = Find-Card 'alpha' -Repository
-    [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
-    Assert-Order $repositoryOrder 'Repository handle moves its whole group'
+    [WtsDragProbe]::DragFrom($source.Handle, $target.Handle, 'right')
+    Assert-Order $repositoryOrder 'Repository right-side space moves its whole group'
     $source = Find-Card 'beta' -Repository
     $target = Find-Card $alphaTree
     [WtsDragProbe]::DragBelow($source.Handle, $target.Handle)
-    Assert-Order $initial 'Repository handle can move a group down past another group'
+    Assert-Order $initial 'Repository body can move a group down past another group'
     $source = Find-Card 'beta' -Repository
     $target = Find-Card 'alpha' -Repository
     [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
-    Assert-Order $repositoryOrder 'Repository handle can move a group back up'
+    Assert-Order $repositoryOrder 'Repository heading can move a group back up'
     $source = Find-Card $alphaTree
     $target = Find-Card $alpha
-    [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
-    Assert-Order $worktreeOrder 'Worktree handle reorders within its repository'
+    [WtsDragProbe]::DragFrom($source.Handle, $target.Handle, 'counts')
+    Assert-Order $worktreeOrder 'Worktree counts reorder within its repository'
     $source = Find-Card $alphaTree
     $target = Find-Card $alpha
     [WtsDragProbe]::DragBelow($source.Handle, $target.Handle)
-    Assert-Order $repositoryOrder 'Worktree handle can move a row down'
+    Assert-Order $repositoryOrder 'Worktree right-side space can move a row down'
     $source = Find-Card $alphaTree
     $target = Find-Card $alpha
     [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
-    Assert-Order $worktreeOrder 'Worktree handle can move a row back up'
+    Assert-Order $worktreeOrder 'Worktree heading can move a row back up'
     $source = Find-Card $alpha
     $target = Find-Card $beta
     [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
@@ -357,6 +410,20 @@ try {
     [WtsDragProbe]::Drag($source.Handle, $target.Handle, $true)
     Assert-Order $worktreeOrder 'Escape cancels a drag'
     $savedBeforeCancel = [IO.File]::ReadAllText($preferences)
+    $showAll = [WtsDragProbe]::GetDlgItem($script:handle, 1004)
+    [void][WtsDragProbe]::Send($showAll, 0x00f5, [IntPtr]::Zero, [IntPtr]::Zero)
+    [WtsDragProbe]::ClickAction((Find-Card $alpha).Handle)
+    Wait-For { [WtsDragProbe]::AllText($script:handle) -match 'Unhide' } 'native Hide action'
+    Assert-Order $worktreeOrder 'Hide button preserves order with Show all enabled'
+    [void][WtsDragProbe]::Send($showAll, 0x00f5, [IntPtr]::Zero, [IntPtr]::Zero)
+    Wait-For { $null -eq (Find-Card $alpha -Optional) } 'hidden row removed'
+    [void][WtsDragProbe]::Send($showAll, 0x00f5, [IntPtr]::Zero, [IntPtr]::Zero)
+    Wait-For { $null -ne (Find-Card $alpha -Optional) } 'hidden row revealed'
+    if ((Find-Card $alpha).Text -match '\bRefreshing\b') { throw 'Revealing an idle row replayed its completed scan' }
+    [WtsDragProbe]::ClickAction((Find-Card $alpha).Handle)
+    Wait-For { [WtsDragProbe]::AllText($script:handle) -notmatch 'Unhide' } 'native Unhide action'
+    [void][WtsDragProbe]::Send($showAll, 0x00f5, [IntPtr]::Zero, [IntPtr]::Zero)
+    if ([IO.File]::ReadAllText($preferences) -ne $savedBeforeCancel) { throw 'Native buttons changed saved order' }
     foreach ($message in @(0x001f, 0x0215)) {
         $source = Find-Card 'alpha' -Repository
         $target = Find-Card 'beta' -Repository
@@ -382,7 +449,7 @@ try {
     & $Binary remove $current
     if ($LASTEXITCODE -ne 0) { throw 'Removing launch registration failed' }
     [IO.File]::WriteAllText((Join-Path $current 'lines.txt'), "before`nfirst`nsecond`nthird`n")
-    Wait-For { (Find-Card $current).Text -match 'S\s+\+3/-0\b' } 'unregistered launch repository refresh' 40
+    Wait-For { (Find-Card $current -Optional).Text -match 'S\s+\+3/-0\b' } 'unregistered launch repository refresh' 40
     Assert-Order $worktreeOrder 'Removing a registration keeps the current repository visible'
     Close-Dashboard
     $launchDirectory = $fixtureHome
