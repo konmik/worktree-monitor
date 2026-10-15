@@ -36,6 +36,7 @@ const STATIC_OWNERDRAW: u32 = 13;
 const STATIC_NOTIFY: u32 = 256;
 const WM_SYNC_INDICATORS: u32 = WM_APP + 42;
 const WM_TRAY_ICON: u32 = WM_APP + 43;
+const APP_ICON: *const u16 = std::ptr::without_provenance(1);
 
 const fn rgb(red: u32, green: u32, blue: u32) -> COLORREF { red | (green << 8) | (blue << 16) }
 
@@ -170,7 +171,9 @@ impl TrayIcon {
         data.uID = 1;
         data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
         data.uCallbackMessage = WM_TRAY_ICON;
-        data.hIcon = LoadIconW(null_mut(), IDI_APPLICATION);
+        let dpi = GetDpiForWindow(window).max(96);
+        data.hIcon = LoadImageW(GetModuleHandleW(null()), APP_ICON, IMAGE_ICON,
+            GetSystemMetricsForDpi(SM_CXSMICON, dpi), GetSystemMetricsForDpi(SM_CYSMICON, dpi), 0).cast();
         if data.hIcon.is_null() { return Err(io::Error::last_os_error()); }
         data.szTip[..4].copy_from_slice(&wide("WTS"));
         let mut icon = Self { data, added: false };
@@ -194,7 +197,10 @@ impl TrayIcon {
 
 impl Drop for TrayIcon {
     fn drop(&mut self) {
-        if self.added { unsafe { Shell_NotifyIconW(NIM_DELETE, &self.data); } }
+        unsafe {
+            if self.added { Shell_NotifyIconW(NIM_DELETE, &self.data); }
+            DestroyIcon(self.data.hIcon);
+        }
     }
 }
 
@@ -1984,11 +1990,13 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
         if state.taskbar_created == 0 { return Err(io::Error::last_os_error()); }
         let instance = GetModuleHandleW(null());
         if instance.is_null() { return Err(io::Error::last_os_error()); }
+        let icon = LoadIconW(instance, APP_ICON);
+        if icon.is_null() { return Err(io::Error::last_os_error()); }
         let class = wide("WtsStatusWindow");
         let viewport_class = wide("WtsDashboardViewport");
         let overlay_class = wide("WtsIndicatorOverlay");
         let definition = WNDCLASSW { lpfnWndProc: Some(procedure), hInstance: instance,
-            hCursor: LoadCursorW(null_mut(), IDC_ARROW), lpszClassName: class.as_ptr(), ..std::mem::zeroed() };
+            hCursor: LoadCursorW(null_mut(), IDC_ARROW), hIcon: icon, lpszClassName: class.as_ptr(), ..std::mem::zeroed() };
         if RegisterClassW(&definition) == 0 { return Err(io::Error::last_os_error()); }
         let viewport_definition = WNDCLASSW { lpfnWndProc: Some(viewport_procedure), lpszClassName: viewport_class.as_ptr(), ..definition };
         if RegisterClassW(&viewport_definition) == 0 {
