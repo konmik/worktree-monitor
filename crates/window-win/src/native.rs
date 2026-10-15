@@ -275,7 +275,7 @@ unsafe fn item_height(card: &Card, dc: HDC, width: i32, dpi: i32, resources: &Re
     let s = |value| scaled(value, dpi);
     let lines = match &card.display {
         DisplayItem::Repository { bare, .. } => 1 + usize::from(*bare),
-        DisplayItem::PendingWorktree { .. } => 2,
+        DisplayItem::PendingWorktree { .. } => 1,
         DisplayItem::Worktree { result, .. } => {
             let text_width = worktree_text_width(width, dpi);
             match result {
@@ -378,6 +378,9 @@ mod row_tests {
                         display: display.clone(), refreshing: false, top: 0, height: 0, action_rect: None,
                         spacing: RowSpacing::new(resources.typography, attached_before, false) };
                     let height = unsafe { item_height(&card, dc, scaled(800, dpi), dpi, &resources) };
+                    if matches!(display, DisplayItem::PendingWorktree { .. }) {
+                        assert_eq!(height, card.spacing.height(resources.typography, 1));
+                    }
                     for width in [359, 360, 361] {
                         assert_eq!(unsafe { item_height(&card, dc, scaled(width, dpi), dpi, &resources) }, height);
                     }
@@ -652,7 +655,6 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
             let heading_width = (heading_right - inset).max(0);
             draw_name(dc, &path.display().to_string(), line_bounds(inset, 0, inset + heading_width), resources.font,
                 if dragging { GREEN } else { MUTED }, true, card.refreshing);
-            text(dc, lines[1], line_bounds(inset, 1, width - inset), resources.font, MUTED, line);
         }
         DisplayItem::Notice { title, message, error } => {
             text(dc, title, line_bounds(s(14), 0, width - s(14)), resources.font, if *error { RED } else { WHITE }, line);

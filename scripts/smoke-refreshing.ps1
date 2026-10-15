@@ -395,6 +395,9 @@ try {
             $base = Join-Path $gates $row.gate
             if (-not (Test-Path -LiteralPath "$base.done")) {
                 $caption = $sample.rows[$row.key]
+                if ($caption -match '(?i)\bpending\b|Waiting for the first snapshot|Scanning repositories') { throw "Startup placeholder displayed for $($row.key)." }
+                $content = $caption -replace '\r?\nRefreshing$', ''
+                if ($content.Contains("`n")) { throw "Startup worktree contains an extra line: $content" }
                 if ($caption -match '\bS\s+\+0/-0\b') { throw "Initial pending $($row.key) fabricated zero source counts." }
                 if ((Counts $caption) -ne '') { throw "Initial pending $($row.key) published counts before its first delayed Git scan completed." }
                 $pendingSeen[$row.key] = $true
@@ -406,6 +409,15 @@ try {
                 if (-not $sample.rows.ContainsKey($key) -or -not (Is-Refreshing $sample.rows[$key])) { $indicated = $false }
             }
             if ($indicated) { $initialActiveSeen[$row.key] = $true }
+            if ($MainOnly -and $indicated -and -not $pendingSeen.ContainsKey("captured:$($row.key)")) {
+                foreach ($width in @(800, 380)) {
+                    [void][WtsRefreshingProbe]::SetWindowPos($script:window, [IntPtr]::Zero, 32, 32, $width, 720, 20)
+                    [void][WtsRefreshingProbe]::RedrawWindow($script:window, [IntPtr]::Zero, [IntPtr]::Zero, 0x0180)
+                    [void][WtsRefreshingProbe]::DwmFlush()
+                    Capture-Refreshing "startup-$($row.gate)-$width"
+                }
+                $pendingSeen["captured:$($row.key)"] = $true
+            }
         }
         foreach ($name in @('alpha', 'beta')) {
             $key = "repo:$name"

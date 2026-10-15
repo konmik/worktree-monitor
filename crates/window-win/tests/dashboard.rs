@@ -86,7 +86,7 @@ fn empty_bare_scanning_and_zero_measurements_are_truthful() {
     assert_eq!(empty.health.caption(Duration::from_secs(5)), "LIVE · Polling 5.0s in last minute");
     let scanning = DashboardView::scanning();
     assert_eq!(scanning.health, Health::Scanning);
-    assert_eq!(scanning.items.len(), 1);
+    assert!(scanning.items.is_empty());
     let bare = DashboardView::from_snapshot(&Snapshot { repos: vec![repo(vec![])], config_error: None });
     assert_eq!(bare.items[0].display.caption(), "repo\nNo working trees (bare repository).");
     let rows = DashboardView::from_snapshot(&Snapshot { config_error: None, repos: vec![repo(vec![
@@ -313,7 +313,8 @@ fn pending_scan_projects_known_repository_and_discovered_paths_without_fake_coun
     assert_eq!(view.items.len(), 3);
     assert_eq!(view.items[0].display.caption(), "repo");
     assert_eq!(view.items[1].key, refreshing_tree("/repo"));
-    assert_eq!(view.items[1].display.caption(), "/repo\nBranch pending · counts pending · binaries pending");
+    assert_eq!(view.items[1].display.caption(), "/repo");
+    assert_eq!(view.items[1].display.caption_with_refresh(true), "/repo\nRefreshing");
     assert!(matches!(view.items[2].display, DisplayItem::PendingWorktree { .. }));
     assert!(!view.items.iter().any(|item| matches!(item.display, DisplayItem::Notice { error: true, .. })));
 }

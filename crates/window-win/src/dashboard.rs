@@ -111,7 +111,7 @@ impl DisplayItem {
                 Ok(stats) => format!("{}\n{}", head_caption(&stats.head), stats.counts),
                 Err(error) => format!("{}\nCounts unavailable · binaries unavailable\nERROR ({:?}): {}", path.display(), error.kind, error.message),
             },
-            Self::PendingWorktree { path } => format!("{}\nBranch pending · counts pending · binaries pending", path.display()),
+            Self::PendingWorktree { path } => path.display().to_string(),
             Self::Notice { title, message, .. } => format!("{title}\n{message}"),
         }
     }
@@ -135,8 +135,7 @@ fn name(path: &Path) -> String {
 
 impl DashboardView {
     pub fn scanning() -> Self {
-        Self { health: Health::Scanning, items: vec![ViewItem { key: ItemKey::Empty,
-                display: DisplayItem::Notice { title: "Scanning repositories…".into(), message: "Waiting for the first snapshot".into(), error: false } }] }
+        Self { health: Health::Scanning, items: Vec::new() }
     }
 
     pub fn from_snapshot(snapshot: &Snapshot) -> Self {
