@@ -179,8 +179,8 @@ function Assert-Colors {
     $card = Bounds $script:card
     $dpi = [WtsFeatureProbe]::GetDpiForWindow($script:card)
     $x = $card.Left - $outer.Left + [int][Math]::Floor(30 * $dpi / 96)
-    $top = $card.Top - $outer.Top + [int][Math]::Floor(60 * $dpi / 96)
-    $bottom = $card.Top - $outer.Top + [int][Math]::Floor(80 * $dpi / 96)
+    $top = $card.Top - $outer.Top + [int][Math]::Floor(37 * $dpi / 96)
+    $bottom = $card.Top - $outer.Top + [int][Math]::Floor(57 * $dpi / 96)
     $image = [Drawing.Bitmap]::new($outer.Right - $outer.Left, $outer.Bottom - $outer.Top)
     $graphics = [Drawing.Graphics]::FromImage($image)
     try {
@@ -226,7 +226,7 @@ try {
     Write-Lines 'scripts/new.ps1' @('new1', 'new2', 'new3', 'new4')
     & $CliBinary add $repo
     if ($LASTEXITCODE -ne 0) { throw 'Fixture registration failed' }
-    $expectedCaption = "branch`n$($repo.Replace('\', '/'))`nS +4/-1 · T +5/-1 · X +6/-1"
+    $expectedCaption = "branch`nS +4/-1 · T +5/-1 · X +6/-1"
     $placementPath = Join-Path $fixtureHome '.config/wts/config.placement.json'
     $area = [WtsFeatureProbe+Rect]::new()
     if (-not [WtsFeatureProbe]::SystemParametersInfo(0x0030, 0, [ref]$area, 0)) { throw 'Work area unavailable' }

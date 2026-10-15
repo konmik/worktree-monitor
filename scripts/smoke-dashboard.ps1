@@ -220,13 +220,24 @@ function Close-Dashboard {
 }
 
 function Find-Card([string]$Name, [switch]$Repository) {
-    $cards = @([WtsDragProbe]::Cards($script:viewport) | Where-Object {
-        if ($Repository) { $_.Text.StartsWith("$Name ·") }
-        else {
-            $lines = @($_.Text -split "`r?`n")
-            $lines.Count -ge 2 -and (Path-Key $lines[1]) -eq (Path-Key $Name)
+    $cards = @([WtsDragProbe]::Cards($script:viewport))
+    if ($Repository) {
+        $cards = @($cards | Where-Object { $_.Text.StartsWith("$Name [") })
+    } else {
+        $entry = @($script:worktreePaths.GetEnumerator() | Where-Object { (Path-Key $_.Value) -eq (Path-Key $Name) })
+        if ($entry.Count -ne 1) { throw "Expected one fixture mapping for $Name, found $($entry.Count)" }
+        $separator = $entry[0].Key.IndexOf('|')
+        $repositoryName = $entry[0].Key.Substring(0, $separator)
+        $branch = $entry[0].Key.Substring($separator + 1)
+        $current = $null
+        $cardMatches = [Collections.Generic.List[object]]::new()
+        foreach ($card in $cards) {
+            $lines = @($card.Text -split "`r?`n")
+            if ($lines[0] -match '^(.+) \[\d+\]') { $current = $Matches[1]; continue }
+            if ($current -eq $repositoryName -and $lines.Count -ge 2 -and $lines[0] -eq $branch) { [void]$cardMatches.Add($card) }
         }
-    })
+        $cards = $cardMatches.ToArray()
+    }
     if ($cards.Count -ne 1) { throw "Expected one card for $Name, found $($cards.Count)" }
     return $cards[0]
 }
@@ -236,17 +247,25 @@ function Path-Key([string]$Path) {
 }
 
 function Card-Order {
-    return @([WtsDragProbe]::Cards($script:viewport) | ForEach-Object {
-        $lines = $_.Text -split "`r?`n"
-        if ($lines[0] -match '^(.+) · (\d+) worktrees?$') {
+    $repository = $null
+    $order = [Collections.Generic.List[string]]::new()
+    foreach ($card in @([WtsDragProbe]::Cards($script:viewport))) {
+        $lines = $card.Text -split "`r?`n"
+        if ($lines[0] -match '^(.+) \[(\d+)\]$') {
             $name = $Matches[1]
             $count = [int]$Matches[2]
             $expected = @{ alpha = 2; beta = 2; current = 1 }
             if (-not $expected.ContainsKey($name) -or $count -ne $expected[$name]) { throw "Unexpected worktree count for $name" }
-            "repo:$name"
+            $repository = $name
+            [void]$order.Add("repo:$name")
         }
-        elseif (-not $_.Text.StartsWith('Presentation order warning')) { "tree:$(Path-Key $lines[1])" }
-    }) -join ','
+        elseif (-not $card.Text.StartsWith('Presentation order warning')) {
+            $key = "$repository|$($lines[0])"
+            if (-not $script:worktreePaths.ContainsKey($key)) { throw "Unexpected worktree branch $($lines[0]) in $repository" }
+            [void]$order.Add("tree:$(Path-Key $script:worktreePaths[$key])")
+        }
+    }
+    $order.ToArray() -join ','
 }
 
 function Assert-Order([string]$Expected, [string]$Label) {
@@ -273,6 +292,17 @@ try {
     $betaTree = Join-Path $fixture 'beta-tree'
     $launchDirectory = Join-Path $current 'nested'
     New-Item -ItemType Directory -Path $launchDirectory | Out-Null
+    $script:worktreePaths = @{}
+    foreach ($entry in @(
+        @{ Name = 'alpha'; Paths = @($alpha, $alphaTree) }
+        @{ Name = 'beta'; Paths = @($beta, $betaTree) }
+        @{ Name = 'current'; Paths = @($current) }
+    )) {
+        foreach ($path in $entry.Paths) {
+            $branch = (Run-Git $path @('branch', '--show-current') | Out-String).Trim()
+            $script:worktreePaths["$($entry.Name)|$branch"] = $path
+        }
+    }
     foreach ($repo in @($alpha, $beta)) {
         & $Binary add $repo
         if ($LASTEXITCODE -ne 0) { throw 'Fixture registration failed' }
@@ -287,8 +317,8 @@ try {
     $text = [WtsDragProbe]::AllText($script:handle)
     if ($text -cmatch 'REPOSITORIES|WORKTREES|LINE CHANGES') { throw 'Dashboard still shows summary totals' }
     $currentCard = Find-Card $current
-    $currentPaths = @($currentCard.Text -split "`r?`n" | Where-Object { [IO.Path]::IsPathFullyQualified($_) })
-    if ($currentPaths.Count -ne 1 -or [IO.Path]::GetFullPath($currentPaths[0]) -ne $current) { throw 'Launch context did not resolve the actual worktree root' }
+    $currentLines = @($currentCard.Text -split "`r?`n")
+    if ($currentLines.Count -ne 2 -or $currentLines[1] -notmatch '^S\s+\+') { throw 'Launch context did not resolve the actual worktree root' }
     if ([IO.File]::ReadAllText($config) -ne $registrations) { throw 'Launching registered the current repository' }
     Write-Host 'PASS. Unregistered launch repository appears as a worktree without changing registrations.'
     Assert-Order $initialOrder 'Unregistered launch repository is appended to registered groups'

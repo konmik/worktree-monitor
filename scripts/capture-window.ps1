@@ -72,11 +72,9 @@ function Invoke-FixtureGit([string]$Repo, [string[]]$Arguments) {
 }
 
 function Has-FixtureData([string]$Text) {
-    $normalized = $Text.Replace('\', '/')
     foreach ($expected in $script:expectedRows) {
-        $path = $expected.Path.Replace('\', '/')
-        $row = '(?m)^' + [regex]::Escape($expected.Branch) + '\r?\n' + [regex]::Escape($path) + '\r?\n' + $expected.Counts
-        if ($normalized -notmatch $row) { return $false }
+        $row = '(?m)^' + [regex]::Escape($expected.Branch) + '\r?\n' + $expected.Counts
+        if ($Text -notmatch $row) { return $false }
     }
     return $true
 }

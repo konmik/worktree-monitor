@@ -98,7 +98,7 @@ function Run-Git([string[]]$Arguments) {
 function Compare-Repaint([string]$Name) {
     [void][WtsResizeProbe]::RedrawWindow($script:handle, [IntPtr]::Zero, [IntPtr]::Zero, 0x0180)
     [void][WtsResizeProbe]::DwmFlush()
-    $status = [WtsResizeProbe]::GetDlgItem($script:handle, 1003)
+    $status = [WtsResizeProbe]::GetDlgItem($script:handle, 1002)
     $statusBefore = [WtsResizeProbe]::Text($status)
     $before = [WtsResizeProbe]::Capture($script:handle)
     try {
@@ -153,7 +153,10 @@ try {
     $script:handle = [IntPtr]::Zero
     Wait-For { $script:handle = [WtsResizeProbe]::Find([uint32]$process.Id); $script:handle -ne [IntPtr]::Zero } 'window'
     $viewport = [WtsResizeProbe]::GetDlgItem($script:handle, 1001)
-    Wait-For { [WtsResizeProbe]::Geometry($viewport) -match 'infra-tools.*S\s+\+1/-0' } 'fixture counts'
+    Wait-For {
+        $geometry = [WtsResizeProbe]::Geometry($viewport)
+        $geometry -match '(?m)^.*infra-tools \[1\].*$' -and $geometry -match '(?m)^.*S\s+\+1/-0.*$'
+    } 'fixture counts'
     $workArea = [WtsResizeProbe+Rect]::new()
     if (-not [WtsResizeProbe]::SystemParametersInfo(0x0030, 0, [ref]$workArea, 0)) { throw 'Work area unavailable' }
     $index = 0

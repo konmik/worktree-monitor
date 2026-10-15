@@ -114,10 +114,9 @@ function Run-Git([string[]]$Arguments) {
 
 function Has-Counts([int]$Added, [int]$Deleted) {
     $viewport = [WtsWindowProbe]::GetDlgItem($script:handle, 1001)
-    $path = $repo.Replace('\', '/').ToLowerInvariant()
     $rows = @([WtsWindowProbe]::Captions($viewport) | Where-Object {
         $lines = @($_ -split "`r?`n")
-        $lines.Count -ge 2 -and $lines[0] -eq $script:branch -and $lines[1].Replace('\', '/').ToLowerInvariant() -eq $path
+        $lines.Count -ge 2 -and $lines[0] -eq $script:branch -and $lines[1] -match 'S\s+\+\d+/-\d+\b'
     })
     return $rows.Count -eq 1 -and $rows[0] -match "S\s+\+$Added/-$Deleted\b"
 }

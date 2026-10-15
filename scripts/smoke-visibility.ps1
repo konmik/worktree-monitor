@@ -440,7 +440,7 @@ function New-ExpectedRows([array]$Repositories) {
             Name = $repository.Name
             PathText = $null
             Branch = $null
-            Caption = "$($repository.Name) · 2 worktrees"
+            Caption = "$($repository.Name) [2]"
         })
         [void]$rows.Add([pscustomobject]@{
             Kind = 'worktree'
@@ -470,33 +470,13 @@ function New-ExpectedRows([array]$Repositories) {
 
 function Get-RowSnapshot([array]$Cards) {
     $rows = [Collections.Generic.List[object]]::new()
+    $repositoryName = $null
     foreach ($card in @($Cards)) {
         $lines = @(([string]$card.Text) -split "`r?`n")
-        if ($lines.Count -ge 2 -and [IO.Path]::IsPathFullyQualified([string]$lines[1])) {
-            $worktreeKey = Normalize-Identity ([string]$lines[1])
-            $matches = @($script:expectedRows | Where-Object { $_.Kind -eq 'worktree' -and $_.WorktreeKey -eq $worktreeKey })
-            if ($matches.Count -ne 1) { throw "Unexpected worktree row key $($lines[1])" }
-            $expected = $matches[0]
-            if ([string]$lines[0] -cne [string]$expected.Branch) { throw "Unexpected branch caption for $($expected.Key): $($lines[0])" }
-            if ((Normalize-Identity ([string]$lines[1])) -cne [string]$expected.WorktreeKey) { throw "Unexpected worktree path caption for $($expected.Key): $($lines[1])" }
-            if ($lines.Count -ne 3 -or [string]::IsNullOrWhiteSpace([string]$lines[2])) { throw "Unexpected worktree caption shape for $($expected.Key)" }
-            if ([string]$lines[2] -cne [string]$expected.CountsCaption) { throw "Unexpected count caption for $($expected.Key): $($lines[2])" }
-            [void]$rows.Add([pscustomobject]@{
-                Kind = 'worktree'
-                Key = $expected.Key
-                RepositoryKey = $expected.RepositoryKey
-                WorktreeKey = $expected.WorktreeKey
-                Caption = [string]$card.Text
-                Handle = $card.Handle
-                Card = $card
-                Branch = [string]$lines[0]
-                PathText = [string]$lines[1]
-            })
-        } else {
-            $matches = @($script:expectedRows | Where-Object { $_.Kind -eq 'repository' -and $_.Caption -ceq [string]$card.Text })
-            if ($matches.Count -ne 1) { throw "Unexpected repository row caption: $($card.Text)" }
-            $expected = $matches[0]
-            if ($lines.Count -ne 1) { throw "Unexpected repository caption shape for $($expected.Key)" }
+        $repositoryMatches = @($script:expectedRows | Where-Object { $_.Kind -eq 'repository' -and $_.Caption -ceq [string]$card.Text })
+        if ($repositoryMatches.Count -eq 1) {
+            $expected = $repositoryMatches[0]
+            $repositoryName = $expected.Name
             [void]$rows.Add([pscustomobject]@{
                 Kind = 'repository'
                 Key = $expected.Key
@@ -508,7 +488,43 @@ function Get-RowSnapshot([array]$Cards) {
                 Branch = $null
                 PathText = $null
             })
+            continue
         }
+        if ($lines.Count -ge 3 -and [IO.Path]::IsPathFullyQualified([string]$lines[0])) {
+            $worktreeKey = Normalize-Identity ([string]$lines[0])
+            $matches = @($script:expectedRows | Where-Object { $_.Kind -eq 'worktree' -and $_.WorktreeKey -eq $worktreeKey })
+            if ($matches.Count -ne 1) { throw "Unexpected worktree row key $($lines[0])" }
+            $expected = $matches[0]
+            [void]$rows.Add([pscustomobject]@{
+                Kind = 'worktree'
+                Key = $expected.Key
+                RepositoryKey = $expected.RepositoryKey
+                WorktreeKey = $expected.WorktreeKey
+                Caption = [string]$card.Text
+                Handle = $card.Handle
+                Card = $card
+                Branch = $null
+                PathText = [string]$lines[0]
+            })
+            continue
+        }
+        $matches = @($script:expectedRows | Where-Object {
+            $_.Kind -eq 'worktree' -and $_.Name -ceq $repositoryName -and $_.Branch -ceq [string]$lines[0] -and $_.CountsCaption -ceq [string]$lines[1]
+        })
+        if ($matches.Count -ne 1) { throw "Unexpected successful worktree caption: $($card.Text)" }
+        $expected = $matches[0]
+        if ($lines.Count -ne 2) { throw "Unexpected successful worktree caption shape for $($expected.Key)" }
+        [void]$rows.Add([pscustomobject]@{
+            Kind = 'worktree'
+            Key = $expected.Key
+            RepositoryKey = $expected.RepositoryKey
+            WorktreeKey = $expected.WorktreeKey
+            Caption = [string]$card.Text
+            Handle = $card.Handle
+            Card = $card
+            Branch = [string]$lines[0]
+            PathText = $null
+        })
     }
     $rows.ToArray()
 }
