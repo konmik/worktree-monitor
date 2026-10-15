@@ -15,7 +15,7 @@ use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{SetScrollInfo, SetWindowTheme, DRAWITEMSTRUCT,
     ODT_BUTTON, ODT_STATIC, ODS_CHECKED, ODS_DISABLED, ODS_FOCUS, ODS_GRAYED,
-    ODS_HOTLIGHT, ODS_SELECTED, BST_CHECKED};
+    ODS_HOTLIGHT, ODS_SELECTED, BST_CHECKED, WM_MOUSELEAVE};
 use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetCapture, GetFocus, IsWindowEnabled, ReleaseCapture, SetCapture, SetFocus};
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
@@ -153,10 +153,6 @@ fn scaled(value: i32, dpi: i32) -> i32 { (value * dpi / 96).max(1) }
 fn worktree_inset(width: i32, dpi: i32) -> i32 { scaled(14, dpi).min(width.saturating_sub(1) / 2) }
 fn worktree_text_width(width: i32, dpi: i32) -> i32 {
     (width - worktree_inset(width, dpi) * 2).max(1)
-}
-
-unsafe fn scrollbar_width(dpi: i32) -> i32 {
-    GetSystemMetricsForDpi(SM_CXVSCROLL, dpi.max(96) as u32).max(scaled(16, dpi))
 }
 
 unsafe fn set_item(card: &mut Card, display: DisplayItem) {
@@ -358,7 +354,10 @@ unsafe fn update_scrollbar(state: &mut State, activity: bool) {
 unsafe fn set_scroll_info(state: &State) {
     let info = SCROLLINFO { cbSize: std::mem::size_of::<SCROLLINFO>() as u32, fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
         nMin: 0, nMax: (state.content - 1).max(0), nPage: state.page.max(0) as u32, nPos: state.scroll, ..std::mem::zeroed() };
-    if !state.scrollbar.is_null() { SetScrollInfo(state.scrollbar, SB_CTL, &info, 1); }
+    if !state.scrollbar.is_null() {
+        SetScrollInfo(state.scrollbar, SB_CTL, &info, 1);
+        InvalidateRect(state.scrollbar, null(), 0);
+    }
 }
 
 unsafe fn scroll_to(state: &mut State, position: i32) {
@@ -388,8 +387,8 @@ unsafe fn layout(window: HWND, state: &mut State, restore: Option<(ItemKey, i32)
     let status_height = s(20);
     let header = status_height;
     let available = (client.right - margin * 2).max(1);
-    let gutter = scrollbar_width(state.dpi);
-    let width = available.saturating_sub(gutter).max(1);
+    let width = available;
+    let scrollbar_width = scaled(8, state.dpi).min((margin - scaled(2, state.dpi)).max(1));
     let toggle_width = scaled(104, state.dpi).min(width);
     let toggle_height = scaled(24, state.dpi).min(status_height);
     MoveWindow(state.fixed[0].window, margin, margin, (width - toggle_width).max(1), status_height, 0);
@@ -399,7 +398,8 @@ unsafe fn layout(window: HWND, state: &mut State, restore: Option<(ItemKey, i32)
     let page = (client.bottom - top).max(1);
     MoveWindow(state.viewport, margin, top, width, page, 0);
     if !state.scrollbar.is_null() {
-        MoveWindow(state.scrollbar, margin + width, top, available.saturating_sub(width).max(1), page, 0);
+        let left = margin + available + (margin - scrollbar_width).max(0) / 2;
+        MoveWindow(state.scrollbar, left, top, scrollbar_width, page, 0);
     }
     let mut viewport: RECT = std::mem::zeroed();
     GetClientRect(state.viewport, &mut viewport);
@@ -854,6 +854,101 @@ unsafe extern "system" fn edge_procedure(window: HWND, message: u32, wparam: WPA
         return HTTRANSPARENT as LRESULT;
     }
     DefSubclassProc(window, message, wparam, lparam)
+}
+
+unsafe fn draw_scrollbar_chevron(dc: HDC, rect: RECT, up: bool) {
+    let width = rect.right - rect.left;
+    let height = rect.bottom - rect.top;
+    if width < 3 || height < 3 { return; }
+    let half_width = ((width - 2).min(6) / 2).max(1);
+    let half_height = ((height - 2).min(6) / 2).max(1);
+    let center_x = (rect.left + rect.right) / 2;
+    let center_y = (rect.top + rect.bottom) / 2;
+    if up {
+        MoveToEx(dc, center_x - half_width, center_y + half_height, null_mut());
+        LineTo(dc, center_x, center_y - half_height);
+        LineTo(dc, center_x + half_width, center_y + half_height);
+    } else {
+        MoveToEx(dc, center_x - half_width, center_y - half_height, null_mut());
+        LineTo(dc, center_x, center_y + half_height);
+        LineTo(dc, center_x + half_width, center_y - half_height);
+    }
+}
+
+unsafe fn paint_scrollbar(window: HWND, state: &State, message: u32, wparam: WPARAM) {
+    let mut paint: PAINTSTRUCT = std::mem::zeroed();
+    let dc = if message == WM_PAINT { BeginPaint(window, &mut paint) } else { wparam as HDC };
+    if !dc.is_null() {
+        if let Some(resources) = &state.resources {
+            let mut client: RECT = std::mem::zeroed();
+            if GetClientRect(window, &mut client) != 0 {
+                fill(dc, client, resources.background);
+                let mut info = SCROLLBARINFO { cbSize: std::mem::size_of::<SCROLLBARINFO>() as u32, ..std::mem::zeroed() };
+                if GetScrollBarInfo(window, OBJID_CLIENT, &mut info) != 0 {
+                    let mut origin = POINT { x: info.rcScrollBar.left, y: info.rcScrollBar.top };
+                    let mut end = POINT { x: info.rcScrollBar.right, y: info.rcScrollBar.bottom };
+                    if ScreenToClient(window, &mut origin) != 0 && ScreenToClient(window, &mut end) != 0 {
+                        let bar = RECT { left: origin.x, top: origin.y, right: end.x, bottom: end.y };
+                        let arrow = info.dxyLineButton.max(0).min((bar.bottom - bar.top).max(0) / 2);
+                        let top_arrow = RECT { left: bar.left, top: bar.top, right: bar.right, bottom: bar.top + arrow };
+                        let bottom_arrow = RECT { left: bar.left, top: bar.bottom - arrow, right: bar.right, bottom: bar.bottom };
+                        let pen = CreatePen(PS_SOLID, 1, MUTED);
+                        if !pen.is_null() {
+                            let old = SelectObject(dc, pen);
+                            if let Some(rect) = intersection(top_arrow, client) {
+                                draw_scrollbar_chevron(dc, rect, true);
+                            }
+                            if let Some(rect) = intersection(bottom_arrow, client) {
+                                draw_scrollbar_chevron(dc, rect, false);
+                            }
+                            SelectObject(dc, old);
+                            DeleteObject(pen);
+                        }
+                        if info.xyThumbBottom > info.xyThumbTop {
+                            let top = (bar.top + info.xyThumbTop).clamp(client.top, client.bottom);
+                            let bottom = (bar.top + info.xyThumbBottom).clamp(top, client.bottom);
+                            let width = (bar.right - bar.left).max(1);
+                            let inset = scaled(1, state.dpi).min(width.saturating_sub(1) / 2);
+                            let thumb = RECT { left: (bar.left + inset).max(client.left), top,
+                                right: (bar.right - inset).min(client.right), bottom };
+                            if thumb.left < thumb.right && thumb.top < thumb.bottom {
+                                let old = SelectObject(dc, if GetCapture() == window { resources.teal } else { resources.muted });
+                                let old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
+                                RoundRect(dc, thumb.left, thumb.top, thumb.right, thumb.bottom,
+                                    (thumb.right - thumb.left).max(1), (thumb.right - thumb.left).max(1));
+                                SelectObject(dc, old_pen);
+                                SelectObject(dc, old);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if message == WM_PAINT { EndPaint(window, &paint); }
+}
+
+unsafe extern "system" fn scrollbar_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, data: usize) -> LRESULT {
+    if message == WM_NCDESTROY { RemoveWindowSubclass(window, Some(scrollbar_procedure), 1); }
+    if message == WM_NCHITTEST {
+        let point = mouse_point(lparam);
+        let mut rect: RECT = std::mem::zeroed();
+        if GetWindowRect(window, &mut rect) != 0 && point.x >= rect.left && point.x < rect.right
+            && point.y >= rect.top && point.y < rect.bottom { return HTCLIENT as LRESULT; }
+        if edge_hit_transparent(window, point) { return HTTRANSPARENT as LRESULT; }
+    }
+    if matches!(message, WM_PAINT | WM_PRINTCLIENT) {
+        paint_scrollbar(window, &*(data as *const State), message, wparam);
+        return 0;
+    }
+    if message == WM_ERASEBKGND { return 1; }
+    let result = DefSubclassProc(window, message, wparam, lparam);
+    if matches!(message, WM_LBUTTONDOWN | WM_LBUTTONUP | WM_MOUSEMOVE | WM_MOUSELEAVE | 0x0118
+        | WM_CAPTURECHANGED | WM_CANCELMODE | WM_SETFOCUS | WM_KILLFOCUS) {
+        InvalidateRect(window, null(), 0);
+        UpdateWindow(window);
+    }
+    result
 }
 
 fn project_marker(state: &State, marker: i32) -> Option<RECT> {
@@ -1339,7 +1434,7 @@ unsafe fn controls(window: HWND, state: &mut State) -> bool {
     state.scrollbar = CreateWindowExW(0, wide("SCROLLBAR").as_ptr(), wide("").as_ptr(),
         WS_CHILD | WS_VISIBLE | SBS_VERT as u32, 0, 0, 1, 1, window, 1003 as _, GetModuleHandleW(null()), null());
     if state.scrollbar.is_null() { return false; }
-    if SetWindowSubclass(state.scrollbar, Some(edge_procedure), 1, 0) == 0 { return false; }
+    if SetWindowSubclass(state.scrollbar, Some(scrollbar_procedure), 1, state as *const State as usize) == 0 { return false; }
     SetWindowTheme(state.scrollbar, wide("DarkMode_Explorer").as_ptr(), null());
     state.viewport = CreateWindowExW(WS_EX_CONTROLPARENT, wide("WtsDashboardViewport").as_ptr(), wide("Repository worktrees").as_ptr(),
         WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_TABSTOP,
