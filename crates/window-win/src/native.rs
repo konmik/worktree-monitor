@@ -302,6 +302,60 @@ mod row_tests {
     use super::*;
 
     #[test]
+    fn refresh_marker_pixels_follow_displayed_name_by_one_physical_pixel() {
+        unsafe {
+            let screen = GetDC(null_mut());
+            for dpi in [96, 120, 144, 192] {
+                let resources = Resources::new(dpi).unwrap();
+                for (name, suffix, displayed, narrow) in [
+                    ("repository", false, "repository", false),
+                    ("master", false, "master", false),
+                    ("repository-name", false, "repo…", true),
+                    ("C:\\work\\branch", true, "…branch", true),
+                ] {
+                    let actual = CreateCompatibleDC(screen);
+                    let expected = CreateCompatibleDC(screen);
+                    SelectObject(expected, resources.font);
+                    let mut name_size = std::mem::zeroed();
+                    let name_wide = wide(displayed);
+                    assert_ne!(GetTextExtentPoint32W(expected, name_wide.as_ptr(), (name_wide.len() - 1) as i32, &mut name_size), 0);
+                    let mut marker_size = std::mem::zeroed();
+                    assert_ne!(GetTextExtentPoint32W(expected, wide("*").as_ptr(), 1, &mut marker_size), 0);
+                    let width = if narrow { name_size.cx + 1 + marker_size.cx } else { scaled(500, dpi) };
+                    let height = resources.typography.cell;
+                    let actual_bitmap = CreateCompatibleBitmap(screen, width, height);
+                    let expected_bitmap = CreateCompatibleBitmap(screen, width, height);
+                    let actual_old = SelectObject(actual, actual_bitmap);
+                    let expected_old = SelectObject(expected, expected_bitmap);
+                    let rect = RECT { left: 0, top: 0, right: width, bottom: height };
+                    fill(actual, rect, resources.background);
+                    fill(expected, rect, resources.background);
+                    draw_name(actual, name, rect, resources.font, WHITE, suffix, true);
+                    text(expected, displayed, RECT { right: name_size.cx, ..rect }, resources.font, WHITE, DT_SINGLELINE);
+                    text(expected, "*", RECT { left: name_size.cx + 1, right: name_size.cx + 1 + marker_size.cx, ..rect }, resources.font, TEAL, DT_SINGLELINE);
+                    let mut marker_pixels = 0;
+                    for y in 0..height {
+                        for x in 0..width {
+                            let pixel = GetPixel(actual, x, y);
+                            assert_eq!(pixel, GetPixel(expected, x, y), "DPI {dpi}, {name}, pixel {x},{y}");
+                            if x > name_size.cx && pixel != BACKGROUND { marker_pixels += 1; }
+                        }
+                        assert_eq!(GetPixel(actual, name_size.cx, y), BACKGROUND);
+                    }
+                    assert!(marker_pixels > 0);
+                    SelectObject(actual, actual_old);
+                    SelectObject(expected, expected_old);
+                    DeleteObject(actual_bitmap);
+                    DeleteObject(expected_bitmap);
+                    DeleteDC(actual);
+                    DeleteDC(expected);
+                }
+            }
+            ReleaseDC(null_mut(), screen);
+        }
+    }
+
+    #[test]
     fn narrowing_only_adds_height_for_wrapped_text() {
         use wts_core::{Counts, Error, ErrorKind, Head, WorktreeStats};
         let items = [
@@ -539,10 +593,8 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
         let top = card.spacing.top(typography, index);
         bounds(left, top, right, top + typography.cell)
     };
-    let indicator_right = if matches!(card.display, DisplayItem::Repository { .. }) { width - s(12) }
+    let heading_right = if matches!(card.display, DisplayItem::Repository { .. }) { width - s(12) }
         else { card.action_rect.map_or(width - s(12), |rect| rect.left - s(8)) };
-    let indicator_left = (indicator_right - s(12)).max(s(14));
-    let heading_right = indicator_left - s(8);
     let dragging = state.drag.as_ref().is_some_and(|drag| drag.source_handle == card.window);
     fill(dc, rect, resources.background);
     match &card.display {
@@ -552,7 +604,8 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
             text(dc, &format!("> {caption}"), bounds(0, y, width, y + typography.cell), resources.font, color, line);
         }
         DisplayItem::Repository { bare, .. } => {
-            text(dc, lines[0], line_bounds(s(14), 0, heading_right), resources.font, if dragging { GREEN } else { TEAL }, line);
+            draw_name(dc, lines[0], line_bounds(s(14), 0, heading_right), resources.font,
+                if dragging { GREEN } else { TEAL }, false, card.refreshing);
             if *bare { text(dc, lines[1], line_bounds(s(14), 1, width - s(12)), resources.font, MUTED, line); }
         }
         DisplayItem::Worktree { path, result } => {
@@ -563,7 +616,8 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
             let path = path.display().to_string();
             match result {
                 Ok(stats) => {
-                    text(dc, lines[0], line_bounds(inset, 0, inset + heading_width), resources.font, if dragging { GREEN } else { WHITE }, line);
+                    draw_name(dc, lines[0], line_bounds(inset, 0, inset + heading_width), resources.font,
+                        if dragging { GREEN } else { WHITE }, false, card.refreshing);
                     let y = card.spacing.top(typography, 1);
                     let mut parts = vec![
                         ("S ".to_owned(), MUTED),
@@ -586,8 +640,8 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
                     }
                 }
                 Err(error) => {
-                    let fitted_path = ellipsize_start(&path, heading_width, |value| wrapped_width(dc, value, resources.font));
-                    text(dc, &fitted_path, line_bounds(inset, 0, inset + heading_width), resources.font, if dragging { GREEN } else { MUTED }, DT_SINGLELINE);
+                    draw_name(dc, &path, line_bounds(inset, 0, inset + heading_width), resources.font,
+                        if dragging { GREEN } else { MUTED }, true, card.refreshing);
                     text(dc, lines[1], line_bounds(inset, 1, right), resources.font, MUTED, line);
                     wrapped_text(dc, &format!("ERROR ({:?}): {}", error.kind, error.message), line_bounds(inset, 2, right), resources, RED);
                 }
@@ -596,17 +650,14 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
         DisplayItem::PendingWorktree { path } => {
             let inset = worktree_inset(width, state.dpi);
             let heading_width = (heading_right - inset).max(0);
-            let fitted = ellipsize_start(&path.display().to_string(), heading_width, |value| wrapped_width(dc, value, resources.font));
-            text(dc, &fitted, line_bounds(inset, 0, inset + heading_width), resources.font, if dragging { GREEN } else { MUTED }, DT_SINGLELINE);
+            draw_name(dc, &path.display().to_string(), line_bounds(inset, 0, inset + heading_width), resources.font,
+                if dragging { GREEN } else { MUTED }, true, card.refreshing);
             text(dc, lines[1], line_bounds(inset, 1, width - inset), resources.font, MUTED, line);
         }
         DisplayItem::Notice { title, message, error } => {
             text(dc, title, line_bounds(s(14), 0, width - s(14)), resources.font, if *error { RED } else { WHITE }, line);
             wrapped_text(dc, message, line_bounds(s(14), 1, width - s(14)), resources, if *error { RED } else { MUTED });
         }
-    }
-    if card.refreshing {
-        text(dc, "*", line_bounds(indicator_left, 0, indicator_right), resources.font, TEAL, DT_SINGLELINE);
     }
     if let Some(target) = state.drag.as_ref().and_then(|drag| drag.target.as_ref()) {
         let y = if target.marker == card.top { Some(0) }
@@ -624,6 +675,29 @@ unsafe fn wrapped_width(dc: HDC, value: &str, font: HFONT) -> i32 {
     GetTextExtentPoint32W(dc, value.as_ptr(), (value.len() - 1) as i32, &mut size);
     RestoreDC(dc, saved);
     size.cx
+}
+
+unsafe fn draw_name(dc: HDC, value: &str, rect: RECT, font: HFONT, color: COLORREF, suffix: bool, refreshing: bool) {
+    let marker_width = wrapped_width(dc, "*", font);
+    let available = (rect.right - rect.left - marker_width - 1).max(0);
+    let measure = |value: &str| wrapped_width(dc, value, font);
+    let fitted = if suffix { ellipsize_start(value, available, measure) }
+        else if measure(value) <= available { value.to_owned() }
+        else if measure("…") > available { String::new() }
+        else {
+            let mut fitted = "…".to_owned();
+            for (index, character) in value.char_indices() {
+                let candidate = format!("{}…", &value[..index + character.len_utf8()]);
+                if measure(&candidate) > available { break; }
+                fitted = candidate;
+            }
+            fitted
+        };
+    let name_right = rect.left + measure(&fitted);
+    text(dc, &fitted, RECT { right: name_right, ..rect }, font, color, DT_SINGLELINE);
+    if refreshing && !fitted.is_empty() {
+        text(dc, "*", RECT { left: name_right + 1, right: name_right + 1 + marker_width, ..rect }, font, TEAL, DT_SINGLELINE);
+    }
 }
 
 unsafe fn button_caption(window: HWND) -> String {
