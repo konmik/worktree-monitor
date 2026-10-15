@@ -5,7 +5,9 @@ param(
     [int]$Height = 0,
     [switch]$Client,
     [switch]$ShowAll,
-    [switch]$VerifyScrollbar
+    [switch]$VerifyScrollbar,
+    [int]$DirectoryCount = 0,
+    [switch]$VerifyRefresh
 )
 
 $ErrorActionPreference = 'Stop'
@@ -115,12 +117,15 @@ try {
         [IO.File]::WriteAllLines((Join-Path $repo 'source.txt'), $before)
         Invoke-FixtureGit $repo @('add', '.')
         Invoke-FixtureGit $repo @('-c', 'user.name=Wts Visual Test', '-c', 'user.email=wts@example.invalid', 'commit', '--quiet', '-m', 'Fixture')
+        for ($index = 0; $index -lt $DirectoryCount; $index++) {
+            [void][IO.Directory]::CreateDirectory((Join-Path $repo "folder-$index/source"))
+        }
         $after = @($before | Select-Object -Skip $spec.Deleted) + @(1..$spec.Added | ForEach-Object { "new line $_" })
         [IO.File]::WriteAllLines((Join-Path $repo 'source.txt'), $after)
         if ($spec.Binaries -gt 0) { [IO.File]::WriteAllBytes((Join-Path $repo 'asset.bin'), [byte[]]@(0, 1, 2)) }
         $branch = (Invoke-FixtureGit $repo @('branch', '--show-current') | Out-String).Trim()
         $binaryCounts = if ($spec.Binaries -gt 0) { " · binaries: $($spec.Binaries)" } else { '' }
-        $script:expectedRows += [pscustomobject]@{ Branch = $branch; Path = $repo; Counts = "S\s+\+$($spec.Added)/-$($spec.Deleted)\s+·\s+T\s+\+0/-0\s+·\s+X\s+\+0/-0$binaryCounts\r?$" }
+        $script:expectedRows += [pscustomobject]@{ Branch = $branch; Path = $repo; Added = $spec.Added; Counts = "S\s+\+$($spec.Added)/-$($spec.Deleted)\s+·\s+T\s+\+0/-0\s+·\s+X\s+\+0/-0$binaryCounts\r?$" }
         & $CliBinary add $repo
         if ($LASTEXITCODE -ne 0) { throw 'Visual fixture registration failed' }
     }
@@ -136,6 +141,20 @@ try {
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
     if ($handle -eq [IntPtr]::Zero -or -not (Has-FixtureData $text)) { throw 'Dashboard did not show all three real fixture counts' }
+    if ($VerifyRefresh) {
+        foreach ($expected in $script:expectedRows) {
+            [IO.File]::AppendAllText((Join-Path $expected.Path 'source.txt'), "refresh line`n")
+            $expected.Counts = $expected.Counts.Replace("+$($expected.Added)/", "+$($expected.Added + 1)/")
+        }
+        $deadline = [DateTime]::UtcNow.AddSeconds(30)
+        do {
+            $text = [WtsCapture]::Text($handle)
+            if (Has-FixtureData $text) { break }
+            Start-Sleep -Milliseconds 100
+        } while ([DateTime]::UtcNow -lt $deadline)
+        if (-not (Has-FixtureData $text)) { throw 'Dashboard did not refresh all three edited worktree counts' }
+        Write-Output 'PASS. Initial counts and subsequent edits appear in the running dashboard.'
+    }
     if ($text -cmatch 'REPOSITORIES|WORKTREES|LINE CHANGES') { throw 'Dashboard still shows summary totals' }
     [IO.File]::WriteAllText((Join-Path $fixture 'visible-text.txt'), $text)
     $automation = @"

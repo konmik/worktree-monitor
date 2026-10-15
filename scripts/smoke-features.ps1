@@ -48,6 +48,11 @@ public static class WtsFeatureProbe {
     [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern int GetTextFaceW(IntPtr dc, int count, StringBuilder face);
     [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr CreateFontW(int height, int width, int escapement, int orientation, int weight, uint italic, uint underline, uint strikeout, uint charset, uint outputPrecision, uint clipPrecision, uint quality, uint pitchAndFamily, string face);
     [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr handle);
+    [DllImport("gdi32.dll")] public static extern int SetBkMode(IntPtr dc, int mode);
+    [DllImport("gdi32.dll")] public static extern uint SetTextColor(IntPtr dc, uint color);
+    [DllImport("gdi32.dll")] public static extern IntPtr CreateSolidBrush(uint color);
+    [DllImport("user32.dll")] public static extern int FillRect(IntPtr dc, ref Rect rect, IntPtr brush);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int DrawTextW(IntPtr dc, string text, int count, ref Rect rect, uint flags);
     [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern bool GetTextExtentPoint32W(IntPtr dc, string text, int length, out Size size);
     [DllImport("dwmapi.dll")] public static extern int DwmFlush();
     public static string Text(IntPtr window) {
@@ -102,7 +107,7 @@ public static class WtsFeatureProbe {
         }
         throw new InvalidOperationException("Terminal font unavailable");
     }
-    public static string AssertFont(IntPtr root, IntPtr sample) {
+    public static string AssertFont(IntPtr root, IntPtr sample, Bitmap image, int left, int top) {
         var font = SendMessage(sample, 0x0031, IntPtr.Zero, IntPtr.Zero);
         if (font == IntPtr.Zero) throw new InvalidOperationException("Control font unavailable");
         EnumChildWindows(root, (window, data) => {
@@ -120,6 +125,35 @@ public static class WtsFeatureProbe {
             var face = new StringBuilder(64);
             if (GetTextFaceW(dc, face.Capacity, face) == 0) throw new InvalidOperationException("Actual font unavailable");
             if (Measure(sample, "iiii") != Measure(sample, "WWWW")) throw new InvalidOperationException("Font is not monospace");
+            var label = Text(sample).Split('\n')[0];
+            label = label.Substring(0, Math.Min(8, label.Length));
+            var width = Measure(sample, label);
+            var height = 20 * (int)GetDpiForWindow(sample) / 96;
+            using (var expected = new Bitmap(width, height)) {
+                using (var graphics = Graphics.FromImage(expected)) {
+                    var target = graphics.GetHdc();
+                    var previous = SelectObject(target, localFont);
+                    var background = CreateSolidBrush(11u | (16u << 8) | (18u << 16));
+                    try {
+                        var rect = new Rect { Right = width, Bottom = height };
+                        FillRect(target, ref rect, background);
+                        SetBkMode(target, 1);
+                        SetTextColor(target, 232u | (239u << 8) | (235u << 16));
+                        DrawTextW(target, label, label.Length, ref rect, 0x0820);
+                    } finally { SelectObject(target, previous); DeleteObject(background); graphics.ReleaseHdc(target); }
+                }
+                int ink = 0;
+                for (int x = 0; x < width; x++) {
+                    for (int y = 0; y < height; y++) {
+                        var actual = image.GetPixel(left + x, top + y);
+                        var wanted = expected.GetPixel(x, y);
+                        if (wanted.R != 11 || wanted.G != 16 || wanted.B != 18) ink++;
+                        if (actual.R != wanted.R || actual.G != wanted.G || actual.B != wanted.B)
+                            throw new InvalidOperationException("Rendered application text differs from expected regular terminal font");
+                    }
+                }
+                if (ink == 0) throw new InvalidOperationException("Rendered font sample is empty");
+            }
             return face.ToString();
         } finally { SelectObject(dc, old); DeleteObject(localFont); ReleaseDC(sample, dc); }
     }
@@ -266,7 +300,8 @@ function Assert-Colors {
         $buttonBounds = Bounds $button
         $corner = $image.GetPixel($buttonBounds.Left - $outer.Left, $buttonBounds.Top - $outer.Top)
         if ($corner.R -ne 11 -or $corner.G -ne 16 -or $corner.B -ne 18) { throw "Hide corner differs from terminal background" }
-        $proof.font = [WtsFeatureProbe]::AssertFont($script:window, $script:card)
+        $headingTop = $card.Top - $outer.Top + [int][Math]::Floor(12 * $dpi / 96)
+        $proof.rendered_font = [WtsFeatureProbe]::AssertFont($script:window, $script:card, $image, $x, $headingTop)
         [WtsFeatureProbe]::ButtonStates($button, $Output)
         $proof.button_corners_match_card = $true
         $proof.button_states = @('normal', 'hover', 'pressed', 'disabled')
