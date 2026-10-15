@@ -251,6 +251,13 @@ impl WatchBoundary {
                         if intersects(&path, common) {
                             let key = normalize(common);
                             repositories.insert(key.clone());
+                            let objects = key.join("objects");
+                            let object_write = path.starts_with(&objects)
+                                && (path != objects || !topology_event(&event.kind))
+                                && matches!(event.kind, EventKind::Create(_)
+                                    | EventKind::Modify(ModifyKind::Data(_)
+                                        | ModifyKind::Metadata(_) | ModifyKind::Any));
+                            if object_write { continue; }
                             batch.repositories.insert(key.clone());
                             if repository_topology(&path, common, &event.kind) {
                                 batch.discoveries.insert(key);
@@ -631,6 +638,30 @@ mod tests {
         assert!(batch.discoveries.is_empty());
         assert!(batch.repositories.len() == 1);
         assert!(key.path.ends_with("watch-root"));
+    }
+
+    #[test]
+    fn object_store_writes_do_not_invalidate_worktree_counts() {
+        let tree = absolute(Path::new("watch-root"));
+        let common = tree.join(".git");
+        let key = WorktreeKey::new(&common, &tree);
+        let mut boundary = boundary_with(tree, vec![
+            Target::Repository(common.clone()), Target::Worktree(key),
+        ]);
+        for kind in [EventKind::Create(CreateKind::File),
+            EventKind::Modify(ModifyKind::Any)] {
+            let mut batch = WatchBatch::default();
+            boundary.classify(Event::new(kind).add_path(common.join("objects/e6/empty")), &mut batch);
+            assert!(batch.is_empty());
+        }
+        let mut batch = WatchBatch::default();
+        boundary.classify(Event::new(EventKind::Modify(ModifyKind::Any))
+            .add_path(common.join("refs/heads/main")), &mut batch);
+        assert!(batch.repositories.contains(&normalize(&common)));
+        let mut batch = WatchBatch::default();
+        boundary.classify(Event::new(EventKind::Remove(RemoveKind::Folder))
+            .add_path(common.join("objects")), &mut batch);
+        assert!(batch.repositories.contains(&normalize(&common)));
     }
 
     #[test]

@@ -631,6 +631,39 @@ fn ignored_directory_artifacts_do_not_grow_polling_work_and_real_edits_update() 
 }
 
 #[test]
+fn git_object_writes_do_not_rescan_and_ref_changes_still_update() {
+    let fixture = Fixture::new("sha1");
+    fixture.write("tracked.txt", "before\n");
+    fixture.commit();
+    let objects = fixture.repo.join(".git/objects/e6");
+    fs::create_dir_all(&objects).unwrap();
+    let object = objects.join("tmp_obj_fixture");
+    let bytes = b"irrelevant object data\n";
+    fs::write(&object, bytes).unwrap();
+    fixture.service().add(&fixture.repo).unwrap();
+    let mut monitor = fixture.service().monitor().unwrap();
+    wait_for(&monitor, |update| update.snapshot.repos.len() == 1
+        && update.snapshot.repos[0].worktrees.as_ref().is_ok_and(|trees|
+            trees[0].result.as_ref().is_ok_and(|stats| stats.counts == Counts::default())));
+    let before = settled_polling_time(&monitor);
+    for _ in 0..10 {
+        fs::write(&object, bytes).unwrap();
+        thread::sleep(Duration::from_millis(200));
+    }
+    thread::sleep(Duration::from_millis(1200));
+    assert_eq!(monitor.latest().unwrap().polling_time_last_minute, before);
+    fixture.write("tracked.txt", "before\nafter\n");
+    wait_for_within(&monitor, |update| update.snapshot.repos[0]
+        .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
+        == source_counts(1, 0, 0), Duration::from_secs(2));
+    fixture.commit();
+    wait_for_within(&monitor, |update| update.snapshot.repos[0]
+        .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts == Counts::default(),
+        Duration::from_secs(6));
+    monitor.stop().unwrap();
+}
+
+#[test]
 fn ignored_writes_during_initial_scan_converge_to_a_cache() {
     let fixture = Fixture::new("sha1");
     fixture.write("tracked.txt", "before\n");
