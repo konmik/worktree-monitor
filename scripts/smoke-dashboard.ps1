@@ -222,10 +222,17 @@ function Close-Dashboard {
 function Find-Card([string]$Name, [switch]$Repository) {
     $cards = @([WtsDragProbe]::Cards($script:viewport) | Where-Object {
         if ($Repository) { $_.Text.StartsWith("$Name ·") }
-        else { @($_.Text -split "`r?`n") -contains $Name }
+        else {
+            $lines = @($_.Text -split "`r?`n")
+            $lines.Count -ge 2 -and (Path-Key $lines[1]) -eq (Path-Key $Name)
+        }
     })
     if ($cards.Count -ne 1) { throw "Expected one card for $Name, found $($cards.Count)" }
     return $cards[0]
+}
+
+function Path-Key([string]$Path) {
+    [IO.Path]::GetFullPath($Path).TrimEnd('\', '/').Replace('\', '/').ToLowerInvariant()
 }
 
 function Card-Order {
@@ -238,7 +245,7 @@ function Card-Order {
             if (-not $expected.ContainsKey($name) -or $count -ne $expected[$name]) { throw "Unexpected worktree count for $name" }
             "repo:$name"
         }
-        elseif (-not $_.Text.StartsWith('Presentation order warning')) { "tree:$($lines[1])" }
+        elseif (-not $_.Text.StartsWith('Presentation order warning')) { "tree:$(Path-Key $lines[1])" }
     }) -join ','
 }
 
@@ -262,6 +269,8 @@ try {
     $alpha = New-Repository 'alpha' -Linked
     $beta = New-Repository 'beta' -Linked
     $current = New-Repository 'current'
+    $alphaTree = Join-Path $fixture 'alpha-tree'
+    $betaTree = Join-Path $fixture 'beta-tree'
     $launchDirectory = Join-Path $current 'nested'
     New-Item -ItemType Directory -Path $launchDirectory | Out-Null
     foreach ($repo in @($alpha, $beta)) {
@@ -271,45 +280,46 @@ try {
     $config = Join-Path $fixtureHome '.config/wts/config.json'
     $registrations = [IO.File]::ReadAllText($config)
     $preferences = Join-Path $fixtureHome '.config/wts/config.order.json'
+    $initialOrder = @("repo:alpha", "tree:$(Path-Key $alpha)", "tree:$(Path-Key $alphaTree)", "repo:beta", "tree:$(Path-Key $beta)", "tree:$(Path-Key $betaTree)", "repo:current", "tree:$(Path-Key $current)") -join ','
+    $repositoryOrder = @("repo:beta", "tree:$(Path-Key $beta)", "tree:$(Path-Key $betaTree)", "repo:alpha", "tree:$(Path-Key $alpha)", "tree:$(Path-Key $alphaTree)", "repo:current", "tree:$(Path-Key $current)") -join ','
+    $worktreeOrder = @("repo:beta", "tree:$(Path-Key $beta)", "tree:$(Path-Key $betaTree)", "repo:alpha", "tree:$(Path-Key $alphaTree)", "tree:$(Path-Key $alpha)", "repo:current", "tree:$(Path-Key $current)") -join ','
     Start-Dashboard
     $text = [WtsDragProbe]::AllText($script:handle)
     if ($text -cmatch 'REPOSITORIES|WORKTREES|LINE CHANGES') { throw 'Dashboard still shows summary totals' }
-    $currentCard = Find-Card 'current'
+    $currentCard = Find-Card $current
     $currentPaths = @($currentCard.Text -split "`r?`n" | Where-Object { [IO.Path]::IsPathFullyQualified($_) })
     if ($currentPaths.Count -ne 1 -or [IO.Path]::GetFullPath($currentPaths[0]) -ne $current) { throw 'Launch context did not resolve the actual worktree root' }
     if ([IO.File]::ReadAllText($config) -ne $registrations) { throw 'Launching registered the current repository' }
     Write-Host 'PASS. Unregistered launch repository appears as a worktree without changing registrations.'
-    Assert-Order 'repo:alpha,tree:alpha,tree:alpha-tree,repo:beta,tree:beta,tree:beta-tree,repo:current,tree:current' 'Unregistered launch repository is appended to registered groups'
+    Assert-Order $initialOrder 'Unregistered launch repository is appended to registered groups'
     $initial = Card-Order
     [IO.File]::WriteAllText((Join-Path $fixture 'initial-order.txt'), $initial)
     $source = Find-Card 'beta' -Repository
     $target = Find-Card 'alpha' -Repository
     [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
-    $repositoryOrder = 'repo:beta,tree:beta,tree:beta-tree,repo:alpha,tree:alpha,tree:alpha-tree,repo:current,tree:current'
     Assert-Order $repositoryOrder 'Repository handle moves its whole group'
     $source = Find-Card 'beta' -Repository
-    $target = Find-Card 'alpha-tree'
+    $target = Find-Card $alphaTree
     [WtsDragProbe]::DragBelow($source.Handle, $target.Handle)
     Assert-Order $initial 'Repository handle can move a group down past another group'
     $source = Find-Card 'beta' -Repository
     $target = Find-Card 'alpha' -Repository
     [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
     Assert-Order $repositoryOrder 'Repository handle can move a group back up'
-    $source = Find-Card 'alpha-tree'
-    $target = Find-Card 'alpha'
+    $source = Find-Card $alphaTree
+    $target = Find-Card $alpha
     [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
-    $worktreeOrder = 'repo:beta,tree:beta,tree:beta-tree,repo:alpha,tree:alpha-tree,tree:alpha,repo:current,tree:current'
     Assert-Order $worktreeOrder 'Worktree handle reorders within its repository'
-    $source = Find-Card 'alpha-tree'
-    $target = Find-Card 'alpha'
+    $source = Find-Card $alphaTree
+    $target = Find-Card $alpha
     [WtsDragProbe]::DragBelow($source.Handle, $target.Handle)
     Assert-Order $repositoryOrder 'Worktree handle can move a row down'
-    $source = Find-Card 'alpha-tree'
-    $target = Find-Card 'alpha'
+    $source = Find-Card $alphaTree
+    $target = Find-Card $alpha
     [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
     Assert-Order $worktreeOrder 'Worktree handle can move a row back up'
-    $source = Find-Card 'alpha'
-    $target = Find-Card 'beta'
+    $source = Find-Card $alpha
+    $target = Find-Card $beta
     [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
     Assert-Order $worktreeOrder 'Cross-repository worktree drop leaves groups unchanged'
     $source = Find-Card 'alpha' -Repository
@@ -325,7 +335,7 @@ try {
         if ([IO.File]::ReadAllText($preferences) -ne $savedBeforeCancel) { throw 'Cancelled drag changed saved order' }
     }
     [IO.File]::WriteAllText((Join-Path $alpha 'lines.txt'), "before`nchanged`n")
-    Wait-For { (Find-Card 'alpha').Text -match '\+1\s+-0\b' } 'live count refresh' 40
+    Wait-For { (Find-Card $alpha).Text -match '\+1\s+-0\b' } 'live count refresh' 40
     Assert-Order $worktreeOrder 'Refresh preserves repository and worktree order'
     $reorderedOrder = Card-Order
     if ([IO.File]::ReadAllText($config) -ne $registrations) { throw 'Reordering changed repository registrations' }
@@ -335,19 +345,19 @@ try {
     & $Binary add $current
     if ($LASTEXITCODE -ne 0) { throw 'Explicit registration of launch repository failed' }
     [IO.File]::WriteAllText((Join-Path $current 'lines.txt'), "before`nfirst`nsecond`n")
-    Wait-For { (Find-Card 'current').Text -match '\+2\s+-0\b' } 'registered launch repository refresh' 40
+    Wait-For { (Find-Card $current).Text -match '\+2\s+-0\b' } 'registered launch repository refresh' 40
     Wait-For { @([WtsDragProbe]::Cards($script:viewport)).Count -eq 8 } 'deduplicated current repository'
     Assert-Order $worktreeOrder 'Registering the launch repository does not duplicate its worktree'
     [IO.File]::WriteAllText((Join-Path $fixture 'final-order.txt'), (Card-Order))
     & $Binary remove $current
     if ($LASTEXITCODE -ne 0) { throw 'Removing launch registration failed' }
     [IO.File]::WriteAllText((Join-Path $current 'lines.txt'), "before`nfirst`nsecond`nthird`n")
-    Wait-For { (Find-Card 'current').Text -match '\+3\s+-0\b' } 'unregistered launch repository refresh' 40
+    Wait-For { (Find-Card $current).Text -match '\+3\s+-0\b' } 'unregistered launch repository refresh' 40
     Assert-Order $worktreeOrder 'Removing a registration keeps the current repository visible'
     Close-Dashboard
     $launchDirectory = $fixtureHome
     Start-Dashboard 6
-    Assert-Order 'repo:beta,tree:beta,tree:beta-tree,repo:alpha,tree:alpha-tree,tree:alpha' 'Launching outside Git does not resurrect an unregistered repository'
+    Assert-Order (@("repo:beta", "tree:$(Path-Key $beta)", "tree:$(Path-Key $betaTree)", "repo:alpha", "tree:$(Path-Key $alphaTree)", "tree:$(Path-Key $alpha)") -join ',') 'Launching outside Git does not resurrect an unregistered repository'
     $outsideOrder = Card-Order
     $savedOrder = [IO.File]::ReadAllText($preferences)
     $attributes = [IO.File]::GetAttributes($preferences)
@@ -371,7 +381,7 @@ try {
     $source = Find-Card 'alpha' -Repository
     $target = Find-Card 'beta' -Repository
     [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
-    Assert-Order 'repo:alpha,tree:alpha-tree,tree:alpha,repo:beta,tree:beta,tree:beta-tree' 'Saving recovers after preferences are repaired'
+    Assert-Order (@("repo:alpha", "tree:$(Path-Key $alphaTree)", "tree:$(Path-Key $alpha)", "repo:beta", "tree:$(Path-Key $beta)", "tree:$(Path-Key $betaTree)") -join ',') 'Saving recovers after preferences are repaired'
     Wait-For { [WtsDragProbe]::AllText($script:handle) -notmatch 'Presentation order warning' } 'cleared save warning'
     $source = Find-Card 'beta' -Repository
     $target = Find-Card 'alpha' -Repository

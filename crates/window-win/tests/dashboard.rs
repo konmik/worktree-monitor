@@ -39,7 +39,7 @@ fn partial_errors_preserve_known_counts_and_missing_values() {
     assert!(view.items[2].display.caption().contains("+4 -2 · binaries: 1"));
     assert_eq!(view.health.caption(20), "ERROR · Polling interval 20s");
     assert_eq!(view.items[0].display.caption(), "Configuration error\nConfig: Invalid config");
-    assert_eq!(view.items[3].display.caption(), "broken\n/broken\nCounts unavailable · binaries unavailable\nERROR (Git): Cannot inspect worktree");
+    assert_eq!(view.items[3].display.caption(), "/broken\nCounts unavailable · binaries unavailable\nERROR (Git): Cannot inspect worktree");
     assert_eq!(view.items[4].display.caption(), "lost · ? worktrees");
 }
 
@@ -52,7 +52,7 @@ fn branch_detached_and_unborn_are_distinct() {
     ])] };
     let view = DashboardView::from_snapshot(&snapshot);
     let heads: Vec<_> = view.items.iter().skip(1).map(|item| item.display.caption().lines().next().unwrap().to_owned()).collect();
-    assert_eq!(heads, ["branch main", "detached abc123", "unborn next"]);
+    assert_eq!(heads, ["main", "detached abc123", "unborn next"]);
 }
 
 #[test]
@@ -69,8 +69,8 @@ fn empty_bare_scanning_and_zero_measurements_are_truthful() {
         tree("/zero", Head::Branch("main".into()), 0, 0, 0),
         tree("/binary", Head::Branch("main".into()), 0, 0, 2),
     ])] });
-    assert_eq!(rows.items[1].display.caption(), "branch main\nzero\n/zero\n+0 -0 · binaries: 0");
-    assert_eq!(rows.items[2].display.caption(), "branch main\nbinary\n/binary\n+0 -0 · binaries: 2");
+    assert_eq!(rows.items[1].display.caption(), "main\n/zero\n+0 -0");
+    assert_eq!(rows.items[2].display.caption(), "main\n/binary\n+0 -0 · binaries: 2");
     assert!(matches!(rows.items[2].display, DisplayItem::Worktree { .. }));
 }
 
@@ -82,7 +82,7 @@ fn count_only_changes_keep_item_keys_and_row_failure_keeps_discovery_complete() 
     let before = DashboardView::from_snapshot(&first);
     let changed = DashboardView::from_snapshot(&second);
     assert_eq!(before.items.iter().map(|item| &item.key).collect::<Vec<_>>(), changed.items.iter().map(|item| &item.key).collect::<Vec<_>>());
-    assert_eq!(changed.items[1].display.caption(), "branch main\nrepo\n/repo\n+8 -3 · binaries: 2");
+    assert_eq!(changed.items[1].display.caption(), "main\n/repo\n+8 -3 · binaries: 2");
     second.repos[0].worktrees.as_mut().unwrap()[0].result = Err(failure());
     let after = DashboardView::from_snapshot(&second);
     assert_eq!(before.items.iter().map(|item| &item.key).collect::<Vec<_>>(), after.items.iter().map(|item| &item.key).collect::<Vec<_>>());

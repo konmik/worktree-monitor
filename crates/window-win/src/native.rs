@@ -1,4 +1,4 @@
-use crate::dashboard::{DashboardView, DisplayItem, Health, ItemKey};
+use crate::dashboard::{ellipsize_start, DashboardView, DisplayItem, Health, ItemKey};
 use crate::order::{Order, OrderMove};
 use std::collections::HashMap;
 use std::io;
@@ -28,6 +28,8 @@ const WHITE: COLORREF = rgb(232, 239, 235);
 const MUTED: COLORREF = rgb(132, 150, 156);
 const STATIC_OWNERDRAW: u32 = 13;
 const STATIC_NOTIFY: u32 = 256;
+const WORKTREE_SUCCESS_HEIGHT: i32 = 84;
+const WORKTREE_ERROR_HEIGHT: i32 = 76;
 
 const fn rgb(red: u32, green: u32, blue: u32) -> COLORREF { red | (green << 8) | (blue << 16) }
 
@@ -121,6 +123,10 @@ impl Drop for State {
 
 fn wide(text: &str) -> Vec<u16> { text.encode_utf16().chain(Some(0)).collect() }
 fn scaled(value: i32, dpi: i32) -> i32 { (value * dpi / 96).max(1) }
+fn worktree_inset(width: i32, dpi: i32) -> i32 { scaled(30, dpi).min(width.saturating_sub(1) / 2) }
+fn worktree_text_width(width: i32, dpi: i32) -> i32 {
+    (width - worktree_inset(width, dpi) * 2).max(1)
+}
 
 unsafe fn set_item(card: &mut Card, display: DisplayItem) {
     if card.display != display {
@@ -183,17 +189,17 @@ unsafe fn wrapped_height(dc: HDC, text: &str, width: i32, font: HFONT) -> i32 {
 
 unsafe fn item_height(card: &Card, dc: HDC, width: i32, dpi: i32, resources: &Resources) -> i32 {
     let s = |value| scaled(value, dpi);
-    let text_width = (width - s(if matches!(card.display, DisplayItem::Worktree { .. }) { 60 } else { 28 })).max(1);
     match &card.display {
         DisplayItem::Repository { bare, .. } => s(if *bare { 66 } else { 40 }),
-        DisplayItem::Worktree { path, result, .. } => {
-            let path_height = wrapped_height(dc, &path.display().to_string(), text_width, resources.fonts[0]).min(s(44));
+        DisplayItem::Worktree { result, .. } => {
+            let text_width = worktree_text_width(width, dpi);
             match result {
-                Ok(_) => s(60) + path_height,
-                Err(error) => s(76) + path_height + wrapped_height(dc, &format!("ERROR ({:?}): {}", error.kind, error.message), text_width, resources.fonts[1]),
+                Ok(_) => s(WORKTREE_SUCCESS_HEIGHT),
+                Err(error) => s(WORKTREE_ERROR_HEIGHT) + wrapped_height(dc, &format!("ERROR ({:?}): {}", error.kind, error.message), text_width, resources.fonts[1]),
             }
         }
         DisplayItem::Notice { message, .. } => s(42) + if message.is_empty() { 0 } else {
+            let text_width = (width - s(28)).max(1);
             wrapped_height(dc, message, text_width, resources.fonts[1]) + s(12)
         },
         _ => s(80),
@@ -335,42 +341,46 @@ unsafe fn paint_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
             text(dc, lines[0], bounds(s(30), s(8), width - s(12), s(32)), resources.fonts[2], TEAL, line);
             if *bare { text(dc, lines[1], bounds(s(30), s(36), width - s(12), height), resources.fonts[0], MUTED, line); }
         }
-        DisplayItem::Worktree { path, result, .. } => {
+        DisplayItem::Worktree { path, result } => {
             SelectObject(dc, resources.surface);
             SelectObject(dc, resources.border);
             RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, s(10), s(10));
-            let inset = s(30);
-            let path_height = wrapped_height(dc, &path.display().to_string(), width - inset * 2, resources.fonts[0]).min(s(44));
+            let inset = worktree_inset(width, state.dpi);
+            let text_width = worktree_text_width(width, state.dpi);
+            let right = inset + text_width;
+            let path = path.display().to_string();
             match result {
                 Ok(stats) => {
                     let badge_width = wrapped_width(dc, lines[0], resources.fonts[0]).saturating_add(s(18))
-                        .min((width - inset * 2) * 3 / 5).max(1);
-                    let badge_left = (width - inset - badge_width).max(inset);
+                        .min(text_width).max(1);
+                    let badge_left = inset;
                     SelectObject(dc, resources.background);
                     SelectObject(dc, resources.border);
                     RoundRect(dc, badge_left, s(10), badge_left + badge_width, s(31), s(6), s(6));
                     text(dc, lines[0], bounds(badge_left + s(8), s(13), badge_left + badge_width - s(5), s(30)), resources.fonts[0], TEAL, line);
-                    text(dc, lines[1], bounds(inset, s(10), badge_left - s(10), s(34)), resources.fonts[2], WHITE, line);
-                    text(dc, lines[2], bounds(inset, s(37), width - inset, s(37) + path_height), resources.fonts[0], MUTED,
-                        DT_WORDBREAK | DT_EDITCONTROL | DT_END_ELLIPSIS);
-                    let y = s(40) + path_height;
+                    let fitted_path = ellipsize_start(&path, text_width, |value| wrapped_width(dc, value, resources.fonts[0]));
+                    text(dc, &fitted_path, bounds(inset, s(37), right, s(57)), resources.fonts[0], MUTED, DT_SINGLELINE);
+                    let y = s(60);
                     let addition = format!("+{}", stats.counts.additions);
                     let deletion = format!("-{}", stats.counts.deletions);
-                    let binaries = format!("binaries: {}", stats.counts.binaries);
-                    let addition_width = wrapped_width(dc, &addition, resources.fonts[1]).min((width - inset * 2) / 3);
-                    let deletion_width = wrapped_width(dc, &deletion, resources.fonts[1]).min((width - inset * 2) / 3);
-                    text(dc, &addition, bounds(inset, y, inset + addition_width, y + s(20)), resources.fonts[1], GREEN, line);
-                    text(dc, &deletion, bounds(inset + addition_width + s(12), y, inset + addition_width + s(12) + deletion_width, y + s(20)),
-                        resources.fonts[1], RED, line);
-                    text(dc, &binaries, bounds(inset + addition_width + deletion_width + s(28), y, width - inset, y + s(20)),
-                        resources.fonts[0], MUTED, line);
+                    let addition_width = wrapped_width(dc, &addition, resources.fonts[1]).min(text_width / 3);
+                    let deletion_width = wrapped_width(dc, &deletion, resources.fonts[1]).min(text_width / 3);
+                    let mut x = inset;
+                    text(dc, &addition, bounds(x, y, (x + addition_width).min(right), y + s(20)), resources.fonts[1], GREEN, line);
+                    x = (x + addition_width + s(12)).min(right);
+                    text(dc, &deletion, bounds(x, y, (x + deletion_width).min(right), y + s(20)), resources.fonts[1], RED, line);
+                    if stats.counts.binaries > 0 {
+                        let binaries = format!("binaries: {}", stats.counts.binaries);
+                        let binary_width = wrapped_width(dc, &binaries, resources.fonts[1]).min(text_width);
+                        x = (x + deletion_width + s(16)).min(right);
+                        text(dc, &binaries, bounds(x, y, (x + binary_width).min(right), y + s(20)), resources.fonts[1], MUTED, line);
+                    }
                 }
                 Err(_) => {
-                    text(dc, lines[0], bounds(inset, s(12), width - inset, s(36)), resources.fonts[2], WHITE, line);
-                    text(dc, lines[1], bounds(inset, s(38), width - inset, s(38) + path_height), resources.fonts[0], MUTED,
-                        DT_WORDBREAK | DT_EDITCONTROL | DT_END_ELLIPSIS);
-                    text(dc, lines[2], bounds(inset, s(41) + path_height, width - inset, s(62) + path_height), resources.fonts[0], MUTED, line);
-                    text(dc, &lines[3..].join("\n"), bounds(inset, s(64) + path_height, width - inset, height - s(8)), resources.fonts[1], RED, DT_WORDBREAK);
+                    let fitted_path = ellipsize_start(&path, text_width, |value| wrapped_width(dc, value, resources.fonts[0]));
+                    text(dc, &fitted_path, bounds(inset, s(12), right, s(32)), resources.fonts[0], MUTED, DT_SINGLELINE);
+                    text(dc, lines[1], bounds(inset, s(36), right, s(57)), resources.fonts[0], MUTED, line);
+                    text(dc, &lines[2..].join("\n"), bounds(inset, s(60), right, height - s(8)), resources.fonts[1], RED, DT_WORDBREAK);
                 }
             }
         }

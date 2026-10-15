@@ -69,13 +69,11 @@ function Invoke-FixtureGit([string]$Repo, [string[]]$Arguments) {
 }
 
 function Has-FixtureData([string]$Text) {
-    foreach ($expected in @(
-        @{ Name = 'signal-core'; Counts = '\+42\s+-8\b' },
-        @{ Name = 'edge-gateway'; Counts = '\+18\s+-12\b' },
-        @{ Name = 'infra-tools'; Counts = '\+8\s+-0\b' }
-    )) {
-        $row = '(?m)^' + [regex]::Escape($expected.Name) + '\r?\n[^\r\n]+\r?\n' + $expected.Counts
-        if ($Text -notmatch $row) { return $false }
+    $normalized = $Text.Replace('\', '/')
+    foreach ($expected in $script:expectedRows) {
+        $path = $expected.Path.Replace('\', '/')
+        $row = '(?m)^' + [regex]::Escape($expected.Branch) + '\r?\n' + [regex]::Escape($path) + '\r?\n' + $expected.Counts
+        if ($normalized -notmatch $row) { return $false }
     }
     return $true
 }
@@ -88,14 +86,15 @@ $oldProfile = $env:USERPROFILE
 $process = $null
 $bitmap = $null
 $graphics = $null
+$script:expectedRows = @()
 $previousDpiContext = [WtsCapture]::SetThreadDpiAwarenessContext([IntPtr](-4))
 try {
     $env:HOME = Join-Path $fixture 'unix-home'
     $env:USERPROFILE = $fixtureHome
     foreach ($spec in @(
-        @{ Name = 'signal-core'; Added = 42; Deleted = 8 },
-        @{ Name = 'edge-gateway'; Added = 18; Deleted = 12 },
-        @{ Name = 'infra-tools'; Added = 8; Deleted = 0 }
+        @{ Name = 'signal-core'; Added = 42; Deleted = 8; Binaries = 1 },
+        @{ Name = 'edge-gateway'; Added = 18; Deleted = 12; Binaries = 0 },
+        @{ Name = 'infra-tools'; Added = 8; Deleted = 0; Binaries = 0 }
     )) {
         $repo = Join-Path $fixture $spec.Name
         New-Item -ItemType Directory -Path $repo | Out-Null
@@ -106,6 +105,10 @@ try {
         Invoke-FixtureGit $repo @('-c', 'user.name=Wts Visual Test', '-c', 'user.email=wts@example.invalid', 'commit', '--quiet', '-m', 'Fixture')
         $after = @($before | Select-Object -Skip $spec.Deleted) + @(1..$spec.Added | ForEach-Object { "new line $_" })
         [IO.File]::WriteAllLines((Join-Path $repo 'source.txt'), $after)
+        if ($spec.Binaries -gt 0) { [IO.File]::WriteAllBytes((Join-Path $repo 'asset.bin'), [byte[]]@(0, 1, 2)) }
+        $branch = (Invoke-FixtureGit $repo @('branch', '--show-current') | Out-String).Trim()
+        $binaryCounts = if ($spec.Binaries -gt 0) { " · binaries: $($spec.Binaries)" } else { '' }
+        $script:expectedRows += [pscustomobject]@{ Branch = $branch; Path = $repo; Counts = "\+$($spec.Added)\s+-$($spec.Deleted)$binaryCounts\r?$" }
         & $CliBinary add $repo
         if ($LASTEXITCODE -ne 0) { throw 'Visual fixture registration failed' }
     }

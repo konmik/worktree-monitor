@@ -114,7 +114,11 @@ function Run-Git([string[]]$Arguments) {
 
 function Has-Counts([int]$Added, [int]$Deleted) {
     $viewport = [WtsWindowProbe]::GetDlgItem($script:handle, 1001)
-    $rows = @([WtsWindowProbe]::Captions($viewport) | Where-Object { @($_ -split "`r?`n") -contains 'repo' })
+    $path = $repo.Replace('\', '/').ToLowerInvariant()
+    $rows = @([WtsWindowProbe]::Captions($viewport) | Where-Object {
+        $lines = @($_ -split "`r?`n")
+        $lines.Count -ge 2 -and $lines[0] -eq $script:branch -and $lines[1].Replace('\', '/').ToLowerInvariant() -eq $path
+    })
     return $rows.Count -eq 1 -and $rows[0] -match "\+$Added\s+-$Deleted\b"
 }
 
@@ -134,6 +138,8 @@ try {
     [IO.File]::WriteAllText((Join-Path $repo 'lines.txt'), "before`n")
     Run-Git @('add', '.')
     Run-Git @('-c', 'user.name=Wts Test', '-c', 'user.email=wts@example.invalid', 'commit', '--quiet', '-m', 'Fixture')
+    $script:branch = (& git -c core.fsmonitor=false -c core.autocrlf=false -c commit.gpgsign=false -c "core.hooksPath=$fixture" -C $repo branch --show-current | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'Git branch lookup failed' }
     [IO.File]::WriteAllText((Join-Path $repo 'lines.txt'), "before`nadded`n")
     & $Binary add $repo
     if ($LASTEXITCODE -ne 0) { throw 'Registration failed' }
