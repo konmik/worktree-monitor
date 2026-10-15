@@ -110,9 +110,9 @@ $oldHome = $env:HOME
 $oldProfile = $env:USERPROFILE
 $process = $null
 $savedCursor = [WtsFrameProbe+Point]::new()
-[void][WtsFrameProbe]::GetCursorPos([ref]$savedCursor)
 $script:previousWindow = [WtsFrameProbe]::CreateWindowExW(0, 'BUTTON', 'WTS frame focus fixture', 2415919104, 800, 100, 160, 100, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero)
 $previousDpi = [WtsFrameProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
+[void][WtsFrameProbe]::GetCursorPos([ref]$savedCursor)
 try {
     $work = [WtsFrameProbe+Rect]::new()
     if (-not [WtsFrameProbe]::SystemParametersInfo(0x0030, 0, [ref]$work, 0)) { throw 'Monitor work area unavailable' }
@@ -146,7 +146,7 @@ try {
         [void][WtsFrameProbe]::PostMessageW($script:handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
         if (-not $process.WaitForExit(10000)) { $process.Kill(); $process.WaitForExit() }
     }
-    if ($previousDpi -ne [IntPtr]::Zero) { [void][WtsFrameProbe]::SetThreadDpiAwarenessContext($previousDpi) }
     [void][WtsFrameProbe]::DestroyWindow($script:previousWindow)
     [void][WtsFrameProbe]::SetCursorPos($savedCursor.X, $savedCursor.Y)
+    if ($previousDpi -ne [IntPtr]::Zero) { [void][WtsFrameProbe]::SetThreadDpiAwarenessContext($previousDpi) }
 }

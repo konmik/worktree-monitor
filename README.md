@@ -53,6 +53,8 @@ pwsh -NoProfile -File scripts/smoke-cli.ps1
 pwsh -NoProfile -File scripts/smoke-launch.ps1
 pwsh -NoProfile -File scripts/smoke-ui.ps1
 pwsh -NoProfile -File scripts/smoke-window.ps1
+pwsh -NoProfile -File scripts/smoke-frame.ps1
+pwsh -NoProfile -File scripts/capture-window.ps1 -Height 330 -Client -VerifyScrollbar
 pwsh -NoProfile -File scripts/smoke-dashboard.ps1
 pwsh -NoProfile -File scripts/smoke-resize.ps1
 pwsh -NoProfile -File scripts/smoke-features.ps1

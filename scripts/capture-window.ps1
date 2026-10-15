@@ -4,7 +4,8 @@ param(
     [switch]$Screen = $true,
     [int]$Height = 0,
     [switch]$Client,
-    [switch]$ShowAll
+    [switch]$ShowAll,
+    [switch]$VerifyScrollbar
 )
 
 $ErrorActionPreference = 'Stop'
@@ -19,10 +20,13 @@ using System.Runtime.InteropServices;
 public static class WtsCapture {
     public struct Rect { public int Left, Top, Right, Bottom; }
     public struct Point { public int X, Y; }
+    public struct GuiInfo { public uint Size, Flags; public IntPtr Active, Focus, Capture, MenuOwner, MoveSize, Caret; public Rect CaretRect; }
+    public struct SCROLLINFO { public uint cbSize, fMask; public int nMin, nMax; public uint nPage; public int nPos, nTrackPos; }
     public delegate bool EnumProc(IntPtr handle, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumProc callback, IntPtr data);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr handle, out uint pid);
+    [DllImport("user32.dll")] public static extern bool GetGUIThreadInfo(uint thread, ref GuiInfo info);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr handle);
     [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr parent, int id);
     [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr handle, uint message, IntPtr wparam, IntPtr lparam);
@@ -31,12 +35,19 @@ public static class WtsCapture {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr handle, out Rect rect);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr handle, out Rect rect);
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr handle, ref Point point);
+    [DllImport("user32.dll")] public static extern bool GetScrollInfo(IntPtr handle, int bar, ref SCROLLINFO info);
+    [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point point);
+    [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
+    [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr handle);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr handle, IntPtr after, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll")] public static extern bool SystemParametersInfo(uint action, uint param, out Rect rect, uint flags);
     [DllImport("user32.dll")] public static extern bool RedrawWindow(IntPtr handle, IntPtr rect, IntPtr region, uint flags);
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr handle, IntPtr dc, uint flags);
     [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr handle, uint message, IntPtr wparam, IntPtr lparam);
+    [DllImport("dwmapi.dll")] public static extern int DwmFlush();
     public static IntPtr Find(uint pid) {
         IntPtr found = IntPtr.Zero;
         EnumWindows((handle, data) => {
@@ -165,6 +176,7 @@ foreach (`$item in `$items) { `$item.Current.Name }
     if (-not [WtsCapture]::RedrawWindow($handle, [IntPtr]::Zero, [IntPtr]::Zero, 0x0181)) { throw 'Capture repaint failed' }
     $graphics = [Drawing.Graphics]::FromImage($bitmap)
     if ($Screen) {
+        [void][WtsCapture]::DwmFlush()
         $graphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bitmap.Size)
     } else {
         $dc = $graphics.GetHdc()
@@ -174,6 +186,158 @@ foreach (`$item in `$items) { `$item.Current.Name }
     }
     [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($Output)) | Out-Null
     $bitmap.Save($Output, [Drawing.Imaging.ImageFormat]::Png)
+    if ($VerifyScrollbar) {
+        $viewport = [WtsCapture]::GetDlgItem($handle, 1001)
+        $scrollbar = [WtsCapture]::GetDlgItem($handle, 1003)
+        if ($viewport -eq [IntPtr]::Zero) { throw 'Dashboard viewport control 1001 is missing' }
+        if ($scrollbar -eq [IntPtr]::Zero) { throw 'Scrollbar control 1003 is missing' }
+        if (-not [WtsCapture]::IsWindowVisible($scrollbar)) { throw 'Scrollbar control 1003 is not visible' }
+        $windowBounds = New-Object WtsCapture+Rect
+        $viewportBounds = New-Object WtsCapture+Rect
+        $scrollbarBounds = New-Object WtsCapture+Rect
+        if (-not [WtsCapture]::GetWindowRect($handle, [ref]$windowBounds)) { throw 'Scrollbar verification window bounds unavailable' }
+        if (-not [WtsCapture]::GetWindowRect($viewport, [ref]$viewportBounds)) { throw 'Scrollbar verification viewport bounds unavailable' }
+        if (-not [WtsCapture]::GetWindowRect($scrollbar, [ref]$scrollbarBounds)) { throw 'Scrollbar verification bounds unavailable' }
+        $dpi = [Math]::Max(96, [int][WtsCapture]::GetDpiForWindow($handle))
+        $scrollbarWidth = $scrollbarBounds.Right - $scrollbarBounds.Left
+        $scrollbarLogicalWidth = $scrollbarWidth * 96.0 / $dpi
+        if ($scrollbarBounds.Right -le $scrollbarBounds.Left -or $scrollbarBounds.Bottom -le $scrollbarBounds.Top) { throw 'Scrollbar has empty bounds' }
+        if ($scrollbarBounds.Left -lt $viewportBounds.Left -or $scrollbarBounds.Right -gt $windowBounds.Right -or $scrollbarBounds.Top -lt $viewportBounds.Top -or $scrollbarBounds.Bottom -gt $viewportBounds.Bottom) { throw 'Scrollbar is outside the viewport gutter' }
+        $rightGutter = $scrollbarBounds.Left - $viewportBounds.Right
+        if ($rightGutter -le 0) { throw 'Scrollbar has no right gutter separation from the viewport' }
+        $leftMargin = $viewportBounds.Left - $windowBounds.Left
+        $rightMargin = $windowBounds.Right - $viewportBounds.Right
+        if ($leftMargin -le 0 -or $rightMargin -ne $leftMargin) { throw 'Viewport reserves a native scrollbar column instead of using the normal card right margin' }
+        if ($scrollbarLogicalWidth -gt 8) { throw "Scrollbar width is $scrollbarLogicalWidth logical pixels at $dpi DPI" }
+        function Verify-ScrollbarPixels {
+            param($Image, $CaptureBounds, $NativeScrollbarBounds, [string]$Label)
+            $left = $NativeScrollbarBounds.Left - $CaptureBounds.Left
+            $top = $NativeScrollbarBounds.Top - $CaptureBounds.Top
+            $right = $NativeScrollbarBounds.Right - $CaptureBounds.Left
+            $bottom = $NativeScrollbarBounds.Bottom - $CaptureBounds.Top
+            if ($left -lt 0 -or $top -lt 0 -or $right -gt $Image.Width -or $bottom -gt $Image.Height) { throw "$Label scrollbar bounds are outside the captured bitmap" }
+            $background = [Drawing.Color]::FromArgb(11, 16, 18).ToArgb()
+            $border = [Drawing.Color]::FromArgb(40, 52, 58).ToArgb()
+            $muted = [Drawing.Color]::FromArgb(132, 150, 156).ToArgb()
+            $teal = [Drawing.Color]::FromArgb(84, 213, 197).ToArgb()
+            $surface = [Drawing.Color]::FromArgb(23, 30, 34).ToArgb()
+            $palette = @{}
+            foreach ($color in @($background, $border, $muted, $teal, $surface)) { $palette[$color] = $true }
+            $thumbPalette = @{}
+            foreach ($color in @($border, $muted, $teal, $surface)) { $thumbPalette[$color] = $true }
+            $hasBackground = $false
+            $hasThumb = $false
+            for ($y = $top; $y -lt $bottom; $y++) {
+                for ($x = $left; $x -lt $right; $x++) {
+                    $pixel = $Image.GetPixel($x, $y).ToArgb()
+                    if (-not $palette.ContainsKey($pixel)) { throw "$Label scrollbar contains unexpected pixel color $pixel" }
+                    if ($pixel -eq $background) { $hasBackground = $true }
+                    if ($thumbPalette.ContainsKey($pixel)) { $hasThumb = $true }
+                }
+            }
+            if (-not $hasBackground) { throw "$Label scrollbar has no background pixels" }
+            if (-not $hasThumb) { throw "$Label scrollbar has no visible thumb color" }
+            $center = [int](($left + $right) / 2)
+            $runTop = $top
+            $bestTop = $top
+            $bestBottom = $top
+            for ($y = $top; $y -le $bottom; $y++) {
+                $colored = $false
+                if ($y -lt $bottom) {
+                    $pixel = $Image.GetPixel($center, $y).ToArgb()
+                    $colored = $pixel -eq $muted -or $pixel -eq $teal
+                }
+                if (-not $colored) {
+                    if ($y - $runTop -gt $bestBottom - $bestTop) { $bestTop = $runTop; $bestBottom = $y }
+                    $runTop = $y + 1
+                }
+            }
+            if ($bestBottom -le $bestTop) { throw "$Label scrollbar has no visible thumb at its center" }
+            return @{ Top = $bestTop + $CaptureBounds.Top; Bottom = $bestBottom + $CaptureBounds.Top }
+        }
+        $captured = [Drawing.Bitmap]::FromFile($Output)
+        try {
+            $initialThumb = Verify-ScrollbarPixels $captured $bounds $scrollbarBounds 'Initial'
+        } finally {
+            $captured.Dispose()
+        }
+        $thumbTop = $initialThumb.Top
+        $thumbBottom = $initialThumb.Bottom
+        $trackTop = $scrollbarBounds.Top
+        $trackBottom = $scrollbarBounds.Bottom
+        $beforeInfo = New-Object WtsCapture+SCROLLINFO
+        $beforeInfo.cbSize = [uint32][Runtime.InteropServices.Marshal]::SizeOf([type][WtsCapture+SCROLLINFO])
+        $beforeInfo.fMask = 0x17
+        if (-not [WtsCapture]::GetScrollInfo($scrollbar, 2, [ref]$beforeInfo)) { throw 'Native scrollbar state unavailable' }
+        $draggingOutput = [IO.Path]::Combine([IO.Path]::GetDirectoryName($Output), [IO.Path]::GetFileNameWithoutExtension($Output) + '-dragging.png')
+        $savedCursor = New-Object WtsCapture+Point
+        if (-not [WtsCapture]::GetCursorPos([ref]$savedCursor)) { throw 'Cursor position unavailable' }
+        $mouseDown = $false
+        $draggingBitmap = $null
+        $draggingGraphics = $null
+        try {
+            $thumbPoint = New-Object WtsCapture+Point
+            $thumbPoint.X = [int](($scrollbarBounds.Left + $scrollbarBounds.Right) / 2)
+            $thumbPoint.Y = [int](($thumbTop + $thumbBottom) / 2)
+            if (-not [WtsCapture]::SetCursorPos($thumbPoint.X, $thumbPoint.Y) -or [WtsCapture]::WindowFromPoint($thumbPoint) -ne $scrollbar) { throw 'Native scrollbar thumb is not the mouse target' }
+            [WtsCapture]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+            $mouseDown = $true
+            [uint32]$owner = 0
+            $thread = [WtsCapture]::GetWindowThreadProcessId($scrollbar, [ref]$owner)
+            $deadline = [DateTime]::UtcNow.AddSeconds(3)
+            do {
+                $gui = New-Object WtsCapture+GuiInfo
+                $gui.Size = [uint32][Runtime.InteropServices.Marshal]::SizeOf([type][WtsCapture+GuiInfo])
+                if ([WtsCapture]::GetGUIThreadInfo($thread, [ref]$gui) -and $gui.Capture -eq $scrollbar) { break }
+                Start-Sleep -Milliseconds 20
+            } while ([DateTime]::UtcNow -lt $deadline)
+            if ($gui.Capture -ne $scrollbar) { throw 'Native scrollbar did not capture the mouse for dragging' }
+            $dragPoint = New-Object WtsCapture+Point
+            $dragPoint.X = $thumbPoint.X
+            $dragPoint.Y = [Math]::Min($trackBottom - 1, $thumbPoint.Y + 36)
+            $dragPoint.Y = [Math]::Max($trackTop, $dragPoint.Y)
+            if ($dragPoint.Y -le $thumbPoint.Y) { throw 'Native scrollbar thumb has no downward drag room' }
+            if (-not [WtsCapture]::SetCursorPos($dragPoint.X, $dragPoint.Y)) { throw 'Native scrollbar drag failed' }
+            $changed = $false
+            $deadline = [DateTime]::UtcNow.AddSeconds(3)
+            do {
+                $duringInfo = New-Object WtsCapture+SCROLLINFO
+                $duringInfo.cbSize = $beforeInfo.cbSize
+                $duringInfo.fMask = 0x17
+                if (-not [WtsCapture]::GetScrollInfo($scrollbar, 2, [ref]$duringInfo)) { throw 'Native scrollbar state polling failed' }
+                if ($duringInfo.nPos -gt $beforeInfo.nPos) { $changed = $true; break }
+                Start-Sleep -Milliseconds 20
+            } while ([DateTime]::UtcNow -lt $deadline)
+            if (-not $changed) { throw 'Native scrollbar thumb drag did not change the position' }
+            $duringWindowBounds = New-Object WtsCapture+Rect
+            if (-not [WtsCapture]::GetWindowRect($handle, [ref]$duringWindowBounds)) { throw 'Scrollbar dragging window bounds unavailable' }
+            if ($duringWindowBounds.Left -ne $windowBounds.Left -or $duringWindowBounds.Top -ne $windowBounds.Top -or $duringWindowBounds.Right -ne $windowBounds.Right -or $duringWindowBounds.Bottom -ne $windowBounds.Bottom) { throw 'Scrollbar dragging changed the window bounds' }
+            Start-Sleep -Milliseconds 50
+            $draggingBitmap = [Drawing.Bitmap]::new($bounds.Right - $bounds.Left, $bounds.Bottom - $bounds.Top)
+            $draggingGraphics = [Drawing.Graphics]::FromImage($draggingBitmap)
+            if ($Screen) {
+                [void][WtsCapture]::DwmFlush()
+                $draggingGraphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $draggingBitmap.Size)
+            } else {
+                $draggingDc = $draggingGraphics.GetHdc()
+                try {
+                    if (-not [WtsCapture]::PrintWindow($handle, $draggingDc, 2)) { throw 'Native dragging window capture failed' }
+                } finally { $draggingGraphics.ReleaseHdc($draggingDc) }
+            }
+            $draggingBitmap.Save($draggingOutput, [Drawing.Imaging.ImageFormat]::Png)
+            $duringThumb = Verify-ScrollbarPixels $draggingBitmap $bounds $scrollbarBounds 'Dragging'
+            $gui = New-Object WtsCapture+GuiInfo
+            $gui.Size = [uint32][Runtime.InteropServices.Marshal]::SizeOf([type][WtsCapture+GuiInfo])
+            if (-not [WtsCapture]::GetGUIThreadInfo($thread, [ref]$gui) -or $gui.Capture -ne $scrollbar) { throw 'Scrollbar lost capture before the dragging screenshot' }
+            if ($duringThumb.Top -le $initialThumb.Top) { throw 'The visible scrollbar thumb did not move down while dragging' }
+        } finally {
+            if ($mouseDown) { [WtsCapture]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero) }
+            if (-not [WtsCapture]::SetCursorPos($savedCursor.X, $savedCursor.Y)) { throw 'Cursor restoration failed' }
+            if ($null -ne $draggingGraphics) { $draggingGraphics.Dispose() }
+            if ($null -ne $draggingBitmap) { $draggingBitmap.Dispose() }
+        }
+        Write-Output 'PASS. Slim themed scrollbar stays in the gutter and scrolls while dragged.'
+    }
     Write-Output "Captured $Output"
     Write-Output "Real Git fixture and visible text at $fixture"
     if (-not [WtsCapture]::PostMessage($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'Close failed' }
