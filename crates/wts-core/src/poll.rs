@@ -435,14 +435,15 @@ impl Coordinator {
         self.scan_generation += 1;
         let repo = self.repos.get_mut(common).unwrap();
         let started_at = Instant::now();
-        repo.activity = Some(ScanActivity {
-            target: ScanTarget::Repository { common_dir: repo.common_dir.clone(), path: repo.path.clone() },
-            generation: self.scan_generation, started_at, finished_at: None,
-        });
         if let Some(key) = tree {
             let state = self.worktrees.get_mut(key).unwrap();
             state.activity = Some(ScanActivity {
                 target: ScanTarget::Worktree { repository: repo.common_dir.clone(), path: state.path.clone() },
+                generation: self.scan_generation, started_at, finished_at: None,
+            });
+        } else {
+            repo.activity = Some(ScanActivity {
+                target: ScanTarget::Repository { common_dir: repo.common_dir.clone(), path: repo.path.clone() },
                 generation: self.scan_generation, started_at, finished_at: None,
             });
         }
@@ -540,13 +541,13 @@ mod tests {
         let tree_start = &updates[2];
         assert!(Arc::ptr_eq(&discovery_end.snapshot, &tree_start.snapshot));
         assert_eq!(tree_start.scan_activities.len(), 2);
-        assert!(tree_start.scan_activities.iter().all(|activity| activity.finished_at.is_none()));
+        assert_eq!(tree_start.scan_activities[0], discovery_end.scan_activities[0]);
+        assert!(tree_start.scan_activities[1].finished_at.is_none());
         let tree_end = &updates[3];
         assert_eq!(tree_end.snapshot.repos[0].worktrees.as_ref().unwrap().len(), 1);
         assert!(tree_end.scan_activities.iter().all(|activity| activity.finished_at.is_some_and(|end| end >= activity.started_at)));
-        assert_eq!(tree_start.scan_activities, tree_end.scan_activities.iter().map(|activity| ScanActivity {
-            finished_at: None, ..activity.clone()
-        }).collect::<Vec<_>>());
+        assert_eq!(tree_start.scan_activities[0], tree_end.scan_activities[0]);
+        assert_eq!(tree_start.scan_activities[1], ScanActivity { finished_at: None, ..tree_end.scan_activities[1].clone() });
     }
 
     #[test]
@@ -558,12 +559,14 @@ mod tests {
         let key = coordinator.repos[&common].worktrees[0].clone();
         let other = coordinator.repos[&coordinator.repo_order[1]].activity.clone().unwrap();
         let previous = coordinator.worktrees[&key].activity.clone().unwrap();
+        let repository = coordinator.repos[&common].activity.clone();
         coordinator.discoveries.clear();
         coordinator.passes.changed.clear();
         coordinator.passes.changed.insert(key.clone());
         coordinator.scan_pass();
         assert!(Arc::ptr_eq(&snapshot, &coordinator.snapshot));
         assert!(coordinator.worktrees[&key].activity.as_ref().unwrap().generation > previous.generation);
+        assert_eq!(coordinator.repos[&common].activity, repository);
         assert_eq!(coordinator.repos[&coordinator.repo_order[1]].activity.as_ref(), Some(&other));
         let completed = coordinator.latest.lock().unwrap().clone().unwrap();
         coordinator.publish();
@@ -573,6 +576,30 @@ mod tests {
         assert_eq!(retained.scan_targets.len(), 4);
         assert_eq!(retained.scan_activities.len(), 4);
         assert!(retained.scan_activities.iter().all(|activity| activity.finished_at.is_some()));
+    }
+
+    #[test]
+    fn repository_discovery_does_not_refresh_existing_worktrees() {
+        let (_directory, mut coordinator) = scan_fixture(2);
+        coordinator.scan_pass();
+        let common = coordinator.repo_order[0].clone();
+        let previous = coordinator.repos[&common].activity.clone().unwrap();
+        let trees: HashMap<_, _> = coordinator.worktrees.iter().map(|(key, state)| (key.clone(), state.activity.clone())).collect();
+        let other = coordinator.repos[&coordinator.repo_order[1]].activity.clone();
+        coordinator.discoveries.clear();
+        coordinator.passes.changed.clear();
+        coordinator.discoveries.insert(common.clone());
+        let published = coordinator.published.len();
+        coordinator.scan_pass();
+        assert_eq!(coordinator.published.len() - published, 2);
+        let start = &coordinator.published[published];
+        let active: Vec<_> = start.scan_activities.iter().filter(|activity| activity.finished_at.is_none()).collect();
+        assert_eq!(active.len(), 1);
+        assert!(matches!(&active[0].target, ScanTarget::Repository { common_dir, .. } if normalize(common_dir) == common));
+        assert!(active[0].generation > previous.generation);
+        assert!(coordinator.repos[&common].activity.as_ref().unwrap().finished_at.is_some());
+        assert_eq!(coordinator.repos[&coordinator.repo_order[1]].activity, other);
+        for (key, activity) in trees { assert_eq!(coordinator.worktrees[&key].activity, activity); }
     }
 
     #[test]

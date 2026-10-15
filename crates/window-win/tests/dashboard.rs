@@ -242,7 +242,7 @@ fn refresh_sibling_generations_have_independent_deadlines() {
 }
 
 #[test]
-fn refresh_child_generation_relatches_repository_and_child_but_not_sibling() {
+fn repository_and_worktree_refreshes_have_independent_visibility() {
     let start = Instant::now();
     let repository = ItemKey::Repository(identity(&PathBuf::from("/repo/.git")));
     let mut activities = [
@@ -254,11 +254,16 @@ fn refresh_child_generation_relatches_repository_and_child_but_not_sibling() {
     let mut tracker = RefreshTracker::default();
     assert_eq!(tracker.update(&activities, start), HashSet::from([repository.clone(), refreshing_tree("/repo"), refreshing_tree("/sibling")]));
     assert_eq!(tracker.update(&activities, start + Duration::from_secs(1)), HashSet::new());
-    activities[0].generation = 4;
     activities[1].generation = 4;
-    assert_eq!(tracker.update(&activities, start + Duration::from_secs(2)), HashSet::from([repository.clone(), refreshing_tree("/repo")]));
-    assert_eq!(tracker.update(&activities, start + Duration::from_millis(2999)), HashSet::from([repository, refreshing_tree("/repo")]));
+    assert_eq!(tracker.update(&activities, start + Duration::from_secs(2)), HashSet::from([refreshing_tree("/repo")]));
+    assert_eq!(tracker.update(&activities, start + Duration::from_millis(2999)), HashSet::from([refreshing_tree("/repo")]));
     assert_eq!(tracker.update(&activities, start + Duration::from_secs(3)), HashSet::new());
+    activities[0].generation = 5;
+    activities[0].finished_at = None;
+    assert_eq!(tracker.update(&activities, start + Duration::from_secs(4)), HashSet::from([repository.clone()]));
+    assert_eq!(tracker.update(&activities, start + Duration::from_secs(6)), HashSet::from([repository]));
+    activities[0].finished_at = Some(start + Duration::from_secs(7));
+    assert_eq!(tracker.update(&activities, start + Duration::from_secs(7)), HashSet::new());
 }
 
 #[test]

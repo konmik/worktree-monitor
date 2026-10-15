@@ -1,7 +1,8 @@
 param(
     [string]$Binary = "$PSScriptRoot/../target/debug/wts-ui.exe",
     [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wts-refreshing-$([Guid]::NewGuid().ToString('N'))",
-    [switch]$SavedOrder
+    [switch]$SavedOrder,
+    [switch]$MainOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -40,6 +41,79 @@ public static class WtsRefreshingProbe {
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr window, ref Point point);
     [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("dwmapi.dll")] public static extern int DwmFlush();
+    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
+    [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr window);
+    [DllImport("user32.dll")] public static extern bool RedrawWindow(IntPtr window, IntPtr rect, IntPtr region, uint flags);
+    [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr window);
+    [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr window, IntPtr dc);
+    [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr CreateFontW(int height, int width, int escapement, int orientation, int weight, uint italic, uint underline, uint strikeout, uint charset, uint precision, uint clipping, uint quality, uint family, string face);
+    [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern int GetTextFaceW(IntPtr dc, int count, StringBuilder face);
+    [DllImport("gdi32.dll")] public static extern IntPtr SelectObject(IntPtr dc, IntPtr handle);
+    [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr handle);
+    [DllImport("gdi32.dll")] public static extern uint GetPixel(IntPtr dc, int x, int y);
+    [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern bool GetTextExtentPoint32W(IntPtr dc, string text, int count, out Point size);
+    [DllImport("gdi32.dll")] public static extern IntPtr CreateCompatibleDC(IntPtr dc);
+    [DllImport("gdi32.dll")] public static extern IntPtr CreateCompatibleBitmap(IntPtr dc, int width, int height);
+    [DllImport("gdi32.dll")] public static extern bool DeleteDC(IntPtr dc);
+    [DllImport("gdi32.dll")] public static extern IntPtr CreateSolidBrush(uint color);
+    [DllImport("user32.dll")] public static extern int FillRect(IntPtr dc, ref Rect rect, IntPtr brush);
+    [DllImport("gdi32.dll")] public static extern int SetBkMode(IntPtr dc, int mode);
+    [DllImport("gdi32.dll")] public static extern uint SetTextColor(IntPtr dc, uint color);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int DrawTextW(IntPtr dc, string text, int count, ref Rect rect, uint flags);
+    public static void VerifyMarker(IntPtr root, string name, bool repository, bool refreshing) {
+        IntPtr row = IntPtr.Zero;
+        EnumChildWindows(root, (window, data) => {
+            if (Text(window).Split('\n')[0] == name && Text(window).Contains("Refreshing") == refreshing) row = window;
+            return true;
+        }, IntPtr.Zero);
+        if (row == IntPtr.Zero) throw new InvalidOperationException("Expected refresh state unavailable: " + name);
+        int dpi = (int)GetDpiForWindow(row);
+        var dc = GetDC(row);
+        var font = IntPtr.Zero;
+        foreach (var face in new[] { "Berkeley Mono", "Berkeley Mono Variable", "Consolas", "Cascadia Mono", "Courier New" }) {
+            var candidate = CreateFontW(-12 * dpi / 96, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 49, face);
+            var saved = SelectObject(dc, candidate);
+            var actual = new StringBuilder(64);
+            GetTextFaceW(dc, actual.Capacity, actual);
+            SelectObject(dc, saved);
+            if (actual.ToString().Equals(face, StringComparison.OrdinalIgnoreCase)) { font = candidate; break; }
+            DeleteObject(candidate);
+        }
+        if (font == IntPtr.Zero) throw new InvalidOperationException("Terminal font unavailable");
+        var old = SelectObject(dc, font);
+        Point extent, marker;
+        GetTextExtentPoint32W(dc, name, name.Length, out extent);
+        GetTextExtentPoint32W(dc, "*", 1, out marker);
+        var expected = CreateCompatibleDC(dc);
+        var bitmap = CreateCompatibleBitmap(dc, marker.X, marker.Y);
+        var previous = SelectObject(expected, bitmap);
+        var oldFont = SelectObject(expected, font);
+        uint background = 11u | (16u << 8) | (18u << 16);
+        var brush = CreateSolidBrush(background);
+        try {
+            var rect = new Rect { Right = marker.X, Bottom = marker.Y };
+            FillRect(expected, ref rect, brush);
+            SetBkMode(expected, 1);
+            SetTextColor(expected, 84u | (213u << 8) | (197u << 16));
+            if (refreshing) DrawTextW(expected, "*", 1, ref rect, 0x0820);
+            int left = 14 * dpi / 96 + extent.X + 1;
+            int top = repository ? 8 * dpi / 96 : 0;
+            int ink = 0;
+            for (int y = 0; y < marker.Y; y++) {
+                if (GetPixel(dc, left - 1, top + y) != background) throw new InvalidOperationException("Missing one-pixel gap for " + name);
+                for (int x = 0; x < marker.X; x++) {
+                    uint wanted = GetPixel(expected, x, y);
+                    if (wanted != background) ink++;
+                    if (GetPixel(dc, left + x, top + y) != wanted) throw new InvalidOperationException("Marker differs from measured name width plus one physical pixel: " + name);
+                }
+            }
+            if (refreshing && ink == 0) throw new InvalidOperationException("Marker proof is empty");
+        } finally {
+            SelectObject(expected, oldFont); SelectObject(expected, previous);
+            DeleteObject(brush); DeleteObject(bitmap); DeleteDC(expected);
+            SelectObject(dc, old); DeleteObject(font); ReleaseDC(row, dc);
+        }
+    }
     public static string Text(IntPtr window) {
         var text = new StringBuilder(65536);
         GetWindowText(window, text, text.Capacity);
@@ -96,13 +170,15 @@ public static class GitDelay {
     public static int Main(string[] args) {
         string cwd = Environment.CurrentDirectory;
         bool scan = false;
+        bool repository = false;
         for (int i = 0; i < args.Length; i++) {
             if (args[i] == "-C" && i + 1 < args.Length) cwd = Path.GetFullPath(Path.Combine(cwd, args[++i]));
+            else if (args[i] == "--git-dir" && i + 1 < args.Length) { cwd = Path.GetDirectoryName(args[++i]); repository = true; }
             else if (args[i] == "status" || args[i] == "diff") scan = true;
         }
-        string gate = Path.Combine(Environment.GetEnvironmentVariable("WTS_REFRESH_GATES"), new DirectoryInfo(cwd).Name);
+        string gate = Path.Combine(Environment.GetEnvironmentVariable("WTS_REFRESH_GATES"), new DirectoryInfo(cwd).Name + (repository ? ".repository" : ""));
         bool claimed = false;
-        if (scan) {
+        if (scan || repository) {
             try { File.Move(gate + ".gate", gate + ".active"); claimed = true; }
             catch (IOException) { }
         }
@@ -136,7 +212,7 @@ function Is-Refreshing([string]$Caption) {
     return $Caption -match '\bRefreshing\b'
 }
 
-function Capture-Refreshing {
+function Capture-Refreshing([string]$Name = 'refreshing') {
     $bounds = [WtsRefreshingProbe+Rect]::new()
     $origin = [WtsRefreshingProbe+Point]::new()
     if (-not [WtsRefreshingProbe]::GetClientRect($script:window, [ref]$bounds) -or
@@ -146,7 +222,7 @@ function Capture-Refreshing {
     try {
         [void][WtsRefreshingProbe]::DwmFlush()
         $graphics.CopyFromScreen($origin.X, $origin.Y, 0, 0, $image.Size)
-        $image.Save((Join-Path $Output 'refreshing.png'))
+        $image.Save((Join-Path $Output "$Name.png"))
     } finally { $graphics.Dispose(); $image.Dispose() }
 }
 
@@ -240,6 +316,7 @@ $pollMs = 50
 $clock = [Diagnostics.Stopwatch]::new()
 $previousDpi = [WtsRefreshingProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
 $proof = [ordered]@{ result = 'FAIL'; binary = $Binary; sha256 = (Get-FileHash $Binary).Hash; fixture = $fixture; poll_ms = $pollMs; timing = 'Require first-present to first-absent >= 1000 ms minus one polling interval. First/last present samples also give a conservative visible lower bound. Appearance is bracketed by previous absent and first present observations.'; initial = $null; refresh = $null; fast_refresh = $null }
+$proof.marker_placement = [Collections.Generic.List[object]]::new()
 try {
     $env:HOME = $fixtureHome
     $env:USERPROFILE = $fixtureHome
@@ -255,9 +332,12 @@ try {
         [IO.File]::WriteAllText((Join-Path $repo 'source.rs'), "before`n")
         Run-Git $repo @('add', '.')
         Run-Git $repo @('-c', 'user.name=Wts Test', '-c', 'user.email=wts@example.invalid', 'commit', '--quiet', '-m', 'Fixture')
-        Run-Git $repo @('worktree', 'add', '--quiet', '-b', "$name-topic", $tree)
+        if (-not $MainOnly) { Run-Git $repo @('worktree', 'add', '--quiet', '-b', "$name-topic", $tree) }
         $expected.Add(@{ key = "repo:$name"; pattern = '^' + [regex]::Escape($name) + '$' })
-        foreach ($entry in @(@{ path = $repo; branch = "$name-main" }, @{ path = $tree; branch = "$name-topic" })) {
+        if ($MainOnly) { [IO.File]::WriteAllText((Join-Path $gates "$name.repository.gate"), '') }
+        $entries = @(@{ path = $repo; branch = "$name-main" })
+        if (-not $MainOnly) { $entries += @{ path = $tree; branch = "$name-topic" } }
+        foreach ($entry in $entries) {
             [IO.File]::WriteAllText((Join-Path $entry.path 'source.rs'), "before`nold`n")
             $expected.Add(@{ key = "tree:$($entry.branch)"; branch = $entry.branch; path = $entry.path; gate = Split-Path -Leaf $entry.path; parent = "repo:$name" })
             [IO.File]::WriteAllText((Join-Path $gates "$(Split-Path -Leaf $entry.path).gate"), '')
@@ -289,10 +369,27 @@ try {
     $keys = @($expected | ForEach-Object { $_.key })
     $pendingSeen = @{}
     $initialActiveSeen = @{}
+    $repositoryMarkers = @{}
     $deadline = $clock.Elapsed.TotalSeconds + 55
     do {
         $sample = Sample
         Track $sample $initial $keys
+        if ($MainOnly) {
+            foreach ($name in @('alpha', 'beta')) {
+                if (-not $repositoryMarkers.ContainsKey($name) -and (Test-Path -LiteralPath (Join-Path $gates "$name.repository.active")) -and
+                    $sample.rows.ContainsKey("repo:$name") -and (Is-Refreshing $sample.rows["repo:$name"])) {
+                    foreach ($width in @(800, 380)) {
+                        [void][WtsRefreshingProbe]::SetWindowPos($script:window, [IntPtr]::Zero, 32, 32, $width, 720, 20)
+                        [void][WtsRefreshingProbe]::RedrawWindow($script:window, [IntPtr]::Zero, [IntPtr]::Zero, 0x0180)
+                        [void][WtsRefreshingProbe]::DwmFlush()
+                        [WtsRefreshingProbe]::VerifyMarker($script:window, $name, $true, $true)
+                        $proof.marker_placement.Add(@{ name = $name; width = $width; dpi = [WtsRefreshingProbe]::GetDpiForWindow($script:window); physical_pixel_gap = 1 })
+                        Capture-Refreshing "repository-$name-$width"
+                    }
+                    $repositoryMarkers[$name] = $true
+                }
+            }
+        }
         foreach ($row in $expected) {
             if (-not $row.gate -or -not $sample.rows.ContainsKey($row.key)) { continue }
             $base = Join-Path $gates $row.gate
@@ -305,14 +402,14 @@ try {
         }
         foreach ($row in $expected | Where-Object { $_.gate -and $sample.active_gates.ContainsKey($_.gate) }) {
             $indicated = $true
-            foreach ($key in @($row.key, $row.parent)) {
+            foreach ($key in @($row.key)) {
                 if (-not $sample.rows.ContainsKey($key) -or -not (Is-Refreshing $sample.rows[$key])) { $indicated = $false }
             }
             if ($indicated) { $initialActiveSeen[$row.key] = $true }
         }
         foreach ($name in @('alpha', 'beta')) {
             $key = "repo:$name"
-            $pending = -not (Test-Path -LiteralPath (Join-Path $gates "$name.done")) -or -not (Test-Path -LiteralPath (Join-Path $gates "$name-tree.done"))
+            $pending = -not (Test-Path -LiteralPath (Join-Path $gates "$name.done")) -or (-not $MainOnly -and -not (Test-Path -LiteralPath (Join-Path $gates "$name-tree.done")))
             if ($pending -and $sample.rows.ContainsKey($key)) {
                 if ($sample.rows[$key] -match '\bS\s+\+0/-0\b') { throw "Initial pending $key fabricated zero source counts." }
             }
@@ -331,15 +428,16 @@ try {
         if (-not $initialActiveSeen.ContainsKey($row.key)) { throw "No initial active-scan observation for $($row.key)." }
     }
     Assert-Holds $initial $keys
+    if ($MainOnly -and $repositoryMarkers.Count -ne 2) { throw 'Repository discovery markers were not verified' }
     $proof.initial = $initial
     $baseline = $sample.rows.Clone()
-    $target = 'tree:alpha-topic'
-    $parent = 'repo:alpha'
-    $affected = @($target, $parent)
-    $gate = Join-Path $gates 'alpha-tree'
+    $target = if ($MainOnly) { 'tree:alpha-main' } else { 'tree:alpha-topic' }
+    $affected = @($target)
+    $targetDirectory = if ($MainOnly) { 'alpha' } else { 'alpha-tree' }
+    $gate = Join-Path $gates $targetDirectory
     Remove-Item -LiteralPath "$gate.done"
     [IO.File]::WriteAllText("$gate.gate", '')
-    [IO.File]::WriteAllText((Join-Path $fixture 'alpha-tree/source.rs'), "before`nold`nnew-one`nnew-two`n")
+    [IO.File]::WriteAllText((Join-Path $fixture "$targetDirectory/source.rs"), "before`nold`nnew-one`nnew-two`n")
     $edited = $clock.Elapsed.TotalMilliseconds
     $refresh = @{}
     $retained = @{}
@@ -350,10 +448,10 @@ try {
         Track $sample $refresh $affected
         foreach ($key in $keys | Where-Object { $_ -notin $affected }) {
             if (-not $sample.rows.ContainsKey($key)) { throw "Unaffected row $key disappeared." }
-            if (Is-Refreshing $sample.rows[$key]) { throw "Unaffected sibling $key refreshed after only alpha-topic changed." }
+            if (Is-Refreshing $sample.rows[$key]) { throw "Unaffected row $key refreshed after only $target changed." }
             if ((Counts $sample.rows[$key]) -ne (Counts $baseline[$key])) { throw "Unaffected row $key changed counts." }
         }
-        if ($sample.active_gates.ContainsKey('alpha-tree')) {
+        if ($sample.active_gates.ContainsKey($targetDirectory)) {
             $indicated = $true
             foreach ($key in $affected) {
                 if (-not $sample.rows.ContainsKey($key)) { throw "Actively scanned $key disappeared." }
@@ -361,7 +459,18 @@ try {
                 if ((Counts $sample.rows[$key]) -ne (Counts $baseline[$key])) { throw "Actively scanned $key did not preserve its last counts." }
                 if (Is-Refreshing $sample.rows[$key]) { $retained[$key] = $true }
             }
-            if ($indicated -and -not $activeSeen) { Capture-Refreshing }
+            if ($indicated -and -not $activeSeen) {
+                if ($MainOnly) {
+                    foreach ($width in @(800, 380)) {
+                        [void][WtsRefreshingProbe]::SetWindowPos($script:window, [IntPtr]::Zero, 32, 32, $width, 720, 20)
+                        [void][WtsRefreshingProbe]::RedrawWindow($script:window, [IntPtr]::Zero, [IntPtr]::Zero, 0x0180)
+                        [void][WtsRefreshingProbe]::DwmFlush()
+                        [WtsRefreshingProbe]::VerifyMarker($script:window, 'alpha-main', $false, $true)
+                        $proof.marker_placement.Add(@{ name = 'alpha-main'; width = $width; dpi = [WtsRefreshingProbe]::GetDpiForWindow($script:window); physical_pixel_gap = 1 })
+                        Capture-Refreshing "worktree-$width"
+                    }
+                } else { Capture-Refreshing }
+            }
             if ($indicated) { $activeSeen = $true }
         }
         $ready = $activeSeen -and $sample.rows.ContainsKey($target) -and $sample.rows[$target] -match '\bS\s+\+3/-0\b'
@@ -371,13 +480,13 @@ try {
         if ($ready) { break }
         Start-Sleep -Milliseconds $pollMs
     } while ($clock.Elapsed.TotalSeconds -lt $deadline)
-    if (-not $ready) { throw 'The scheduled 10-second refresh did not expose active parent/tree indicators and updated counts within 35 seconds.' }
+    if (-not $ready) { throw 'The scheduled 10-second refresh did not expose its worktree indicator and updated counts within 35 seconds.' }
     Assert-Holds $refresh $affected
     foreach ($key in $affected) { if (-not $retained.ContainsKey($key)) { throw "No retained-count observation for $key." } }
     $proof.refresh = [ordered]@{ edited_ms = $edited; tracks = $refresh; retained = $retained; baseline = $baseline; updated = $sample.rows; delayed_git_observed = $activeSeen; unaffected_siblings_stable = $true }
     $fast = @{}
     $proof.fast_refresh = $fast
-    [IO.File]::WriteAllText((Join-Path $fixture 'alpha-tree/source.rs'), "before`nold`nnew-one`nnew-two`nfast`n")
+    [IO.File]::WriteAllText((Join-Path $fixture "$targetDirectory/source.rs"), "before`nold`nnew-one`nnew-two`nfast`n")
     $deadline = $clock.Elapsed.TotalSeconds + 35
     do {
         $sample = Sample
@@ -395,6 +504,14 @@ try {
     } while ($clock.Elapsed.TotalSeconds -lt $deadline)
     if (-not $ready) { throw 'Undelayed scan did not expose latched Refreshing captions and updated counts within 35 seconds.' }
     Assert-Holds $fast $affected
+    if ($MainOnly) {
+        [void][WtsRefreshingProbe]::RedrawWindow($script:window, [IntPtr]::Zero, [IntPtr]::Zero, 0x0180)
+        [void][WtsRefreshingProbe]::DwmFlush()
+        foreach ($name in @('alpha', 'beta')) {
+            [WtsRefreshingProbe]::VerifyMarker($script:window, $name, $true, $false)
+            [WtsRefreshingProbe]::VerifyMarker($script:window, "$name-main", $false, $false)
+        }
+    }
     if (-not [WtsRefreshingProbe]::PostMessage($script:window, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'Isolated dashboard close failed.' }
     if (-not $script:process.WaitForExit(10000) -or $script:process.ExitCode -ne 0) { throw 'Isolated dashboard did not exit cleanly.' }
     $proof.result = 'PASS'
