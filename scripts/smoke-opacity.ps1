@@ -21,6 +21,7 @@ public static class WtsOpacityProbe {
     [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr window);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out Rect rect);
     [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr window, int id);
+    [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr window, uint command);
     [DllImport("user32.dll", EntryPoint="GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
     [DllImport("user32.dll")] public static extern bool GetLayeredWindowAttributes(IntPtr window, out uint color, out byte alpha, out uint flags);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
@@ -36,7 +37,7 @@ public static class WtsOpacityProbe {
         EnumWindows((window, data) => {
             uint owner;
             GetWindowThreadProcessId(window, out owner);
-            if (owner == process && IsWindowVisible(window)) { found = window; return false; }
+            if (owner == process && IsWindowVisible(window) && GetWindow(window, 4) == IntPtr.Zero) { found = window; return false; }
             return true;
         }, IntPtr.Zero);
         return found;

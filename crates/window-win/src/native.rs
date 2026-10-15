@@ -23,7 +23,7 @@ use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi, Set
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetCapture, GetFocus, IsWindowEnabled, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE, TME_NONCLIENT};
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
-use wts_core::{Monitor, MonitorUpdate, Service};
+use wts_core::{Counts, Monitor, MonitorUpdate, Service};
 
 const BACKGROUND: COLORREF = rgb(11, 16, 18);
 const GREEN: COLORREF = rgb(194, 249, 112);
@@ -33,11 +33,13 @@ const WHITE: COLORREF = rgb(232, 239, 235);
 const MUTED: COLORREF = rgb(132, 150, 156);
 const STATIC_OWNERDRAW: u32 = 13;
 const STATIC_NOTIFY: u32 = 256;
+const WM_SYNC_INDICATORS: u32 = WM_APP + 42;
 
 const fn rgb(red: u32, green: u32, blue: u32) -> COLORREF { red | (green << 8) | (blue << 16) }
 
 struct Resources {
     font: HFONT,
+    overlay_font: HFONT,
     typography: Typography,
     space_width: i32,
     background: HBRUSH,
@@ -47,7 +49,7 @@ struct Resources {
 
 impl Resources {
     unsafe fn new(dpi: i32) -> Option<Self> {
-        let mut resources = Self { font: null_mut(), typography: Typography::new(dpi, 1), space_width: 1, background: CreateSolidBrush(BACKGROUND),
+        let mut resources = Self { font: null_mut(), overlay_font: null_mut(), typography: Typography::new(dpi, 1), space_width: 1, background: CreateSolidBrush(BACKGROUND),
             teal: CreateSolidBrush(TEAL), muted: CreateSolidBrush(MUTED) };
         let dc = CreateCompatibleDC(null_mut());
         if dc.is_null() { return None; }
@@ -71,8 +73,15 @@ impl Resources {
             }
             DeleteObject(font);
         }
+        if !resources.font.is_null() {
+            let mut font: LOGFONTW = std::mem::zeroed();
+            if GetObjectW(resources.font, std::mem::size_of::<LOGFONTW>() as i32, (&mut font as *mut LOGFONTW).cast()) != 0 {
+                font.lfQuality = ANTIALIASED_QUALITY;
+                resources.overlay_font = CreateFontIndirectW(&font);
+            }
+        }
         DeleteDC(dc);
-        if resources.font.is_null() || resources.background.is_null() || resources.teal.is_null() || resources.muted.is_null() {
+        if resources.font.is_null() || resources.overlay_font.is_null() || resources.background.is_null() || resources.teal.is_null() || resources.muted.is_null() {
             None
         } else { Some(resources) }
     }
@@ -82,6 +91,7 @@ impl Drop for Resources {
     fn drop(&mut self) {
         unsafe {
             if !self.font.is_null() { DeleteObject(self.font); }
+            if !self.overlay_font.is_null() { DeleteObject(self.overlay_font); }
             for object in [self.background, self.teal, self.muted] {
                 if !object.is_null() { DeleteObject(object); }
             }
@@ -138,6 +148,9 @@ struct State {
     controls_visible: bool,
     next_action_id: usize,
     drag: Option<Drag>,
+    indicator_overlay: HWND,
+    indicators_dirty: bool,
+    indicators_queued: bool,
 }
 
 struct Drag {
@@ -232,6 +245,7 @@ unsafe fn update_action_caption(card: &mut Card, visibility: &Visibility) -> boo
 }
 
 unsafe fn reconcile(state: &mut State) -> bool {
+    state.indicators_dirty = true;
     let Some(resources) = &state.resources else { return false; };
     let mut previous: HashMap<_, _> = std::mem::take(&mut state.cards).into_iter()
         .map(|card| (card.key.clone().unwrap(), card)).collect();
@@ -260,6 +274,7 @@ unsafe fn reconcile(state: &mut State) -> bool {
 }
 
 unsafe fn fonts(window: HWND, state: &mut State) -> bool {
+    state.indicators_dirty = true;
     let dpi = GetDpiForWindow(window).max(96) as i32;
     let Some(resources) = Resources::new(dpi) else { return false; };
     for card in state.fixed.iter().chain(&state.cards) {
@@ -308,6 +323,65 @@ fn attached_rows(previous: &DisplayItem, next: &DisplayItem) -> bool {
 #[cfg(test)]
 mod row_tests {
     use super::*;
+
+    #[test]
+    fn line_change_groups_keep_count_text_and_nonzero_opacity() {
+        use wts_core::LineCounts;
+        for source in [LineCounts::default(), LineCounts { additions: 3, deletions: 0 }, LineCounts { additions: 0, deletions: 4 }] {
+            for test in [LineCounts::default(), LineCounts { additions: 5, deletions: 0 }] {
+                for extra in [LineCounts::default(), LineCounts { additions: 0, deletions: 6 }] {
+                    for binaries in [0, 7] {
+                        let counts = Counts { source, test, extra, binaries };
+                        let parts = count_parts(&counts);
+                        assert_eq!(parts.iter().map(|part| part.text.as_str()).collect::<String>(), counts.to_string());
+                        let source_changed = source.additions > 0 || source.deletions > 0;
+                        assert!(parts[..4].iter().all(|part| part.opaque == source_changed));
+                        assert_eq!(parts[1].color, if source_changed { GREEN } else { MUTED });
+                        assert_eq!(parts[3].color, if source_changed { RED } else { MUTED });
+                        assert!(parts.iter().filter(|part| part.text.starts_with(" · ")).all(|part| !part.opaque));
+                        for label in ["T ", "X "] {
+                            assert!(parts.iter().filter(|part| part.text.starts_with(label)).all(|part| part.opaque));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn opaque_counts_leave_zero_source_and_binary_text_transparent() {
+        use wts_core::LineCounts;
+        unsafe {
+            let screen = GetDC(null_mut());
+            for dpi in [96, 144, 192] {
+                let resources = Resources::new(dpi).unwrap();
+                let counts = Counts { test: LineCounts { additions: 12, deletions: 0 },
+                    extra: LineCounts { additions: 0, deletions: 8 }, binaries: 9, ..Counts::default() };
+                let width = wrapped_width(screen, &counts.to_string(), resources.font);
+                let height = resources.typography.cell;
+                let bitmap = IndicatorBitmap::new(screen, width, height).unwrap();
+                let rect = RECT { left: 0, top: 0, right: width, bottom: height };
+                draw_counts(bitmap.dc, &counts, rect, &resources, false, CountLayer::Mask);
+                GdiFlush();
+                let source_end = wrapped_width(screen, "S +0/-0 · ", resources.font);
+                let test_end = source_end + wrapped_width(screen, "T +12/-0", resources.font);
+                let extra_start = test_end + wrapped_width(screen, " · ", resources.font);
+                let extra_end = extra_start + wrapped_width(screen, "X +0/-8", resources.font);
+                let pixels = std::slice::from_raw_parts(bitmap.pixels, bitmap.length);
+                let has_pixels = |start, end| (0..height).any(|y| (start..end).any(|x| pixels[(y * width + x) as usize] != 0));
+                assert!(!has_pixels(0, source_end));
+                assert!(has_pixels(source_end, test_end));
+                assert!(!has_pixels(test_end, extra_start));
+                assert!(has_pixels(extra_start, extra_end));
+                assert!(!has_pixels(extra_end, width));
+                let blank = IndicatorBitmap::new(screen, width, height).unwrap();
+                draw_counts(blank.dc, &Counts { binaries: 9, ..Counts::default() }, rect, &resources, false, CountLayer::Mask);
+                GdiFlush();
+                assert!(std::slice::from_raw_parts(blank.pixels, blank.length).iter().all(|pixel| *pixel == 0));
+            }
+            ReleaseDC(null_mut(), screen);
+        }
+    }
 
     #[test]
     fn refresh_marker_pixels_follow_displayed_name_by_one_space() {
@@ -514,6 +588,7 @@ unsafe fn set_scroll_info(state: &State) {
 unsafe fn scroll_to(state: &mut State, position: i32) {
     let position = position.clamp(0, (state.content - state.page).max(0));
     if position != state.scroll {
+        state.indicators_dirty = true;
         state.scroll = position;
         set_scroll_info(state);
         position_cards(state);
@@ -525,6 +600,7 @@ unsafe fn scroll_to(state: &mut State, position: i32) {
 }
 
 unsafe fn layout(window: HWND, state: &mut State, restore: Option<(ItemKey, i32)>, scrollbar_activity: bool) {
+    state.indicators_dirty = true;
     if state.resources.is_none() { return; }
     if state.fixed.len() != 1 || state.viewport.is_null() { return; }
     let was_overflowing = state.content > state.page;
@@ -601,6 +677,165 @@ unsafe fn wrapped_text(dc: HDC, value: &str, rect: RECT, resources: &Resources, 
     }
 }
 
+struct CountPart {
+    text: String,
+    color: COLORREF,
+    opaque: bool,
+}
+
+fn count_parts(counts: &Counts) -> Vec<CountPart> {
+    let changed = counts.source.additions > 0 || counts.source.deletions > 0;
+    let mut parts = vec![
+        CountPart { text: "S ".into(), color: MUTED, opaque: changed },
+        CountPart { text: format!("+{}", counts.source.additions), color: if changed { GREEN } else { MUTED }, opaque: changed },
+        CountPart { text: "/".into(), color: MUTED, opaque: changed },
+        CountPart { text: format!("-{}", counts.source.deletions), color: if changed { RED } else { MUTED }, opaque: changed },
+    ];
+    for (label, counts) in [("T", counts.test), ("X", counts.extra)] {
+        if counts.additions > 0 || counts.deletions > 0 {
+            parts.push(CountPart { text: " · ".into(), color: MUTED, opaque: false });
+            parts.push(CountPart { text: format!("{label} +{}/-{}", counts.additions, counts.deletions), color: MUTED, opaque: true });
+        }
+    }
+    if counts.binaries > 0 {
+        parts.push(CountPart { text: format!(" · binaries: {}", counts.binaries), color: MUTED, opaque: false });
+    }
+    parts
+}
+
+#[derive(Clone, Copy)]
+enum CountLayer { All, Faded, Opaque, Mask }
+
+unsafe fn draw_counts(dc: HDC, counts: &Counts, rect: RECT, resources: &Resources, dragging: bool, layer: CountLayer) {
+    let mut x = rect.left;
+    for part in count_parts(counts) {
+        let width = wrapped_width(dc, &part.text, resources.font).min(rect.right.saturating_sub(x));
+        let draw = match layer { CountLayer::All => true, CountLayer::Faded => !part.opaque,
+            CountLayer::Opaque | CountLayer::Mask => part.opaque };
+        if draw && width > 0 {
+            let font = if matches!(layer, CountLayer::Opaque | CountLayer::Mask) { resources.overlay_font } else { resources.font };
+            let color = if matches!(layer, CountLayer::Mask) { rgb(255, 255, 255) }
+                else if dragging { GREEN } else { part.color };
+            text(dc, &part.text, RECT { left: x, right: x + width, ..rect }, font, color, DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
+        x = (x + width).min(rect.right);
+    }
+}
+
+struct IndicatorBitmap {
+    dc: HDC,
+    bitmap: HBITMAP,
+    previous: HGDIOBJ,
+    pixels: *mut u32,
+    length: usize,
+}
+
+impl IndicatorBitmap {
+    unsafe fn new(screen: HDC, width: i32, height: i32) -> Option<Self> {
+        let length = usize::try_from(width).ok()?.checked_mul(usize::try_from(height).ok()?)?;
+        let mut bitmap = Self { dc: CreateCompatibleDC(screen), bitmap: null_mut(), previous: null_mut(), pixels: null_mut(), length };
+        if bitmap.dc.is_null() { return None; }
+        let info = BITMAPINFO { bmiHeader: BITMAPINFOHEADER { biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width, biHeight: -height, biPlanes: 1, biBitCount: 32, biCompression: BI_RGB, ..std::mem::zeroed() },
+            ..std::mem::zeroed() };
+        bitmap.bitmap = CreateDIBSection(screen, &info, DIB_RGB_COLORS, (&mut bitmap.pixels as *mut *mut u32).cast(), null_mut(), 0);
+        if bitmap.bitmap.is_null() || bitmap.pixels.is_null() { return None; }
+        bitmap.previous = SelectObject(bitmap.dc, bitmap.bitmap);
+        std::ptr::write_bytes(bitmap.pixels, 0, length);
+        Some(bitmap)
+    }
+}
+
+impl Drop for IndicatorBitmap {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.previous.is_null() { SelectObject(self.dc, self.previous); }
+            if !self.bitmap.is_null() { DeleteObject(self.bitmap); }
+            if !self.dc.is_null() { DeleteDC(self.dc); }
+        }
+    }
+}
+
+unsafe fn draw_opaque_indicators(state: &State, dc: HDC, layer: CountLayer) {
+    let Some(resources) = &state.resources else { return; };
+    let root = GetAncestor(state.viewport, GA_ROOT);
+    let mut viewport: RECT = std::mem::zeroed();
+    if GetClientRect(state.viewport, &mut viewport) == 0 { return; }
+    MapWindowPoints(state.viewport, root, (&mut viewport as *mut RECT).cast(), 2);
+    let saved = SaveDC(dc);
+    IntersectClipRect(dc, viewport.left, viewport.top, viewport.right, viewport.bottom);
+    for card in &state.cards {
+        let DisplayItem::Worktree { result: Ok(stats), .. } = &card.display else { continue; };
+        if IsWindowVisible(card.window) == 0 { continue; }
+        let mut rect: RECT = std::mem::zeroed();
+        if GetClientRect(card.window, &mut rect) == 0 { continue; }
+        let width = rect.right;
+        MapWindowPoints(card.window, root, (&mut rect as *mut RECT).cast(), 2);
+        if intersection(rect, viewport).is_none() { continue; }
+        let inset = content_inset(width, state.dpi, resources);
+        let y = rect.top + card.spacing.top(resources.typography, 1);
+        let dragging = state.drag.as_ref().is_some_and(|drag| drag.source_handle == card.window);
+        draw_counts(dc, &stats.counts, RECT { left: rect.left + inset, top: y,
+            right: rect.left + inset + content_text_width(width, state.dpi, resources), bottom: y + resources.typography.cell },
+            resources, dragging, layer);
+    }
+    RestoreDC(dc, saved);
+}
+
+unsafe fn sync_indicators(window: HWND, state: &mut State) -> bool {
+    let overlay = state.indicator_overlay;
+    if overlay.is_null() { return true; }
+    if state.controls_visible || IsWindowVisible(window) == 0 || IsIconic(window) != 0 {
+        if IsWindowVisible(overlay) != 0 { ShowWindow(overlay, SW_HIDE); }
+        return true;
+    }
+    let mut rect: RECT = std::mem::zeroed();
+    if GetClientRect(window, &mut rect) == 0 { return false; }
+    let width = rect.right;
+    let height = rect.bottom;
+    if width <= 0 || height <= 0 { ShowWindow(overlay, SW_HIDE); return true; }
+    let mut origin = POINT { x: 0, y: 0 };
+    if ClientToScreen(window, &mut origin) == 0 { return false; }
+    let mut previous: RECT = std::mem::zeroed();
+    GetWindowRect(overlay, &mut previous);
+    if previous.right - previous.left != width || previous.bottom - previous.top != height { state.indicators_dirty = true; }
+    if state.indicators_dirty {
+        let screen = GetDC(null_mut());
+        let color = IndicatorBitmap::new(screen, width, height);
+        let mask = IndicatorBitmap::new(screen, width, height);
+        let success = if let (Some(color), Some(mask)) = (color, mask) {
+            draw_opaque_indicators(state, color.dc, CountLayer::Opaque);
+            draw_opaque_indicators(state, mask.dc, CountLayer::Mask);
+            GdiFlush();
+            let colors = std::slice::from_raw_parts_mut(color.pixels, color.length);
+            let masks = std::slice::from_raw_parts(mask.pixels, mask.length);
+            for (color, mask) in colors.iter_mut().zip(masks) {
+                let alpha = (mask & 255).max((mask >> 8) & 255).max((mask >> 16) & 255);
+                *color = (*color & 0xffffff) | (alpha << 24);
+            }
+            let size = windows_sys::Win32::Foundation::SIZE { cx: width, cy: height };
+            let source = POINT { x: 0, y: 0 };
+            let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
+            UpdateLayeredWindow(overlay, screen, &origin, &size, color.dc, &source, 0, &blend, ULW_ALPHA) != 0
+        } else { false };
+        ReleaseDC(null_mut(), screen);
+        if !success { return false; }
+        state.indicators_dirty = false;
+    } else if (previous.left != origin.x || previous.top != origin.y)
+        && SetWindowPos(overlay, null_mut(), origin.x, origin.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE) == 0 { return false; }
+    if IsWindowVisible(overlay) == 0 { ShowWindow(overlay, SW_SHOWNOACTIVATE); }
+    true
+}
+
+unsafe extern "system" fn indicator_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    match message {
+        WM_NCHITTEST => HTTRANSPARENT as LRESULT,
+        WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
+        WM_ERASEBKGND => 1,
+        _ => DefWindowProcW(window, message, wparam, lparam),
+    }
+}
+
 unsafe fn paint_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
     let width = draw.rcItem.right - draw.rcItem.left;
     let height = draw.rcItem.bottom - draw.rcItem.top;
@@ -664,25 +899,8 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
                     draw_name(dc, lines[0], line_bounds(inset, 0, inset + heading_width), resources.font,
                         if dragging { GREEN } else { WHITE }, false, card.refreshing);
                     let y = card.spacing.top(typography, 1);
-                    let source_changed = stats.counts.source.additions > 0 || stats.counts.source.deletions > 0;
-                    let mut parts = vec![
-                        ("S ".to_owned(), MUTED),
-                        (format!("+{}", stats.counts.source.additions), if source_changed { GREEN } else { MUTED }),
-                        ("/".to_owned(), MUTED),
-                        (format!("-{}", stats.counts.source.deletions), if source_changed { RED } else { MUTED }),
-                    ];
-                    if let Some((_, suffix)) = stats.counts.to_string().split_once(" · ") {
-                        parts.push((format!(" · {suffix}"), MUTED));
-                    }
-                    let mut x = inset;
-                    for (part, color) in parts {
-                        let part_width = wrapped_width(dc, &part, resources.font).min(right.saturating_sub(x));
-                        if part_width > 0 {
-                            text(dc, &part, bounds(x, y, (x + part_width).min(right), y + typography.cell), resources.font,
-                                if dragging { GREEN } else { color }, line);
-                        }
-                        x = (x + part_width).min(right);
-                    }
+                    draw_counts(dc, &stats.counts, bounds(inset, y, right, y + typography.cell), resources, dragging,
+                        if state.controls_visible { CountLayer::All } else { CountLayer::Faded });
                 }
                 Err(error) => {
                     draw_name(dc, &path, line_bounds(inset, 0, inset + heading_width), resources.font,
@@ -985,7 +1203,7 @@ unsafe fn edge_hit_transparent(window: HWND, point: POINT) -> bool {
 unsafe fn update_hover_state(window: HWND, state: &mut State) {
     let mut point: POINT = std::mem::zeroed();
     let visible = IsWindowVisible(window) != 0 && IsIconic(window) == 0 && GetCursorPos(&mut point) != 0
-        && GetAncestor(WindowFromPoint(point), GA_ROOT) == window;
+        && { let hit = GetAncestor(WindowFromPoint(point), GA_ROOT); hit == window || hit == state.indicator_overlay };
     if visible == state.controls_visible { return; }
     if SetLayeredWindowAttributes(window, 0, if visible { 255 } else { 51 }, LWA_ALPHA) == 0 {
         state.failure = Some(io::Error::last_os_error());
@@ -993,6 +1211,7 @@ unsafe fn update_hover_state(window: HWND, state: &mut State) {
         return;
     }
     state.controls_visible = visible;
+    if visible && !state.indicator_overlay.is_null() { ShowWindow(state.indicator_overlay, SW_HIDE); }
     let focus = GetFocus();
     if !visible && (focus == state.show_all_button || state.cards.iter().any(|card| card.action == Some(focus))) {
         SetFocus(if GetForegroundWindow() == window && IsIconic(window) == 0 { state.viewport } else { null_mut() });
@@ -1420,7 +1639,15 @@ unsafe fn callback(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, v
     let pointer = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut State;
     if pointer.is_null() { return DefWindowProcW(window, message, wparam, lparam); }
     match catch_unwind(AssertUnwindSafe(|| dispatch(window, message, wparam, lparam, pointer, viewport))) {
-        Ok(result) => result,
+        Ok(result) => {
+            if message != WM_SYNC_INDICATORS && message != WM_NCDESTROY && !(*pointer).indicators_queued
+                && !(*pointer).indicator_overlay.is_null()
+                && ((*pointer).indicators_dirty || !viewport && matches!(message, WM_WINDOWPOSCHANGED | WM_SHOWWINDOW)) {
+                let root = if viewport { GetParent(window) } else { window };
+                (*pointer).indicators_queued = PostMessageW(root, WM_SYNC_INDICATORS, 0, 0) != 0;
+            }
+            result
+        }
         Err(_) => {
             (*pointer).failure = Some(io::Error::other("Window callback failed"));
             if message == WM_CREATE { -1 } else {
@@ -1434,6 +1661,14 @@ unsafe fn callback(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, v
 unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, pointer: *mut State, viewport: bool) -> LRESULT {
     track_hover(window, message);
     match message {
+        WM_SYNC_INDICATORS if !viewport => {
+            (*pointer).indicators_queued = false;
+            if !sync_indicators(window, &mut *pointer) {
+                (*pointer).failure = Some(io::Error::last_os_error());
+                PostMessageW(window, WM_CLOSE, 0, 0);
+            }
+            0
+        }
         WM_NCCALCSIZE if !viewport => 0,
         WM_NCACTIVATE if !viewport => DefWindowProcW(window, message, wparam, -1),
         WM_GETMINMAXINFO if !viewport => {
@@ -1574,13 +1809,21 @@ unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, p
         }
         WM_CLOSE if !viewport => {
             cancel_drag(pointer);
+            let overlay = std::mem::replace(&mut (*pointer).indicator_overlay, null_mut());
+            if !overlay.is_null() { DestroyWindow(overlay); }
             let _ = placement_win::save(window, &(*pointer).placement_path);
             KillTimer(window, 1);
             if let Err(error) = (*pointer).monitor.stop() { (*pointer).failure = Some(io::Error::other(error)); }
             DestroyWindow(window);
             0
         }
-        WM_DESTROY if !viewport => { cancel_drag(pointer); KillTimer(window, 1); PostQuitMessage(0); 0 }
+        WM_DESTROY if !viewport => {
+            cancel_drag(pointer);
+            (*pointer).indicator_overlay = null_mut();
+            KillTimer(window, 1);
+            PostQuitMessage(0);
+            0
+        }
         WM_NCDESTROY => {
             SetWindowLongPtrW(window, GWLP_USERDATA, 0);
             DefWindowProcW(window, message, wparam, lparam)
@@ -1634,13 +1877,15 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
         dpi: 96, scroll: 0, content: 0, page: 0, scrollbar_idle: None, width: 0, wheel_remainder: 0, next_card_id: 2000, failure: None,
         order_path, placement_path, starting: true, order, order_warning, order_write_failed: false, order_check: Instant::now(),
         visibility_path, visibility, visibility_warning, visibility_write_failed: false, visibility_check: Instant::now(),
-        show_all_button: null_mut(), controls_visible: false, next_action_id: 3000, drag: None });
+        show_all_button: null_mut(), controls_visible: false, next_action_id: 3000, drag: None,
+        indicator_overlay: null_mut(), indicators_dirty: true, indicators_queued: false });
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let instance = GetModuleHandleW(null());
         if instance.is_null() { return Err(io::Error::last_os_error()); }
         let class = wide("WtsStatusWindow");
         let viewport_class = wide("WtsDashboardViewport");
+        let overlay_class = wide("WtsIndicatorOverlay");
         let definition = WNDCLASSW { lpfnWndProc: Some(procedure), hInstance: instance,
             hCursor: LoadCursorW(null_mut(), IDC_ARROW), lpszClassName: class.as_ptr(), ..std::mem::zeroed() };
         if RegisterClassW(&definition) == 0 { return Err(io::Error::last_os_error()); }
@@ -1650,11 +1895,30 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
             UnregisterClassW(class.as_ptr(), instance);
             return Err(error);
         }
+        let overlay_definition = WNDCLASSW { lpfnWndProc: Some(indicator_procedure), lpszClassName: overlay_class.as_ptr(), ..definition };
+        if RegisterClassW(&overlay_definition) == 0 {
+            let error = io::Error::last_os_error();
+            UnregisterClassW(viewport_class.as_ptr(), instance);
+            UnregisterClassW(class.as_ptr(), instance);
+            return Err(error);
+        }
         let window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED, class.as_ptr(), wide("WTS Worktree status").as_ptr(),
             WS_POPUP | WS_SYSMENU | WS_THICKFRAME | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, CW_USEDEFAULT, CW_USEDEFAULT, 640, 540, null_mut(), null_mut(), instance,
             (&mut *state as *mut State).cast());
         if window.is_null() {
             let error = state.failure.take().unwrap_or_else(io::Error::last_os_error);
+            UnregisterClassW(viewport_class.as_ptr(), instance);
+            UnregisterClassW(class.as_ptr(), instance);
+            UnregisterClassW(overlay_class.as_ptr(), instance);
+            return Err(error);
+        }
+        state.indicator_overlay = CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+            overlay_class.as_ptr(), wide("Line-change indicators").as_ptr(), WS_POPUP | WS_DISABLED,
+            0, 0, 1, 1, window, null_mut(), instance, null());
+        if state.indicator_overlay.is_null() {
+            let error = io::Error::last_os_error();
+            DestroyWindow(window);
+            UnregisterClassW(overlay_class.as_ptr(), instance);
             UnregisterClassW(viewport_class.as_ptr(), instance);
             UnregisterClassW(class.as_ptr(), instance);
             return Err(error);
@@ -1691,6 +1955,10 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
             let style = GetWindowLongPtrW(window, GWL_EXSTYLE);
             SetWindowLongPtrW(window, GWL_EXSTYLE, style & !(WS_EX_NOACTIVATE as isize));
             update_hover_state(window, &mut state);
+            if !sync_indicators(window, &mut state) {
+                state.failure = Some(io::Error::last_os_error());
+                DestroyWindow(window);
+            }
         }
         state.starting = false;
         let mut message: MSG = std::mem::zeroed();
@@ -1713,6 +1981,7 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
         }
         let stopped = state.monitor.stop().map_err(io::Error::other);
         UnregisterClassW(viewport_class.as_ptr(), instance);
+        UnregisterClassW(overlay_class.as_ptr(), instance);
         UnregisterClassW(class.as_ptr(), instance);
         stopped?;
         if let Some(error) = state.failure.take() { return Err(error); }
