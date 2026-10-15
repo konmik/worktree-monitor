@@ -1169,6 +1169,7 @@ unsafe fn callback(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, v
 unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, pointer: *mut State, viewport: bool) -> LRESULT {
     match message {
         WM_NCCALCSIZE if !viewport => 0,
+        WM_NCACTIVATE if !viewport => DefWindowProcW(window, message, wparam, -1),
         WM_GETMINMAXINFO if !viewport => {
             let monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
             let mut info: MONITORINFO = std::mem::zeroed();
