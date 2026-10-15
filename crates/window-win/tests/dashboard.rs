@@ -25,8 +25,8 @@ fn keeps_per_row_counts_without_aggregation() {
     let view = DashboardView::from_snapshot(&snapshot);
     assert_eq!(view.items.len(), 3);
     assert_eq!(view.items[0].display.caption(), "repo");
-    assert_eq!(view.items[1].display.caption(), "main\nS +18446744073709551615/-9 · T +0/-0 · X +0/-0 · binaries: 2");
-    assert_eq!(view.items[2].display.caption(), "topic\nS +7/-3 · T +0/-0 · X +0/-0 · binaries: 1");
+    assert_eq!(view.items[1].display.caption(), "main\nS +18446744073709551615/-9 · binaries: 2");
+    assert_eq!(view.items[2].display.caption(), "topic\nS +7/-3 · binaries: 1");
     assert_eq!(view.health, Health::Live);
     assert_eq!(view.items[1].key, ItemKey::Worktree(identity(&PathBuf::from("/repo/.git")), identity(&PathBuf::from("/repo"))));
 }
@@ -47,6 +47,21 @@ fn renders_source_test_and_extra_counts_in_the_indicator() {
 }
 
 #[test]
+fn shows_test_and_extra_indicators_when_either_counter_is_nonzero() {
+    for (test, extra, expected) in [
+        (LineCounts { additions: 3, deletions: 0 }, LineCounts::default(), "main\nS +0/-0 · T +3/-0"),
+        (LineCounts { additions: 0, deletions: 4 }, LineCounts::default(), "main\nS +0/-0 · T +0/-4"),
+        (LineCounts::default(), LineCounts { additions: 5, deletions: 0 }, "main\nS +0/-0 · X +5/-0"),
+        (LineCounts::default(), LineCounts { additions: 0, deletions: 6 }, "main\nS +0/-0 · X +0/-6"),
+    ] {
+        let item = DisplayItem::Worktree { path: "/repo".into(), result: Ok(WorktreeStats {
+            head: Head::Branch("main".into()), counts: Counts { test, extra, ..Counts::default() },
+        }) };
+        assert_eq!(item.caption(), expected);
+    }
+}
+
+#[test]
 fn partial_errors_preserve_known_counts_and_missing_values() {
     let mut entries = vec![tree("/repo", Head::Branch("main".into()), 4, 2, 1)];
     entries.push(WorktreeEntry { path: "/broken".into(), result: Err(failure()) });
@@ -54,7 +69,7 @@ fn partial_errors_preserve_known_counts_and_missing_values() {
         repos: vec![repo(entries), RepoEntry { common_dir: "/lost/.git".into(), path: "/lost".into(), worktrees: Err(failure()) }] };
     let view = DashboardView::from_snapshot(&snapshot);
     assert_eq!(view.items.len(), 6);
-    assert_eq!(view.items[2].display.caption(), "main\nS +4/-2 · T +0/-0 · X +0/-0 · binaries: 1");
+    assert_eq!(view.items[2].display.caption(), "main\nS +4/-2 · binaries: 1");
     assert_eq!(view.health.caption(Duration::from_secs(20)), "ERROR · Polling 20.0s in last minute");
     assert_eq!(view.items[0].display.caption(), "Configuration error\nConfig: Invalid config");
     assert_eq!(view.items[3].display.caption(), "/broken\nCounts unavailable · binaries unavailable\nERROR (Git): Cannot inspect worktree");
@@ -93,8 +108,8 @@ fn empty_bare_scanning_and_zero_measurements_are_truthful() {
         tree("/zero", Head::Branch("main".into()), 0, 0, 0),
         tree("/binary", Head::Branch("main".into()), 0, 0, 2),
     ])] });
-    assert_eq!(rows.items[1].display.caption(), "main\nS +0/-0 · T +0/-0 · X +0/-0");
-    assert_eq!(rows.items[2].display.caption(), "main\nS +0/-0 · T +0/-0 · X +0/-0 · binaries: 2");
+    assert_eq!(rows.items[1].display.caption(), "main\nS +0/-0");
+    assert_eq!(rows.items[2].display.caption(), "main\nS +0/-0 · binaries: 2");
     assert!(matches!(rows.items[2].display, DisplayItem::Worktree { .. }));
 }
 
@@ -106,7 +121,7 @@ fn count_only_changes_keep_item_keys_and_row_failure_keeps_discovery_complete() 
     let before = DashboardView::from_snapshot(&first);
     let changed = DashboardView::from_snapshot(&second);
     assert_eq!(before.items.iter().map(|item| &item.key).collect::<Vec<_>>(), changed.items.iter().map(|item| &item.key).collect::<Vec<_>>());
-    assert_eq!(changed.items[1].display.caption(), "main\nS +8/-3 · T +0/-0 · X +0/-0 · binaries: 2");
+    assert_eq!(changed.items[1].display.caption(), "main\nS +8/-3 · binaries: 2");
     second.repos[0].worktrees.as_mut().unwrap()[0].result = Err(failure());
     let after = DashboardView::from_snapshot(&second);
     assert_eq!(before.items.iter().map(|item| &item.key).collect::<Vec<_>>(), after.items.iter().map(|item| &item.key).collect::<Vec<_>>());
@@ -325,8 +340,8 @@ fn scan_projection_keeps_completed_counts_and_identity_as_pending_rows_complete(
     let first = Snapshot { config_error: None, repos: vec![repo(vec![tree("/repo", Head::Branch("main".into()), 8, 3, 1)])] };
     let view = DashboardView::from_scan(&first, &targets, &Default::default(), false);
     assert_eq!(view.items[0].display.caption(), "repo");
-    assert_eq!(view.items[1].display.caption(), "main\nS +8/-3 · T +0/-0 · X +0/-0 · binaries: 1");
-    assert_eq!(view.items[1].display.caption_with_refresh(true), "main\nS +8/-3 · T +0/-0 · X +0/-0 · binaries: 1\nRefreshing");
+    assert_eq!(view.items[1].display.caption(), "main\nS +8/-3 · binaries: 1");
+    assert_eq!(view.items[1].display.caption_with_refresh(true), "main\nS +8/-3 · binaries: 1\nRefreshing");
     assert_eq!(view.items[1].display.caption_with_refresh(false), view.items[1].display.caption());
     let second = Snapshot { config_error: None, repos: vec![repo(vec![tree("/repo", Head::Branch("main".into()), 8, 3, 1),
         tree("/second", Head::Branch("topic".into()), 2, 0, 0)])] };

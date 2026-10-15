@@ -100,8 +100,12 @@ impl Counts {
 
 impl fmt::Display for Counts {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "S +{}/-{} · T +{}/-{} · X +{}/-{}", self.source.additions, self.source.deletions,
-            self.test.additions, self.test.deletions, self.extra.additions, self.extra.deletions)?;
+        write!(f, "S +{}/-{}", self.source.additions, self.source.deletions)?;
+        for (label, counts) in [("T", self.test), ("X", self.extra)] {
+            if counts.additions > 0 || counts.deletions > 0 {
+                write!(f, " · {label} +{}/-{}", counts.additions, counts.deletions)?;
+            }
+        }
         if self.binaries > 0 { write!(f, " · binaries: {}", self.binaries)?; }
         Ok(())
     }

@@ -459,7 +459,7 @@ function New-ExpectedRows([array]$Repositories) {
             Name = $repository.Name
             PathText = $repository.Repository
             Branch = $repository.RootBranch
-            CountsCaption = 'S +1/-0 · T +0/-0 · X +0/-0'
+            CountsCaption = 'S +1/-0'
             Caption = $null
         })
         [void]$rows.Add([pscustomobject]@{
@@ -470,7 +470,7 @@ function New-ExpectedRows([array]$Repositories) {
             Name = $repository.Name
             PathText = $repository.Worktree
             Branch = $repository.TreeBranch
-            CountsCaption = 'S +1/-0 · T +0/-0 · X +0/-0'
+            CountsCaption = 'S +1/-0'
             Caption = $null
         })
     }

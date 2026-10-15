@@ -126,7 +126,7 @@ try {
         if ($spec.Binaries -gt 0) { [IO.File]::WriteAllBytes((Join-Path $repo 'asset.bin'), [byte[]]@(0, 1, 2)) }
         $branch = (Invoke-FixtureGit $repo @('branch', '--show-current') | Out-String).Trim()
         $binaryCounts = if ($spec.Binaries -gt 0) { " · binaries: $($spec.Binaries)" } else { '' }
-        $script:expectedRows += [pscustomobject]@{ Branch = $branch; Path = $repo; Added = $spec.Added; Counts = "S\s+\+$($spec.Added)/-$($spec.Deleted)\s+·\s+T\s+\+0/-0\s+·\s+X\s+\+0/-0$binaryCounts\r?$" }
+        $script:expectedRows += [pscustomobject]@{ Branch = $branch; Path = $repo; Added = $spec.Added; Counts = "S\s+\+$($spec.Added)/-$($spec.Deleted)$binaryCounts\r?$" }
         & $CliBinary add $repo
         if ($LASTEXITCODE -ne 0) { throw 'Visual fixture registration failed' }
     }
