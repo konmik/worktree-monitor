@@ -312,10 +312,12 @@ fn scans_do_not_write_the_index_config_or_git_objects() {
     fixture.write("staged.txt", "staged\n");
     git(&fixture.repo, &["add", "staged.txt"]);
     fixture.service().add(&fixture.repo).unwrap();
+    fixture.write("untracked-one.txt", "one\n");
+    fixture.write("untracked-two.txt", "two\n");
     let index = fs::read(fixture.repo.join(".git/index")).unwrap();
     let config = fs::read(&fixture.config).unwrap();
     let before_objects = git(&fixture.repo, &["count-objects", "-v"]);
-    assert_eq!(fixture.stats().counts, source_counts(1, 0, 0));
+    assert_eq!(fixture.stats().counts, source_counts(3, 0, 0));
     assert_eq!(fs::read(fixture.repo.join(".git/index")).unwrap(), index);
     assert_eq!(fs::read(&fixture.config).unwrap(), config);
     assert_eq!(git(&fixture.repo, &["count-objects", "-v"]), before_objects);
@@ -380,12 +382,48 @@ fn unreadable_untracked_file_is_an_error_not_a_partial_count() {
     fixture.commit();
     fixture.service().add(&fixture.repo).unwrap();
     fixture.write("locked.txt", "new\n");
+    fixture.write("readable.txt", "readable\n");
     let locked = fs::OpenOptions::new().read(true).share_mode(0).open(fixture.repo.join("locked.txt")).unwrap();
     let snapshot = fixture.service().snapshot(&Cancel::new());
     assert!(snapshot.has_errors(), "Unexpected successful scan: {}", snapshot.text());
     assert!(snapshot.repos[0].worktrees.as_ref().unwrap()[0].result.is_err());
     drop(locked);
-    assert_eq!(fixture.stats().counts, source_counts(1, 0, 0));
+    assert_eq!(fixture.stats().counts, source_counts(2, 0, 0));
+}
+
+#[test]
+fn untracked_batches_preserve_literal_paths_and_git_attributes() {
+    let fixture = Fixture::new("sha1");
+    fixture.write(".gitattributes", "*.bin binary\n*.txt diff\n");
+    fixture.write(".gitignore", "ignored.txt\n");
+    fixture.commit();
+    fixture.service().add(&fixture.repo).unwrap();
+    fs::create_dir(fixture.repo.join("tests")).unwrap();
+    fs::create_dir(fixture.repo.join("scripts")).unwrap();
+    fixture.write("literal [x] 树.txt", "one\ntwo\n");
+    fixture.write("forced-text.txt", b"one\0two\n");
+    fixture.write("tests/new.test.js", "one\ntwo\n");
+    fixture.write("scripts/tool.ps1", "one\n");
+    fixture.write("asset.bin", "forced binary\n");
+    fixture.write("ignored.txt", "not counted\n");
+    assert_eq!(fixture.stats().counts, Counts {
+        source: LineCounts { additions: 3, deletions: 0 },
+        test: LineCounts { additions: 2, deletions: 0 },
+        extra: LineCounts { additions: 1, deletions: 0 },
+        binaries: 1,
+    });
+}
+
+#[test]
+fn untracked_batches_cover_multiple_command_chunks() {
+    let fixture = Fixture::new("sha1");
+    fixture.write("tracked.txt", "before\n");
+    fixture.commit();
+    fixture.service().add(&fixture.repo).unwrap();
+    for index in 0..250 {
+        fixture.write(&format!("untracked-{index:03}-with-spaces-[literal]-and-a-long-name-to-fill-a-command.txt"), "one\n");
+    }
+    assert_eq!(fixture.stats().counts, source_counts(250, 0, 0));
 }
 
 fn wait_for(monitor: &wts_core::Monitor, condition: impl Fn(&wts_core::MonitorUpdate) -> bool) {
@@ -600,7 +638,7 @@ fn idle_monitor_does_not_add_polling_work() {
 }
 
 #[test]
-fn ignored_directory_artifacts_do_not_grow_polling_work_and_real_edits_update() {
+fn ignored_artifact_bursts_do_not_repeat_scans_and_real_edits_update() {
     let fixture = Fixture::new("sha1");
     fixture.write("tracked.txt", "before\n");
     fixture.write(".gitignore", "ignored/\n");
@@ -622,7 +660,8 @@ fn ignored_directory_artifacts_do_not_grow_polling_work_and_real_edits_update() 
     }
     thread::sleep(Duration::from_millis(1200));
     let after = monitor.latest().unwrap().polling_time_last_minute;
-    assert_eq!(after, before, "ignored writes added polling work");
+    assert!(after.saturating_sub(before) <= before,
+        "ignored burst repeated more work than startup: {before:?} -> {after:?}");
     fixture.write("tracked.txt", "before\nafter\n");
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts

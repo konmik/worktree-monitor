@@ -1,6 +1,7 @@
 use crate::process::{self, args};
 use crate::{Cancel, Counts, Error, ErrorKind, Head, LineCounts, RepoEntry, Snapshot, WorktreeEntry, WorktreeStats};
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -444,6 +445,39 @@ fn relative_path(bytes: &[u8]) -> Result<PathBuf, Error> {
     Ok(path)
 }
 
+const UNTRACKED_BATCH_LIMIT: usize = 16 * 1024;
+const LITERAL_PATHSPEC_PREFIX: &str = ":(literal)";
+const PATHSPEC_QUOTING_MARGIN: usize = 4;
+
+fn count_untracked(tree: &Path, relative: &Path, cancel: &Cancel) -> Result<Counts, Error> {
+    let mut command = args(&["diff", "--no-index", "--numstat", "-z", "--no-ext-diff", "--no-textconv", "--", "/dev/null"]);
+    command.push(relative.as_os_str().to_owned());
+    let output = process::success(process::run(Some(tree), &command, cancel)?, &[0, 1])?;
+    numstat(&output)
+}
+
+fn count_untracked_batch(tree: &Path, empty: &Path, relatives: &[PathBuf], cancel: &Cancel) -> Result<Counts, Error> {
+    let mut command = args(&["diff", "--no-index", "--numstat", "-z", "--no-ext-diff", "--no-textconv"]);
+    command.push(empty.as_os_str().to_owned());
+    command.push(".".into());
+    command.push("--".into());
+    for relative in relatives {
+        let mut pathspec = OsString::from(LITERAL_PATHSPEC_PREFIX);
+        pathspec.push(relative.as_os_str());
+        command.push(pathspec);
+    }
+    let output = process::run(Some(tree), &command, cancel)?;
+    if output.code == 129 {
+        let mut counts = Counts::default();
+        for relative in relatives {
+            counts.add(count_untracked(tree, relative, cancel)?)?;
+        }
+        return Ok(counts);
+    }
+    let output = process::success(output, &[0, 1])?;
+    numstat(&output)
+}
+
 fn count_tree(tree: &Path, head: Head, base: &str, cancel: &Cancel) -> Result<WorktreeStats, Error> {
     let conflicts = process::checked(Some(tree), &args(&["ls-files", "--unmerged", "-z"]), cancel)?;
     if !conflicts.is_empty() { return Err(Error::new(ErrorKind::Conflict, "Unresolved merge conflicts")); }
@@ -453,6 +487,7 @@ fn count_tree(tree: &Path, head: Head, base: &str, cancel: &Cancel) -> Result<Wo
     let mut counts = numstat(&process::checked(Some(tree), &command, cancel)?)?;
     let untracked = process::checked(Some(tree), &args(&["ls-files", "--others", "--exclude-standard", "-z"]), cancel)?;
     if !untracked.is_empty() && !untracked.ends_with(b"\0") { return Err(invalid("Untracked list is not NUL terminated")); }
+    let mut relatives = Vec::new();
     for name in untracked.split(|byte| *byte == 0).filter(|name| !name.is_empty()) {
         let relative = relative_path(name)?;
         let absolute = tree.join(&relative);
@@ -461,10 +496,29 @@ fn count_tree(tree: &Path, head: Head, base: &str, cancel: &Cancel) -> Result<Wo
         if !metadata.is_file() && !metadata.file_type().is_symlink() {
             return Err(Error::new(ErrorKind::Io, format!("Unsupported untracked entry {}", absolute.display())));
         }
-        let mut command = args(&["diff", "--no-index", "--numstat", "-z", "--no-ext-diff", "--no-textconv", "--", "/dev/null"]);
-        command.push(relative.into_os_string());
-        let output = process::success(process::run(Some(tree), &command, cancel)?, &[0, 1])?;
-        counts.add(numstat(&output)?)?;
+        relatives.push(relative);
+    }
+    match relatives.as_slice() {
+        [] => {}
+        [relative] => counts.add(count_untracked(tree, relative, cancel)?)?,
+        _ => {
+            let empty = tempfile::tempdir().map_err(|error| Error::io("Cannot create Git comparison directory", error))?;
+            let mut start = 0;
+            while start < relatives.len() {
+                let mut end = start;
+                let mut size = 0;
+                while end < relatives.len() {
+                    let pathspec_size = LITERAL_PATHSPEC_PREFIX.len()
+                        + relatives[end].as_os_str().as_encoded_bytes().len()
+                        + PATHSPEC_QUOTING_MARGIN;
+                    if end > start && size + pathspec_size > UNTRACKED_BATCH_LIMIT { break; }
+                    size += pathspec_size;
+                    end += 1;
+                }
+                counts.add(count_untracked_batch(tree, empty.path(), &relatives[start..end], cancel)?)?;
+                start = end;
+            }
+        }
     }
     Ok(WorktreeStats { head, counts })
 }

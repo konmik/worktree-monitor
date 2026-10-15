@@ -253,6 +253,7 @@ impl WatchBoundary {
                             repositories.insert(key.clone());
                             let objects = key.join("objects");
                             let object_write = path.starts_with(&objects)
+                                && !path.starts_with(objects.join("info"))
                                 && (path != objects || !topology_event(&event.kind))
                                 && matches!(event.kind, EventKind::Create(_)
                                     | EventKind::Modify(ModifyKind::Data(_)
@@ -662,6 +663,38 @@ mod tests {
         boundary.classify(Event::new(EventKind::Remove(RemoveKind::Folder))
             .add_path(common.join("objects")), &mut batch);
         assert!(batch.repositories.contains(&normalize(&common)));
+        let mut batch = WatchBatch::default();
+        boundary.classify(Event::new(EventKind::Modify(ModifyKind::Any))
+            .add_path(common.join("objects/info/alternates")), &mut batch);
+        assert!(batch.repositories.contains(&normalize(&common)));
+    }
+
+    #[test]
+    fn ignored_directory_events_are_filtered_but_visible_files_are_not() {
+        let directory = tempfile::Builder::new().prefix("wts-watch-ignore-").tempdir().unwrap();
+        let root = directory.path();
+        let cancel = Cancel::new();
+        crate::process::checked(Some(root), &crate::process::args(&["init", "--quiet"]), &cancel).unwrap();
+        std::fs::write(root.join(".gitignore"), b"ignored/\n").unwrap();
+        std::fs::write(root.join("visible.txt"), b"visible\n").unwrap();
+        std::fs::create_dir(root.join("ignored")).unwrap();
+        let cache = git::scan_tree_with_ignored(root, &cancel, None).unwrap().ignored.unwrap();
+        let common = root.join(".git");
+        let key = WorktreeKey::new(&common, root);
+        let mut boundary = boundary_with(root.to_path_buf(), vec![
+            Target::Repository(common), Target::Worktree(key.clone()),
+        ]);
+        boundary.ignored.insert(key.clone(), cache);
+        for kind in [EventKind::Create(CreateKind::File), EventKind::Modify(ModifyKind::Any),
+            EventKind::Remove(RemoveKind::File), EventKind::Modify(ModifyKind::Name(RenameMode::From))] {
+            let mut batch = WatchBatch::default();
+            boundary.classify(Event::new(kind).add_path(root.join("ignored/artifact.txt")), &mut batch);
+            assert!(batch.is_empty());
+        }
+        let mut batch = WatchBatch::default();
+        boundary.classify(Event::new(EventKind::Modify(ModifyKind::Any))
+            .add_path(root.join("visible.txt")), &mut batch);
+        assert!(batch.worktrees.contains(&key));
     }
 
     #[test]
