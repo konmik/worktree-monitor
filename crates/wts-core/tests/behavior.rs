@@ -427,7 +427,7 @@ fn untracked_batches_cover_multiple_command_chunks() {
 }
 
 fn wait_for(monitor: &wts_core::Monitor, condition: impl Fn(&wts_core::MonitorUpdate) -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(6);
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         if monitor.latest().is_some_and(|update| condition(&update)) { return; }
         assert!(Instant::now() < deadline, "Timed out waiting for monitor update");
@@ -463,7 +463,7 @@ fn settled_polling_time(monitor: &wts_core::Monitor) -> Duration {
 }
 
 #[test]
-fn worktree_edits_recompute_without_recovery_polling() {
+fn worktree_edits_wait_for_the_next_serial_pass() {
     let fixture = Fixture::new("sha1");
     fixture.write("tracked.txt", "before\n");
     fixture.commit();
@@ -475,8 +475,8 @@ fn worktree_edits_recompute_without_recovery_polling() {
     fixture.write("tracked.txt", "before\nafter\n");
     let elapsed = wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(1, 0, 0), Duration::from_secs(2));
-    assert!(elapsed < Duration::from_secs(2), "edit took {elapsed:?}");
+        == source_counts(1, 0, 0), Duration::from_secs(18));
+    assert!(elapsed >= Duration::from_secs(9), "edit bypassed the pass delay: {elapsed:?}");
     monitor.stop().unwrap();
 }
 
@@ -494,13 +494,13 @@ fn untracked_directory_and_atomic_rename_changes_are_observed() {
     fs::write(directory.join("new.txt"), "one\ntwo\n").unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(2, 0, 0), Duration::from_secs(2));
+        == source_counts(2, 0, 0), Duration::from_secs(18));
     fs::rename(directory.join("new.txt"), directory.join("renamed.txt")).unwrap();
     fs::remove_file(directory.join("renamed.txt")).unwrap();
     let elapsed = wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == Counts::default(), Duration::from_secs(2));
-    assert!(elapsed < Duration::from_secs(2), "removal took {elapsed:?}");
+        == Counts::default(), Duration::from_secs(18));
+    assert!(elapsed >= Duration::from_secs(9), "removal bypassed the pass delay: {elapsed:?}");
     monitor.stop().unwrap();
 }
 
@@ -523,27 +523,27 @@ fn metadata_changes_and_worktree_topology_are_observed() {
     let elapsed = wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap().iter().any(|tree|
             tree.result.as_ref().is_ok_and(|stats| stats.head == Head::Detached(linked_head.clone()))),
-        Duration::from_secs(2));
-    assert!(elapsed < Duration::from_secs(2), "linked HEAD took {elapsed:?}");
+        Duration::from_secs(18));
+    assert!(elapsed < Duration::from_secs(18), "scheduled linked HEAD took {elapsed:?}");
     let added = fixture._directory.path().join("added");
     git(&fixture.repo, &["worktree", "add", "--quiet", "--detach", added.to_str().unwrap()]);
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
-        .worktrees.as_ref().unwrap().len() == 3, Duration::from_secs(2));
+        .worktrees.as_ref().unwrap().len() == 3, Duration::from_secs(18));
     git(&fixture.repo, &["worktree", "remove", "--force", added.to_str().unwrap()]);
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
-        .worktrees.as_ref().unwrap().len() == 2, Duration::from_secs(2));
+        .worktrees.as_ref().unwrap().len() == 2, Duration::from_secs(18));
     fixture.write("tracked.txt", "before\nmain\n");
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap().iter().any(|tree|
             tree.result.as_ref().is_ok_and(|stats| stats.counts == source_counts(1, 0, 0))),
-        Duration::from_secs(2));
+        Duration::from_secs(18));
     git(&fixture.repo, &["add", "tracked.txt"]);
     git(&fixture.repo, &["-c", "user.name=Wts Test", "-c", "user.email=wts@example.invalid",
         "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "Main"]);
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap().iter().all(|tree|
             tree.result.as_ref().is_ok_and(|stats| stats.counts == Counts::default())),
-        Duration::from_secs(2));
+        Duration::from_secs(18));
     monitor.stop().unwrap();
 }
 
@@ -580,7 +580,7 @@ fn replaced_refs_watch_observes_a_ref_only_head_and_count_change() {
                 stats.head == Head::Branch("main".into())
                     && stats.counts == source_counts(1, 1, 0)
             })
-    }, Duration::from_secs(2));
+    }, Duration::from_secs(18));
     monitor.stop().unwrap();
 }
 
@@ -603,17 +603,17 @@ fn replaced_info_directory_reconnects_exclude_watch() {
     fs::write(info.join("exclude"), b"ignored.txt\n").unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts == Counts::default(),
-        Duration::from_secs(2));
+        Duration::from_secs(18));
     fs::write(info.join("exclude"), b"").unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(1, 0, 0), Duration::from_secs(2));
+        == source_counts(1, 0, 0), Duration::from_secs(18));
     monitor.stop().unwrap();
     fs::remove_dir_all(moved).unwrap();
 }
 
 #[test]
-fn idle_monitor_does_not_add_polling_work() {
+fn unchanged_worktrees_are_not_scanned_after_the_initial_pass() {
     let fixture = Fixture::new("sha1");
     fixture.write("tracked.txt", "before\n");
     fixture.commit();
@@ -628,7 +628,7 @@ fn idle_monitor_does_not_add_polling_work() {
     let counts = settled.snapshot.repos[0].worktrees.as_ref().unwrap()[0]
         .result.as_ref().unwrap().counts;
     let polling_time = settled.polling_time_last_minute;
-    thread::sleep(Duration::from_secs(6));
+    thread::sleep(Duration::from_secs(12));
     let idle = monitor.latest().unwrap();
     assert_eq!(idle.snapshot.as_ref(), settled.snapshot.as_ref());
     assert_eq!(idle.snapshot.repos[0].worktrees.as_ref().unwrap()[0]
@@ -665,7 +665,7 @@ fn ignored_artifact_bursts_do_not_repeat_scans_and_real_edits_update() {
     fixture.write("tracked.txt", "before\nafter\n");
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(1, 0, 0), Duration::from_secs(2));
+        == source_counts(1, 0, 0), Duration::from_secs(18));
     monitor.stop().unwrap();
 }
 
@@ -690,20 +690,20 @@ fn git_object_writes_do_not_rescan_and_ref_changes_still_update() {
         thread::sleep(Duration::from_millis(200));
     }
     thread::sleep(Duration::from_millis(1200));
-    assert_eq!(monitor.latest().unwrap().polling_time_last_minute, before);
+    assert!(monitor.latest().unwrap().polling_time_last_minute.saturating_sub(before) <= before);
     fixture.write("tracked.txt", "before\nafter\n");
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(1, 0, 0), Duration::from_secs(2));
+        == source_counts(1, 0, 0), Duration::from_secs(18));
     fixture.commit();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts == Counts::default(),
-        Duration::from_secs(6));
+        Duration::from_secs(18));
     monitor.stop().unwrap();
 }
 
 #[test]
-fn ignored_writes_during_initial_scan_converge_to_a_cache() {
+fn writes_during_initial_scan_do_not_lose_later_edits() {
     let fixture = Fixture::new("sha1");
     fixture.write("tracked.txt", "before\n");
     fixture.write(".gitignore", "ignored/\n");
@@ -742,7 +742,34 @@ fn ignored_writes_during_initial_scan_converge_to_a_cache() {
     fixture.write("tracked.txt", "before\nafter\n");
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(1, 0, 0), Duration::from_secs(2));
+        == source_counts(1, 0, 0), Duration::from_secs(18));
+    monitor.stop().unwrap();
+}
+
+#[test]
+fn continuous_edits_do_not_scan_immediately_or_postpone_scheduled_updates() {
+    let fixture = Fixture::new("sha1");
+    fixture.write("tracked.txt", "before\n");
+    fixture.commit();
+    fixture.service().add(&fixture.repo).unwrap();
+    let mut monitor = fixture.service().monitor().unwrap();
+    wait_for(&monitor, |update| update.snapshot.repos.len() == 1
+        && update.snapshot.repos[0].worktrees.as_ref().is_ok_and(|trees|
+            trees[0].result.as_ref().is_ok_and(|stats| stats.counts == Counts::default())));
+    let before = monitor.latest().unwrap().polling_time_last_minute;
+    for _ in 0..10 {
+        fixture.write("tracked.txt", "before\nafter\n");
+        thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(monitor.latest().unwrap().polling_time_last_minute, before);
+    let deadline = Instant::now() + Duration::from_secs(18);
+    loop {
+        fixture.write("tracked.txt", "before\nafter\n");
+        if monitor.latest().unwrap().snapshot.repos[0].worktrees.as_ref().unwrap()[0]
+            .result.as_ref().is_ok_and(|stats| stats.counts == source_counts(1, 0, 0)) { break; }
+        assert!(Instant::now() < deadline, "continuous edits postponed the scheduled update");
+        thread::sleep(Duration::from_millis(100));
+    }
     monitor.stop().unwrap();
 }
 
@@ -763,12 +790,12 @@ fn forced_tracked_files_under_ignored_directories_still_update() {
     fixture.write("ignored/tracked.txt", "before\nafter\n");
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(1, 0, 0), Duration::from_secs(2));
+        == source_counts(1, 0, 0), Duration::from_secs(18));
     monitor.stop().unwrap();
 }
 
 #[test]
-fn ignore_rule_changes_invalidate_the_ignored_cache() {
+fn ignore_rule_changes_are_observed_in_the_next_pass() {
     let fixture = Fixture::new("sha1");
     fixture.write("tracked.txt", "before\n");
     fixture.write(".gitignore", "ignored/\n");
@@ -784,7 +811,7 @@ fn ignore_rule_changes_invalidate_the_ignored_cache() {
     fs::write(fixture.repo.join(".gitignore"), b"").unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(1, 1, 0), Duration::from_secs(6));
+        == source_counts(1, 1, 0), Duration::from_secs(18));
     monitor.stop().unwrap();
 }
 
@@ -806,11 +833,11 @@ fn negated_files_under_an_ignored_listing_prefix_are_not_filtered() {
     fs::write(&visible, "one\n").unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(1, 0, 0), Duration::from_secs(2));
+        == source_counts(1, 0, 0), Duration::from_secs(18));
     fs::write(&visible, "one\ntwo\n").unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(2, 0, 0), Duration::from_secs(2));
+        == source_counts(2, 0, 0), Duration::from_secs(18));
     monitor.stop().unwrap();
 }
 
@@ -832,13 +859,13 @@ fn ignored_file_delete_recreate_and_directory_replacement_are_observed() {
     fs::write(swapped.join("visible.txt"), "visible\n").unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(1, 0, 0), Duration::from_secs(2));
+        == source_counts(1, 0, 0), Duration::from_secs(18));
     fs::remove_file(swapped.join("visible.txt")).unwrap();
     fs::remove_dir(&swapped).unwrap();
     fs::write(&swapped, "ignored again\n").unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts == Counts::default(),
-        Duration::from_secs(2));
+        Duration::from_secs(18));
     monitor.stop().unwrap();
 }
 
@@ -860,7 +887,7 @@ fn ignored_directory_rename_and_delete_preserve_tracked_changes() {
     fs::rename(fixture.repo.join("ignored"), &moved).unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(0, 1, 0), Duration::from_secs(2));
+        == source_counts(0, 1, 0), Duration::from_secs(18));
     fs::remove_file(moved.join("tracked.txt")).unwrap();
     fs::remove_dir(&moved).unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
@@ -884,16 +911,16 @@ fn ignored_untracked_gitattributes_changes_update_counts() {
     fixture.write("tracked.txt", "before\nafter\n");
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(1, 0, 0), Duration::from_secs(2));
+        == source_counts(1, 0, 0), Duration::from_secs(18));
     fixture.write(".gitattributes", "tracked.txt binary\n");
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(0, 0, 1), Duration::from_secs(6));
+        == source_counts(0, 0, 1), Duration::from_secs(18));
     monitor.stop().unwrap();
 }
 
 #[test]
-fn global_excludes_changes_invalidate_the_ignored_cache() {
+fn global_excludes_changes_are_observed_in_the_next_pass() {
     let fixture = Fixture::new("sha1");
     fixture.write("tracked.txt", "before\n");
     fixture.commit();
@@ -909,7 +936,7 @@ fn global_excludes_changes_invalidate_the_ignored_cache() {
     fs::write(&excludes, b"").unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(1, 0, 0), Duration::from_secs(6));
+        == source_counts(1, 0, 0), Duration::from_secs(18));
     monitor.stop().unwrap();
 }
 
@@ -941,7 +968,7 @@ fn removed_registered_root_recovers_after_recreation() {
     wait_for(&monitor, |update| update.snapshot.repos.len() == 1 && update.snapshot.has_errors());
     fs::rename(&moved, &fixture.repo).unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos.len() == 1
-        && !update.snapshot.has_errors(), Duration::from_secs(6));
+        && !update.snapshot.has_errors(), Duration::from_secs(18));
     monitor.stop().unwrap();
 }
 
@@ -1079,8 +1106,8 @@ fn existing_non_git_launch_discovers_a_later_git_init() {
             && trees[0].result.as_ref().is_ok_and(|stats| {
                 stats.head == Head::Unborn("main".into()) && stats.counts == Counts::default()
             })
-    }, Duration::from_secs(4));
-    assert!(elapsed < Duration::from_secs(4), "git init took {elapsed:?}");
+    }, Duration::from_secs(18));
+    assert!(elapsed < Duration::from_secs(18), "git init took {elapsed:?}");
     monitor.stop().unwrap();
 }
 

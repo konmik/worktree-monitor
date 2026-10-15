@@ -13,6 +13,7 @@ $evidence = Join-Path $env:LOCALAPPDATA "Temp/opencode/wts-benchmark-$([Guid]::N
 [void][IO.Directory]::CreateDirectory($evidence)
 $processes = @()
 try {
+    $results = @()
     foreach ($entry in @(@('baseline', $Baseline), @('treatment', $Treatment))) {
         $name, $binary = $entry
         $start = [Diagnostics.ProcessStartInfo]::new($binary)
@@ -29,9 +30,6 @@ try {
         $processes += $entry
         $entry.Output = $process.StandardOutput.ReadToEndAsync()
         $entry.Errors = $process.StandardError.ReadToEndAsync()
-    }
-    $results = @()
-    foreach ($entry in $processes) {
         if (-not $entry.Process.WaitForExit(($WarmupSeconds + 60 * $Samples + 120) * 1000)) { throw "$($entry.Name) timed out" }
         $output = $entry.Output.GetAwaiter().GetResult()
         $errors = $entry.Errors.GetAwaiter().GetResult()
@@ -68,7 +66,7 @@ try {
     }
     $snapshots = @($results | ForEach-Object { $_.Measurements } | ForEach-Object { $_.snapshot } | Select-Object -Unique)
     if ($snapshots.Count -ne 1) { throw "Repository snapshots changed during the benchmark. Evidence at $evidence" }
-    $report = [ordered]@{ Method = 'Concurrent release monitors, latest published rolling-minute metric sampled every 60 seconds after warmup'; WarmupSeconds = $WarmupSeconds; Results = $results }
+    $report = [ordered]@{ Method = 'Sequential release monitors, latest published rolling-minute metric sampled every 60 seconds after warmup'; WarmupSeconds = $WarmupSeconds; Results = $results }
     $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $evidence 'results.json') -Encoding utf8NoBOM
     $results | Select-Object Name, Samples, MeanSecondsPerMinute, MedianSecondsPerMinute, MinSecondsPerMinute, MaxSecondsPerMinute | Format-Table -AutoSize
     Write-Host "Evidence at $evidence"

@@ -1,64 +1,10 @@
 use crate::process::{self, args};
 use crate::{Cancel, Counts, Error, ErrorKind, Head, LineCounts, RepoEntry, Snapshot, WorktreeEntry, WorktreeStats};
-use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Category { Source, Test, Extra }
-
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) enum IgnoredPath {
-    File(PathBuf),
-    Directory(PathBuf),
-}
-
-#[derive(Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) struct IgnoredPaths {
-    entries: Vec<IgnoredPath>,
-    checked_directories: Vec<PathBuf>,
-    sources: Vec<PathBuf>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum IgnoredPathKind { File, Directory }
-
-impl IgnoredPaths {
-    pub(crate) fn sources(&self) -> &[PathBuf] { &self.sources }
-
-    pub(crate) fn matching(&self, path: &Path) -> Option<(IgnoredPathKind, bool)> {
-        let path = ignored_path_key(path);
-        self.entries.iter().find_map(|entry| match entry {
-            IgnoredPath::File(candidate) if path == ignored_path_key(candidate) => {
-                Some((IgnoredPathKind::File, true))
-            }
-            IgnoredPath::Directory(candidate) => {
-                let candidate = ignored_path_key(candidate);
-                if path == candidate {
-                    Some((IgnoredPathKind::Directory, true))
-                } else if path.starts_with(&candidate) {
-                    Some((IgnoredPathKind::Directory, false))
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        })
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct ScanResult {
-    pub(crate) stats: WorktreeStats,
-    pub(crate) ignored: Option<IgnoredPaths>,
-}
-
-fn ignored_path_key(path: &Path) -> PathBuf {
-    #[cfg(windows)]
-    { PathBuf::from(path.to_string_lossy().replace('\\', "/").to_lowercase()) }
-    #[cfg(not(windows))]
-    { path.to_path_buf() }
-}
 
 const TEST_DIRECTORIES: &[&str] = &[
     "test", "tests", "__tests__", "e2e", "spec", "testdata", "__mocks__", "__fixtures__", "fixtures", "__snapshots__",
@@ -259,113 +205,17 @@ fn head(tree: &Path, cancel: &Cancel) -> Result<(Head, String), Error> {
 }
 
 pub(crate) fn scan_tree(tree: &Path, cancel: &Cancel) -> Result<WorktreeStats, Error> {
-    scan_tree_inner(tree, cancel, false, None).map(|result| result.stats)
-}
-
-pub(crate) fn scan_tree_with_ignored(tree: &Path, cancel: &Cancel,
-    previous: Option<&IgnoredPaths>) -> Result<ScanResult, Error> {
-    scan_tree_inner(tree, cancel, true, previous)
-}
-
-fn scan_tree_inner(tree: &Path, cancel: &Cancel, collect_ignored: bool,
-    previous: Option<&IgnoredPaths>) -> Result<ScanResult, Error> {
     for _ in 0..2 {
         let (head, base) = head(tree, cancel)?;
         let stats = count_tree(tree, head.clone(), &base, cancel)?;
-        let ignored = if collect_ignored {
-            match ignored_paths(tree, cancel, previous) {
-                Ok(paths) => Some(paths),
-                Err(error) if error.kind == ErrorKind::Cancelled => return Err(error),
-                Err(_) => None,
-            }
-        } else { None };
         if self::head(tree, cancel)? == (head, base) {
-            return Ok(ScanResult { stats, ignored });
+            return Ok(stats);
         }
     }
     Err(Error::new(ErrorKind::ChangedDuringScan, "HEAD changed during the scan; retry on the next scan"))
 }
 
-fn ignored_paths(tree: &Path, cancel: &Cancel, previous: Option<&IgnoredPaths>) -> Result<IgnoredPaths, Error> {
-    let sources = match previous {
-        Some(previous) => previous.sources.clone(),
-        None => global_sources(tree, cancel)?,
-    };
-    let ignored = process::checked(Some(tree),
-        &args(&["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]), cancel)?;
-    if !ignored.is_empty() && !ignored.ends_with(b"\0") {
-        return Err(invalid("Git ignored list is not NUL terminated"));
-    }
-    let mut entries = ignored.split(|byte| *byte == 0)
-        .filter(|name| !name.is_empty())
-        .map(|name| {
-            let directory = name.ends_with(b"/");
-            let name = if directory { &name[..name.len() - 1] } else { name };
-            let path = relative_path(name)?;
-            Ok(if directory { IgnoredPath::Directory(path) } else { IgnoredPath::File(path) })
-        })
-        .collect::<Result<Vec<_>, Error>>()?;
-    if entries.iter().any(|entry| matches!(entry, IgnoredPath::Directory(_))) {
-        let tracked = process::checked(Some(tree), &args(&["ls-files", "--cached", "-z"]), cancel)?;
-        if !tracked.is_empty() && !tracked.ends_with(b"\0") {
-            return Err(invalid("Git tracked list is not NUL terminated"));
-        }
-        let tracked = tracked.split(|byte| *byte == 0)
-            .filter(|name| !name.is_empty())
-            .map(relative_path)
-            .map(|path| path.map(|path| ignored_path_key(&path)))
-            .collect::<Result<Vec<_>, Error>>()?;
-        entries.retain(|entry| match entry {
-            IgnoredPath::Directory(directory) => {
-                let directory = ignored_path_key(directory);
-                !tracked.iter().any(|path| path.starts_with(&directory))
-            }
-            IgnoredPath::File(_) => true,
-        });
-    }
-    let mut checked_directories = Vec::new();
-    let mut ignored_directories = HashSet::new();
-    let mut input = Vec::new();
-    for entry in &entries {
-        if let IgnoredPath::Directory(directory) = entry {
-            let directory_key = ignored_path_key(directory);
-            checked_directories.push(directory.clone());
-            if previous.is_some_and(|previous| previous.checked_directories.iter()
-                .any(|path| ignored_path_key(path) == directory_key)) {
-                if previous.is_some_and(|previous| previous.entries.iter().any(|entry|
-                    matches!(entry, IgnoredPath::Directory(path)
-                        if ignored_path_key(path) == directory_key))) {
-                    ignored_directories.insert(directory_key);
-                }
-            } else {
-                input.extend_from_slice(directory.as_os_str().as_encoded_bytes());
-                input.push(0);
-            }
-        }
-    }
-    if !input.is_empty() {
-        let output = process::run_with_input(Some(tree),
-            &args(&["check-ignore", "--stdin", "-z", "--no-index"]), cancel, &input)?;
-        let ignored = process::success(output, &[0, 1])?;
-        if !ignored.is_empty() && !ignored.ends_with(b"\0") {
-            return Err(invalid("Git checked ignored paths are not NUL terminated"));
-        }
-        for name in ignored.split(|byte| *byte == 0).filter(|name| !name.is_empty()) {
-            ignored_directories.insert(ignored_path_key(&relative_path(name)?));
-        }
-    }
-    entries.retain(|entry| match entry {
-        IgnoredPath::Directory(directory) => ignored_directories.contains(&ignored_path_key(directory)),
-        IgnoredPath::File(_) => true,
-    });
-    entries.sort();
-    entries.dedup();
-    checked_directories.sort();
-    checked_directories.dedup();
-    Ok(IgnoredPaths { entries, checked_directories, sources })
-}
-
-fn global_sources(tree: &Path, cancel: &Cancel) -> Result<Vec<PathBuf>, Error> {
+pub(crate) fn global_sources(tree: &Path, cancel: &Cancel) -> Result<Vec<PathBuf>, Error> {
     let mut sources = global_source_candidates();
     let configuration = process::checked(Some(tree),
         &args(&["config", "--null", "--show-origin", "--path", "--list"]), cancel)?;
@@ -541,6 +391,6 @@ mod tests {
         command.push("included config".into());
         process::checked(Some(tree), &command, &cancel).unwrap();
         let sources = global_sources(tree, &cancel).unwrap();
-        assert!(sources.iter().any(|source| ignored_path_key(source) == ignored_path_key(&included)));
+        assert!(sources.iter().any(|source| crate::poll::normalize(source) == crate::poll::normalize(&included)));
     }
 }

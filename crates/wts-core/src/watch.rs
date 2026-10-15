@@ -1,16 +1,12 @@
-use crate::git::{self, IgnoredPathKind};
 use crate::poll::{normalize, WorktreeKey};
 use crate::Cancel;
 use notify::event::ModifyKind;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
-const EVENT_QUEUE_CAPACITY: usize = 256;
 const MAX_DRAIN_EVENTS: usize = 128;
 pub(crate) const WATCH_RETRY: Duration = Duration::from_secs(5);
 
@@ -21,6 +17,7 @@ enum Target {
     Launch(PathBuf),
     Repository(PathBuf),
     Worktree(WorktreeKey),
+    WorktreeMetadata(WorktreeKey, PathBuf),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -38,7 +35,6 @@ pub(crate) struct WatchBatch {
     pub(crate) worktrees: HashSet<WorktreeKey>,
     pub(crate) topology: bool,
     pub(crate) full: bool,
-    pub(crate) cache_invalidations: HashSet<WorktreeKey>,
     pub(crate) global_excludes: bool,
 }
 
@@ -46,7 +42,7 @@ impl WatchBatch {
     pub(crate) fn is_empty(&self) -> bool {
         !self.config && !self.launch && self.repositories.is_empty() && self.discoveries.is_empty()
             && self.worktrees.is_empty() && !self.topology && !self.full
-            && self.cache_invalidations.is_empty() && !self.global_excludes
+            && !self.global_excludes
     }
 }
 
@@ -54,7 +50,7 @@ pub(crate) struct WatchTargets {
     pub(crate) config: PathBuf,
     pub(crate) launch: Option<PathBuf>,
     pub(crate) repositories: Vec<PathBuf>,
-    pub(crate) worktrees: Vec<(WorktreeKey, PathBuf, Option<git::IgnoredPaths>)>,
+    pub(crate) worktrees: Vec<(WorktreeKey, PathBuf)>,
     pub(crate) global_excludes: Vec<PathBuf>,
 }
 
@@ -65,36 +61,27 @@ pub(crate) struct WatchStatus {
 
 pub(crate) struct WatchBoundary {
     watcher: Option<RecommendedWatcher>,
-    sender: SyncSender<Result<Event, notify::Error>>,
+    sender: Sender<Result<Event, notify::Error>>,
     receiver: Receiver<Result<Event, notify::Error>>,
-    overflow: Arc<AtomicBool>,
     cancel: Cancel,
     roots: HashMap<PathBuf, Registration>,
-    ignored: HashMap<WorktreeKey, git::IgnoredPaths>,
     retry_due: Option<Instant>,
     force_rebuild: bool,
     degraded: bool,
-    #[cfg(test)]
-    fail_reconcile: bool,
 }
 
 impl WatchBoundary {
     pub(crate) fn new(cancel: Cancel) -> Self {
-        let (sender, receiver) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
-        let overflow = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = mpsc::channel();
         let mut boundary = Self {
             watcher: None,
             sender,
             receiver,
-            overflow,
             cancel,
             roots: HashMap::new(),
-            ignored: HashMap::new(),
             retry_due: None,
             force_rebuild: false,
             degraded: false,
-            #[cfg(test)]
-            fail_reconcile: false,
         };
         let now = Instant::now();
         boundary.create_watcher(now);
@@ -102,18 +89,7 @@ impl WatchBoundary {
     }
 
     pub(crate) fn reconcile(&mut self, targets: &WatchTargets, now: Instant) -> WatchStatus {
-        self.ignored = targets.worktrees.iter().filter_map(|(key, _, ignored)| {
-            ignored.clone().map(|ignored| (key.clone(), ignored))
-        }).collect();
         let desired = registrations(targets);
-        #[cfg(test)]
-        if self.fail_reconcile {
-            self.ignored.clear();
-            self.force_rebuild = true;
-            self.degraded = true;
-            self.retry_due = Some(now + WATCH_RETRY);
-            return WatchStatus { full: true, degraded: true };
-        }
         let changed = self.force_rebuild || self.watcher.is_none() || self.roots != desired;
         if !changed && !self.degraded {
             return WatchStatus { full: false, degraded: false };
@@ -150,7 +126,6 @@ impl WatchBoundary {
             }
         }
         if failed { full = true; }
-        if full { self.ignored.clear(); }
         self.force_rebuild = failed;
         self.degraded = failed || self.watcher.is_none() || self.roots != desired;
         if self.degraded {
@@ -164,11 +139,6 @@ impl WatchBoundary {
 
     pub(crate) fn drain(&mut self, now: Instant) -> WatchBatch {
         let mut batch = WatchBatch::default();
-        if self.overflow.swap(false, Ordering::AcqRel) {
-            batch.full = true;
-            self.force_rebuild = true;
-            self.degraded = true;
-        }
         let mut drained = 0;
         while drained < MAX_DRAIN_EVENTS {
             let Ok(result) = self.receiver.try_recv() else { break; };
@@ -193,21 +163,11 @@ impl WatchBoundary {
 
     pub(crate) fn next_retry(&self) -> Option<Instant> { self.retry_due }
 
-    pub(crate) fn degraded(&self) -> bool { self.degraded }
-
-    #[cfg(test)]
-    pub(crate) fn fail_reconcile_for_test(&mut self) { self.fail_reconcile = true; }
-
     fn create_watcher(&mut self, now: Instant) {
         let sender = self.sender.clone();
-        let overflow = self.overflow.clone();
         let cancel = self.cancel.clone();
         let watcher = RecommendedWatcher::new(move |result| {
-            match sender.try_send(result) {
-                Ok(()) => {}
-                Err(TrySendError::Full(_)) => { overflow.store(true, Ordering::Release); }
-                Err(TrySendError::Disconnected(_)) => {}
-            }
+            let _ = sender.send(result);
             cancel.wake();
         }, notify::Config::default());
         match watcher {
@@ -227,7 +187,6 @@ impl WatchBoundary {
     fn classify(&mut self, event: Event, batch: &mut WatchBatch) {
         if event.need_rescan() {
             batch.full = true;
-            return;
         }
         if matches!(event.kind, EventKind::Access(_)) {
             return;
@@ -240,15 +199,26 @@ impl WatchBoundary {
         for path in event.paths {
             let path = absolute(&path);
             let path = normalize(&path);
+            if path.extension().is_some_and(|extension| extension == "lock")
+                && self.roots.values().flat_map(|registration| &registration.targets)
+                    .any(|target| matches!(target, Target::Repository(common) if path.starts_with(normalize(common)))) {
+                continue;
+            }
             if topology_event(&event.kind) && self.roots.contains_key(&path) {
                 invalid_roots.insert(path.clone());
                 batch.topology = true;
             }
             let mut repositories = HashSet::new();
+            let metadata: HashSet<_> = self.roots.values().flat_map(|registration| &registration.targets)
+                .filter_map(|target| match target {
+                    Target::WorktreeMetadata(key, directory) if metadata_event(&path, directory, &key.common, &event.kind) => Some(key.clone()),
+                    _ => None,
+                }).collect();
             for registration in self.roots.values() {
                 for target in &registration.targets {
                     if let Target::Repository(common) = target {
-                        if intersects(&path, common) {
+                        if path.starts_with(normalize(common))
+                            || normalize(common).starts_with(&path) && topology_event(&event.kind) {
                             let key = normalize(common);
                             repositories.insert(key.clone());
                             let objects = key.join("objects");
@@ -258,8 +228,15 @@ impl WatchBoundary {
                                 && matches!(event.kind, EventKind::Create(_)
                                     | EventKind::Modify(ModifyKind::Data(_)
                                         | ModifyKind::Metadata(_) | ModifyKind::Any));
-                            if object_write { continue; }
-                            batch.repositories.insert(key.clone());
+                            let directory_write = matches!(event.kind,
+                                EventKind::Modify(ModifyKind::Any | ModifyKind::Data(_))) && path.is_dir();
+                            if object_write || directory_write { continue; }
+                            let admin = key.join("worktrees");
+                            let linked_metadata = path == admin || path.starts_with(&admin);
+                            if linked_metadata { batch.discoveries.insert(key.clone()); }
+                            if !linked_metadata && !metadata.iter().any(|tree| tree.common == key) {
+                                batch.repositories.insert(key.clone());
+                            }
                             if repository_topology(&path, common, &event.kind) {
                                 batch.discoveries.insert(key);
                                 batch.topology = true;
@@ -278,12 +255,6 @@ impl WatchBoundary {
                     }
                 }
             }
-            let protected = self.roots.values().any(|registration| registration.targets.iter().any(|target| match target {
-                Target::Config(config) => config_event(&path, config, &event.kind),
-                Target::GlobalExclude(exclude) => global_exclude_event(&path, exclude, &event.kind),
-                Target::Launch(launch) => launch_event(&path, launch, &event.kind),
-                Target::Repository(_) | Target::Worktree(_) => false,
-            }));
             for registration in self.roots.values() {
                 for target in &registration.targets {
                     match target {
@@ -307,28 +278,26 @@ impl WatchBoundary {
                         }
                         Target::Worktree(key) => {
                             let tree_path = &key.path;
-                            if intersects(&path, tree_path)
-                                && !repositories.iter().any(|common| intersects(&path, common))
+                            if (path.starts_with(tree_path)
+                                || tree_path.starts_with(&path) && topology_event(&event.kind))
+                                && (path == *tree_path || tree_path.starts_with(&path)
+                                    || !repositories.iter().any(|common| intersects(&path, common)))
                             {
                                 let worktree_topology = topology_event(&event.kind);
-                                let ignored_rule = ignore_rule_event(&path, tree_path);
-                                let attributes = attributes_event(&path, tree_path);
                                 let tree_path = normalize(tree_path);
                                 let root_topology = worktree_topology
                                     && (path == tree_path || tree_path.starts_with(&path));
-                                if ignored_rule || root_topology {
-                                    batch.cache_invalidations.insert(key.clone());
-                                }
-                                let ignored = !self.degraded && !protected && !ignored_rule && !attributes
-                                    && self.ignored.get(key).is_some_and(|cache|
-                                        ignored_worktree_event(cache, &tree_path, &path, &event.kind));
-                                if !ignored { batch.worktrees.insert(key.clone()); }
+                                batch.worktrees.insert(key.clone());
                                 if root_topology {
                                     batch.topology = true;
                                 }
                             }
                         }
-                        Target::Repository(_) | Target::Launch(_) | Target::GlobalExclude(_) => {}
+                        Target::WorktreeMetadata(key, _) if metadata.contains(key) => {
+                            batch.worktrees.insert(key.clone());
+                        }
+                        Target::Repository(_) | Target::Launch(_) | Target::GlobalExclude(_)
+                            | Target::WorktreeMetadata(_, _) => {}
                     }
                 }
             }
@@ -349,7 +318,7 @@ impl WatchBoundary {
 fn registrations(targets: &WatchTargets) -> HashMap<PathBuf, Registration> {
     let mut result = HashMap::new();
     let worktree_paths: Vec<_> = targets.worktrees.iter()
-        .map(|(key, path, _)| (key.common.clone(), absolute(path)))
+        .map(|(key, path)| (key.common.clone(), absolute(path)))
         .filter(|(_, path)| path.is_dir()).collect();
     let (config_root, config_mode) = recovery_root(&targets.config);
     add_target(&mut result, config_root, config_mode, Target::Config(absolute(&targets.config)));
@@ -397,7 +366,7 @@ fn registrations(targets: &WatchTargets) -> HashMap<PathBuf, Registration> {
             }
         }
     }
-    for (key, path, _) in &targets.worktrees {
+    for (key, path) in &targets.worktrees {
         let path = absolute(path);
         let (parent, parent_mode) = recovery_root(&path);
         add_target(&mut result, parent, parent_mode, Target::Worktree(key.clone()));
@@ -412,6 +381,25 @@ fn registrations(targets: &WatchTargets) -> HashMap<PathBuf, Registration> {
                         add_target(&mut result, absolute(&path), RecursiveMode::Recursive,
                             Target::Repository(common));
                     }
+                }
+            }
+        }
+    }
+    for (key, path) in &targets.worktrees {
+        let marker = path.join(".git");
+        let directory = if marker.is_dir() { Some(marker) } else {
+            std::fs::read_to_string(&marker).ok().and_then(|text| {
+                text.trim().strip_prefix("gitdir: ").map(|directory| {
+                    let directory = PathBuf::from(directory);
+                    if directory.is_absolute() { directory } else { path.join(directory) }
+                })
+            })
+        };
+        if let Some(directory) = directory {
+            for registration in result.values_mut() {
+                if registration.targets.iter().any(|target| matches!(target,
+                    Target::Repository(common) if normalize(common) == key.common)) {
+                    registration.targets.push(Target::WorktreeMetadata(key.clone(), normalize(&absolute(&directory))));
                 }
             }
         }
@@ -464,47 +452,16 @@ fn global_exclude_event(path: &Path, exclude: &Path, kind: &EventKind) -> bool {
     config_event(path, exclude, kind)
 }
 
-fn ignore_rule_event(path: &Path, tree: &Path) -> bool {
-    let path = normalize(&absolute(path));
-    let tree = normalize(&absolute(tree));
-    let Ok(relative) = path.strip_prefix(&tree) else { return false; };
-    let relative = normalize(relative);
-    relative.file_name().is_some_and(|name| name == ".gitignore")
-        || relative == Path::new(".git")
-        || relative == Path::new(".git/info/exclude")
-}
-
-fn attributes_event(path: &Path, tree: &Path) -> bool {
-    let path = normalize(&absolute(path));
-    let tree = normalize(&absolute(tree));
-    let Ok(relative) = path.strip_prefix(&tree) else { return false; };
-    let relative = normalize(relative);
-    relative.file_name().is_some_and(|name| name == ".gitattributes")
-        || relative == Path::new(".git/info/attributes")
-}
-
-fn ignored_worktree_event(cache: &git::IgnoredPaths, tree: &Path, path: &Path, event_kind: &EventKind) -> bool {
-    let tree = normalize(&absolute(tree));
-    let path = normalize(&absolute(path));
-    let Ok(relative) = path.strip_prefix(&tree) else { return false; };
-    let Some((ignored_kind, exact)) = cache.matching(&normalize(relative)) else { return false; };
-    match ignored_kind {
-        IgnoredPathKind::File => {
-            matches!(event_kind, EventKind::Modify(ModifyKind::Data(_) | ModifyKind::Any))
-                && std::fs::symlink_metadata(path)
-                    .is_ok_and(|metadata| metadata.is_file() || metadata.file_type().is_symlink())
-        }
-        IgnoredPathKind::Directory => match event_kind {
-            EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
-                if !exact => path.parent().is_some_and(Path::is_dir),
-            EventKind::Modify(ModifyKind::Data(_) | ModifyKind::Any) => if exact {
-                path.is_dir()
-            } else {
-                path.parent().is_some_and(Path::is_dir)
-            },
-            _ => false,
-        },
-    }
+fn metadata_event(path: &Path, directory: &Path, common: &Path, kind: &EventKind) -> bool {
+    let directory = normalize(directory);
+    if path == directory || directory.starts_with(path) { return topology_event(kind); }
+    let Ok(relative) = path.strip_prefix(&directory) else { return false; };
+    if directory != normalize(common) { return true; }
+    relative.components().next().is_some_and(|part| {
+        matches!(part.as_os_str().to_string_lossy().to_ascii_lowercase().as_str(),
+            "head" | "index" | "index.lock" | "orig_head" | "config.worktree")
+            || relative == Path::new("logs/HEAD") || relative == Path::new("logs/head")
+    })
 }
 
 fn recovery_root(path: &Path) -> (PathBuf, RecursiveMode) {
@@ -610,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn linked_worktree_root_replacement_invalidates_ignored_rules() {
+    fn linked_worktree_root_replacement_marks_it_changed() {
         let root = absolute(Path::new("watch-root/linked"));
         let common = absolute(Path::new("watch-root/common.git"));
         let key = WorktreeKey::new(&common, &root);
@@ -618,7 +575,6 @@ mod tests {
         let mut batch = WatchBatch::default();
         boundary.classify(Event::new(EventKind::Remove(RemoveKind::Folder)).add_path(root), &mut batch);
         assert!(batch.worktrees.contains(&key));
-        assert!(batch.cache_invalidations.contains(&key));
         assert!(batch.topology);
     }
 
@@ -631,7 +587,7 @@ mod tests {
         boundary.classify(Event::new(EventKind::Create(CreateKind::Folder))
             .add_path(common.join("worktrees/new")), &mut batch);
         assert_eq!(batch.discoveries.len(), 1);
-        assert!(batch.repositories.contains(&normalize(&common)));
+        assert!(batch.repositories.is_empty());
         let mut boundary = boundary_with(common.clone(), vec![Target::Repository(common)]);
         let mut batch = WatchBatch::default();
         boundary.classify(Event::new(EventKind::Remove(RemoveKind::File))
@@ -670,7 +626,7 @@ mod tests {
     }
 
     #[test]
-    fn ignored_directory_events_are_filtered_but_visible_files_are_not() {
+    fn directory_events_mark_the_worktree_changed() {
         let directory = tempfile::Builder::new().prefix("wts-watch-ignore-").tempdir().unwrap();
         let root = directory.path();
         let cancel = Cancel::new();
@@ -678,23 +634,64 @@ mod tests {
         std::fs::write(root.join(".gitignore"), b"ignored/\n").unwrap();
         std::fs::write(root.join("visible.txt"), b"visible\n").unwrap();
         std::fs::create_dir(root.join("ignored")).unwrap();
-        let cache = git::scan_tree_with_ignored(root, &cancel, None).unwrap().ignored.unwrap();
         let common = root.join(".git");
         let key = WorktreeKey::new(&common, root);
         let mut boundary = boundary_with(root.to_path_buf(), vec![
             Target::Repository(common), Target::Worktree(key.clone()),
         ]);
-        boundary.ignored.insert(key.clone(), cache);
         for kind in [EventKind::Create(CreateKind::File), EventKind::Modify(ModifyKind::Any),
             EventKind::Remove(RemoveKind::File), EventKind::Modify(ModifyKind::Name(RenameMode::From))] {
             let mut batch = WatchBatch::default();
             boundary.classify(Event::new(kind).add_path(root.join("ignored/artifact.txt")), &mut batch);
-            assert!(batch.is_empty());
+            assert!(batch.worktrees.contains(&key));
         }
         let mut batch = WatchBatch::default();
         boundary.classify(Event::new(EventKind::Modify(ModifyKind::Any))
             .add_path(root.join("visible.txt")), &mut batch);
         assert!(batch.worktrees.contains(&key));
+    }
+
+    #[test]
+    fn parent_directory_modifications_do_not_mark_child_worktrees() {
+        let parent = absolute(Path::new("watch-parent"));
+        let root = parent.join("repo");
+        let common = root.join(".git");
+        let key = WorktreeKey::new(&common, &root);
+        let mut boundary = boundary_with(parent.clone(), vec![
+            Target::Repository(common), Target::Worktree(key),
+        ]);
+        let mut batch = WatchBatch::default();
+        boundary.classify(Event::new(EventKind::Modify(ModifyKind::Any)).add_path(parent), &mut batch);
+        assert!(batch.is_empty());
+    }
+
+    #[test]
+    fn index_events_only_mark_the_owning_worktree() {
+        let common = absolute(Path::new("watch-root/.git"));
+        let main = WorktreeKey::new(&common, Path::new("watch-root"));
+        let linked = WorktreeKey::new(&common, Path::new("linked-root"));
+        let admin = common.join("worktrees/linked");
+        let mut boundary = boundary_with(common.clone(), vec![
+            Target::Repository(common.clone()),
+            Target::WorktreeMetadata(main.clone(), common.clone()),
+            Target::WorktreeMetadata(linked.clone(), admin.clone()),
+        ]);
+        for (path, expected) in [(common.join("index"), &main), (admin.join("index"), &linked)] {
+            let mut batch = WatchBatch::default();
+            boundary.classify(Event::new(EventKind::Modify(ModifyKind::Any)).add_path(path), &mut batch);
+            assert_eq!(batch.worktrees, HashSet::from([expected.clone()]));
+            assert!(batch.repositories.is_empty());
+        }
+        let mut batch = WatchBatch::default();
+        boundary.classify(Event::new(EventKind::Modify(ModifyKind::Any))
+            .add_path(common.join("refs/heads/main")), &mut batch);
+        assert!(batch.repositories.contains(&normalize(&common)));
+        let mut batch = WatchBatch::default();
+        boundary.classify(Event::new(EventKind::Create(CreateKind::File))
+            .add_path(common.join("packed-refs.lock")), &mut batch);
+        boundary.classify(Event::new(EventKind::Remove(RemoveKind::File))
+            .add_path(common.join("packed-refs.lock")), &mut batch);
+        assert!(batch.is_empty());
     }
 
     #[test]
@@ -745,14 +742,14 @@ mod tests {
     }
 
     #[test]
-    fn overflow_requests_full_reconcile_and_retry() {
+    fn watcher_errors_request_monitor_repair() {
         let mut boundary = WatchBoundary::new(Cancel::new());
-        boundary.overflow.store(true, Ordering::Release);
+        boundary.sender.send(Err(notify::Error::generic("watch failed"))).unwrap();
         let now = Instant::now();
         let batch = boundary.drain(now);
         assert!(batch.full);
         assert_eq!(boundary.next_retry(), Some(now));
-        assert!(boundary.degraded());
+        assert!(boundary.degraded);
     }
 
     #[test]
@@ -800,7 +797,7 @@ mod tests {
             config: directory.path().join("config.json"),
             launch: None,
             repositories: vec![common.clone()],
-            worktrees: vec![(key, repo.clone(), None)],
+            worktrees: vec![(key, repo.clone())],
             global_excludes: vec![common.join("config")],
         });
         assert_eq!(roots[&normalize(&repo)].mode, RecursiveMode::Recursive);
@@ -849,7 +846,7 @@ mod tests {
             config: directory.path().join("config.json"),
             launch: None,
             repositories: vec![common.clone()],
-            worktrees: vec![(key, repo.clone(), None)],
+            worktrees: vec![(key, repo.clone())],
             global_excludes: Vec::new(),
         }, Instant::now());
         assert!(!status.degraded);
@@ -878,7 +875,7 @@ mod tests {
             config: directory.path().join("config.json"),
             launch: None,
             repositories: vec![common],
-            worktrees: vec![(key, repo.clone(), None)],
+            worktrees: vec![(key, repo.clone())],
             global_excludes: Vec::new(),
         }, Instant::now());
         assert!(!status.degraded);

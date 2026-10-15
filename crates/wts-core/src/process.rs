@@ -1,6 +1,6 @@
 use crate::{Error, ErrorKind};
 use std::ffi::OsString;
-use std::io::{Read, Seek, Write};
+use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
@@ -63,26 +63,13 @@ pub(crate) struct Output {
 }
 
 pub(crate) fn run(directory: Option<&Path>, args: &[OsString], cancel: &Cancel) -> Result<Output, Error> {
-    run_with_stdin(directory, args, cancel, Stdio::null())
-}
-
-pub(crate) fn run_with_input(directory: Option<&Path>, args: &[OsString], cancel: &Cancel,
-    input: &[u8]) -> Result<Output, Error> {
-    let mut file = tempfile::tempfile().map_err(|error| Error::io("Cannot create Git input", error))?;
-    file.write_all(input).and_then(|_| file.rewind())
-        .map_err(|error| Error::io("Cannot prepare Git input", error))?;
-    run_with_stdin(directory, args, cancel, file.into())
-}
-
-fn run_with_stdin(directory: Option<&Path>, args: &[OsString], cancel: &Cancel,
-    stdin: Stdio) -> Result<Output, Error> {
     if cancel.is_cancelled() {
         return Err(Error::new(ErrorKind::Cancelled, "Git scan cancelled"));
     }
     let mut command = Command::new("git");
     command.args(["-c", "core.fsmonitor=false"]);
     if let Some(directory) = directory { command.arg("-C").arg(directory); }
-    command.args(args).stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     for variable in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
         "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX",
         "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_CEILING_DIRECTORIES",
@@ -170,21 +157,4 @@ pub(crate) fn success(output: Output, accepted: &[i32]) -> Result<Vec<u8>, Error
 
 pub(crate) fn args(values: &[&str]) -> Vec<OsString> {
     values.iter().map(OsString::from).collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn git_reads_the_complete_supplied_input() {
-        let parent = std::env::temp_dir().join("opencode");
-        std::fs::create_dir_all(&parent).unwrap();
-        let directory = tempfile::Builder::new().prefix("wts-git-input-").tempdir_in(parent).unwrap();
-        let cancel = Cancel::new();
-        checked(Some(directory.path()), &args(&["init", "--quiet", "--object-format=sha1"]), &cancel).unwrap();
-        let output = run_with_input(Some(directory.path()), &args(&["hash-object", "--stdin"]),
-            &cancel, b"test content\n").unwrap();
-        assert_eq!(success(output, &[0]).unwrap(), b"d670460b4b4aece5915caf5c68d12f560a9fe3e4\n");
-    }
 }

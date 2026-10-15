@@ -206,7 +206,7 @@ try {
             $script:nextMetricChange = [DateTime]::UtcNow.AddMilliseconds(600)
         }
         return $false
-    } 'rolling polling time to include file-triggered scans' 20
+    } 'rolling polling time to include scheduled scans' 20
     $afterScroll = [WtsWindowProbe]::ScrollPosition($viewport)
     [IO.File]::WriteAllText((Join-Path $fixture 'scroll.txt'), "before=$beforeScroll`nafter=$afterScroll`n")
     if ($afterScroll -ne $beforeScroll) { throw "Unchanged refresh reset the scroll position from $beforeScroll to $afterScroll" }
