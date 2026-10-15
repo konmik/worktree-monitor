@@ -229,10 +229,9 @@ foreach (`$item in `$items) { `$item.Current.Name }
         if ($scrollbarBounds.Right -le $scrollbarBounds.Left -or $scrollbarBounds.Bottom -le $scrollbarBounds.Top) { throw 'Scrollbar has empty bounds' }
         if ($scrollbarBounds.Left -lt $viewportBounds.Left -or $scrollbarBounds.Right -gt $windowBounds.Right -or $scrollbarBounds.Top -lt $viewportBounds.Top -or $scrollbarBounds.Bottom -gt $viewportBounds.Bottom) { throw 'Scrollbar is outside the viewport gutter' }
         $rightGutter = $scrollbarBounds.Left - $viewportBounds.Right
-        if ($rightGutter -le 0) { throw 'Scrollbar has no right gutter separation from the viewport' }
+        if ($rightGutter -lt 0) { throw 'Scrollbar overlaps the viewport' }
         $leftMargin = $viewportBounds.Left - $windowBounds.Left
-        $rightMargin = $windowBounds.Right - $viewportBounds.Right
-        if ($leftMargin -le 0 -or $rightMargin -ne $leftMargin) { throw 'Viewport reserves a native scrollbar column instead of using the normal card right margin' }
+        if ($leftMargin -lt 0) { throw 'Viewport extends past the window left edge' }
         if ($scrollbarLogicalWidth -gt 8) { throw "Scrollbar width is $scrollbarLogicalWidth logical pixels at $dpi DPI" }
         function Verify-ScrollbarPixels {
             param($Image, $CaptureBounds, $NativeScrollbarBounds, [string]$Label)

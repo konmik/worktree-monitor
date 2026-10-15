@@ -86,7 +86,8 @@ pub(crate) fn dashboard(width: i32, height: i32, dpi: i32, typography: Typograph
     let tiny = height < s(150);
     let short = height < s(290);
     let margin = s(if tiny { 6 } else if short { 10 } else { 18 }).min((width - 1) / 2).min(height / 2);
-    let left = (margin - space_width.max(0)).max(0);
+    let left = (margin - 2 * space_width.max(0)).max(0);
+    let right = (margin - space_width.max(0)).max(0);
     let top = (margin - typography.cell).max(0);
     let header_height = typography.cell.max(typography.advance).min((height - top - 1).max(0));
     let gap = s(if tiny { 5 } else if short { 8 } else { 12 }).min((height - top - header_height - 1).max(0));
@@ -100,7 +101,7 @@ pub(crate) fn dashboard(width: i32, height: i32, dpi: i32, typography: Typograph
         YGNodeStyleSetHeight(header, header_height as f32);
         YGNodeStyleSetMargin(header, YGEdgeBottom, gap as f32);
         YGNodeStyleSetMargin(header, YGEdgeLeft, left as f32);
-        YGNodeStyleSetMargin(header, YGEdgeRight, margin as f32);
+        YGNodeStyleSetMargin(header, YGEdgeRight, right as f32);
         let status = tree.child(header)?;
         YGNodeStyleSetFlexGrow(status, 1.0);
         YGNodeStyleSetFlexBasis(status, 0.0);
@@ -114,16 +115,16 @@ pub(crate) fn dashboard(width: i32, height: i32, dpi: i32, typography: Typograph
         YGNodeStyleSetFlexGrow(body, 1.0);
         YGNodeStyleSetMinHeight(body, 0.0);
         YGNodeStyleSetMargin(body, YGEdgeLeft, left as f32);
-        YGNodeStyleSetMargin(body, YGEdgeRight, margin as f32);
+        YGNodeStyleSetMargin(body, YGEdgeRight, right as f32);
         let viewport = tree.child(body)?;
         YGNodeStyleSetFlexGrow(viewport, 1.0);
         YGNodeStyleSetMinWidth(viewport, 0.0);
         let scrollbar = tree.child(body)?;
-        let scrollbar_width = s(8).min((margin - s(2)).max(1));
+        let scrollbar_width = s(8).min(right.max(1));
         YGNodeStyleSetPositionType(scrollbar, YGPositionTypeAbsolute);
         YGNodeStyleSetPosition(scrollbar, YGEdgeTop, 0.0);
         YGNodeStyleSetPosition(scrollbar, YGEdgeBottom, 0.0);
-        YGNodeStyleSetPosition(scrollbar, YGEdgeRight, -((margin + scrollbar_width) / 2) as f32);
+        YGNodeStyleSetPosition(scrollbar, YGEdgeRight, -((right + scrollbar_width) / 2) as f32);
         YGNodeStyleSetWidth(scrollbar, scrollbar_width as f32);
         YGNodeCalculateLayout(tree.root, width as f32, height as f32, YGDirectionLTR);
         let header_rect = rect(header);
@@ -193,12 +194,13 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_removes_one_character_from_left_and_top_padding() {
-        for (dpi, cell, space, left, top, right) in [(96, 15, 7, 11, 3, 18), (120, 18, 9, 13, 4, 22),
-            (144, 22, 11, 16, 5, 27), (192, 30, 14, 22, 6, 36)] {
+    fn dashboard_reduces_side_padding_and_preserves_top_padding() {
+        for (dpi, cell, space, left, top, right) in [(96, 15, 7, 4, 3, 11), (120, 18, 9, 4, 4, 13),
+            (144, 22, 11, 5, 5, 16), (192, 30, 14, 8, 6, 22)] {
             let layout = dashboard(900, 700, dpi, Typography::new(dpi, cell), space, 0).unwrap();
             assert_eq!(layout.status.left, left);
             assert_eq!(layout.status.top, top);
+            assert_eq!(layout.toggle.left + layout.toggle.width, 900 - right);
             assert_eq!(layout.viewport.left, left);
             assert_eq!(layout.viewport.left + layout.viewport.width, 900 - right);
             assert_eq!(layout.viewport.top + layout.viewport.height, 700);
@@ -209,6 +211,8 @@ mod tests {
             assert_eq!(layout.status.left, 0);
             assert_eq!(layout.status.top, 0);
             assert_eq!(layout.viewport.left, 0);
+            assert!(layout.scrollbar.left >= 0);
+            assert!(layout.scrollbar.left + layout.scrollbar.width <= width);
         }
     }
 
