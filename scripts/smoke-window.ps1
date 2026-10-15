@@ -19,7 +19,6 @@ public static class WtsWindowProbe {
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr handle);
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr handle);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr handle, StringBuilder text, int count);
     [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr handle, uint message, IntPtr wparam, IntPtr lparam);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr handle, IntPtr after, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr handle, out Rect rect);
@@ -74,9 +73,9 @@ public static class WtsWindowProbe {
     public static IntPtr FirstCard(IntPtr parent) {
         IntPtr found = IntPtr.Zero;
         EnumChildWindows(parent, (handle, data) => {
-            var name = new StringBuilder(128);
-            GetClassName(handle, name, name.Capacity);
-            if (GetParent(handle) == parent && IsWindowVisible(handle) && name.ToString().Equals("STATIC", StringComparison.OrdinalIgnoreCase)) { found = handle; return false; }
+            var text = new StringBuilder(65536);
+            GetWindowText(handle, text, text.Capacity);
+            if (GetParent(handle) == parent && IsWindowVisible(handle) && text.Length != 0) { found = handle; return false; }
             return true;
         }, IntPtr.Zero);
         return found;

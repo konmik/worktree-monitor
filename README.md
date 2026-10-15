@@ -1,6 +1,6 @@
 # wts
 
-Track changed lines across registered Git repositories and their worktrees. The Windows hacker dashboard uses dark repository cards, colored change counters, branch labels, and summary metrics. It stays above other windows without taking focus from your editor.
+Track changed lines across registered Git repositories and their worktrees. The Windows hacker dashboard uses dark repository cards, colored change counters, branch labels, and draggable groups. It stays above other windows without taking focus from your editor.
 
 ## Run
 
@@ -15,6 +15,8 @@ cargo run -- remove C:\src\project
 
 Plain `wts` prints one current snapshot. `wts --live` opens the Windows status window. `add` accepts a repository or a directory inside any of its worktrees. Registering another worktree of the same repository does not create a duplicate. `remove` removes the whole repository from monitoring. These commands do not change the repository or its worktrees.
 
+The live window includes the repository you launch it from, even when it is not registered. This does not register it. Drag a repository's handle to move its whole group. Drag a worktree's handle to reorder it within its repository. The window remembers these positions across refreshes and restarts. Change counts appear on individual worktrees, without summary totals.
+
 ## Counts
 
 Each worktree shows its branch and added and deleted lines. Counts compare the working files with `HEAD`, including staged changes once and untracked files. A staged edit reverted in the working file contributes no lines. Repositories without a first commit are supported.
@@ -27,6 +29,8 @@ The live view scans immediately, then waits 5 seconds. Unchanged results increas
 
 Registrations live in `~/.config/wts/config.json`. On Windows, this is `%USERPROFILE%\.config\wts\config.json`. Configuration writes are locked and atomic. A malformed file is reported and is not overwritten by `add` or `remove`.
 
+The live window saves display order in `config.order.json` beside the registration file. Reordering does not change which repositories are registered. A failed save shows a warning and leaves the previous order in place.
+
 ## Verify
 
 ```powershell
@@ -35,6 +39,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo build
 pwsh -NoProfile -File scripts/smoke-cli.ps1
 pwsh -NoProfile -File scripts/smoke-window.ps1
+pwsh -NoProfile -File scripts/smoke-dashboard.ps1
 ```
 
 The smoke checks use isolated temporary repositories and configuration. The window check needs an interactive Windows desktop. It checks the real window, live counts, polling backoff, registry reload, and closing.

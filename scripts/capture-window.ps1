@@ -120,6 +120,7 @@ try {
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
     if ($handle -eq [IntPtr]::Zero -or -not (Has-FixtureData $text)) { throw 'Dashboard did not show all three real fixture counts' }
+    if ($text -cmatch 'REPOSITORIES|WORKTREES|LINE CHANGES') { throw 'Dashboard still shows summary totals' }
     [IO.File]::WriteAllText((Join-Path $fixture 'visible-text.txt'), $text)
     $automation = @"
 Add-Type -AssemblyName UIAutomationClient

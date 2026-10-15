@@ -66,6 +66,30 @@ fn registration_clears_inherited_git_repository_overrides() {
     assert!(String::from_utf8(snapshot.stdout).unwrap().contains("+0 -0  binaries: 0"));
 }
 
+#[test]
+fn normal_cli_does_not_include_launch_repository_or_read_presentation_preferences() {
+    let parent = std::env::temp_dir().join("opencode");
+    fs::create_dir_all(&parent).unwrap();
+    let fixture = tempfile::tempdir_in(parent).unwrap();
+    let repo = fixture.path().join("repo");
+    fs::create_dir(&repo).unwrap();
+    let initialized = Command::new("git").arg("-C").arg(&repo).args(["init", "--quiet"])
+        .env_remove("GIT_DIR").env_remove("GIT_WORK_TREE").env_remove("GIT_INDEX_FILE").env_remove("GIT_COMMON_DIR")
+        .output().unwrap();
+    assert!(initialized.status.success());
+    let home = fixture.path().join("home");
+    let config = home.join(".config/wts/config.json");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(config.with_extension("order.json"), b"broken").unwrap();
+    let snapshot = Command::new(env!("CARGO_BIN_EXE_wts")).current_dir(repo)
+        .env("HOME", &home).env("USERPROFILE", &home).output().unwrap();
+    assert!(snapshot.status.success());
+    assert_eq!(snapshot.stdout, b"No registered repositories.\n");
+    assert_eq!(snapshot.stderr, b"");
+    assert!(!config.exists());
+    assert_eq!(fs::read(config.with_extension("order.json")).unwrap(), b"broken");
+}
+
 #[cfg(not(windows))]
 #[test]
 fn live_is_explicitly_unsupported_off_windows() {

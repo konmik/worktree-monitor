@@ -18,6 +18,7 @@ public static class WtsDragProbe {
     public sealed class Card {
         public IntPtr Handle;
         public string Text;
+        public string Class;
         public int Top;
     }
     public delegate bool EnumProc(IntPtr handle, IntPtr data);
@@ -29,6 +30,7 @@ public static class WtsDragProbe {
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr handle);
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr handle);
     [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr handle);
+    [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr handle, uint flags);
     [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr handle, int id);
     [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr handle);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr handle, out Rect rect);
@@ -44,6 +46,14 @@ public static class WtsDragProbe {
     public static string Text(IntPtr handle) {
         var text = new StringBuilder(65536);
         GetWindowText(handle, text, text.Capacity);
+        return text.ToString();
+    }
+    public static string AllText(IntPtr parent) {
+        var text = new StringBuilder();
+        EnumChildWindows(parent, (handle, data) => {
+            if (IsWindowVisible(handle)) { text.AppendLine(Text(handle)); }
+            return true;
+        }, IntPtr.Zero);
         return text.ToString();
     }
     public static IntPtr Find(uint pid) {
@@ -64,10 +74,10 @@ public static class WtsDragProbe {
         EnumChildWindows(parent, (handle, data) => {
             var name = new StringBuilder(128);
             GetClassName(handle, name, name.Capacity);
-            if (GetParent(handle) == parent && name.ToString() == "STATIC" && IsWindowVisible(handle)) {
+            if (GetParent(handle) == parent && IsWindowVisible(handle) && Text(handle).Length != 0) {
                 Rect rect;
                 if (!GetWindowRect(handle, out rect)) { throw new InvalidOperationException("Card bounds unavailable"); }
-                cards.Add(new Card { Handle = handle, Text = Text(handle), Top = rect.Top });
+                cards.Add(new Card { Handle = handle, Text = Text(handle), Class = name.ToString(), Top = rect.Top });
             }
             return true;
         }, IntPtr.Zero);
@@ -95,6 +105,17 @@ public static class WtsDragProbe {
         return new IntPtr(unchecked((int)(((uint)(ushort)point.Y << 16) | (ushort)point.X)));
     }
     public static void Drag(IntPtr source, IntPtr target, bool cancel) {
+        DragAt(source, target, cancel, false, 0x0100);
+    }
+    public static void DragBelow(IntPtr source, IntPtr target) {
+        DragAt(source, target, false, true, 0);
+    }
+    public static void CancelDrag(IntPtr source, IntPtr target, uint message) {
+        DragAt(source, target, true, false, message);
+    }
+    private static void DragAt(IntPtr source, IntPtr target, bool cancel, bool below, uint cancelMessage) {
+        var root = GetAncestor(source, 2);
+        if (root == IntPtr.Zero) { throw new InvalidOperationException("Dashboard root unavailable"); }
         int scale = (int)GetDpiForWindow(source);
         var start = new Point { X = 12 * scale / 96, Y = 20 * scale / 96 };
         var hit = start;
@@ -107,23 +128,25 @@ public static class WtsDragProbe {
         if (Send(handle, 0x0084, IntPtr.Zero, Position(screenStart)).ToInt64() != 1) { throw new InvalidOperationException("Drag handle does not accept real mouse hit testing"); }
         if (!ClientToScreen(parent, ref hit) || !ScreenToClient(handle, ref hit)) { throw new InvalidOperationException("Handle coordinates unavailable"); }
         Send(handle, 0x0201, new IntPtr(1), Position(hit));
-        var capture = Captured(source);
+        var capture = Captured(root);
         if (capture == IntPtr.Zero) { throw new InvalidOperationException("Drag handle did not capture the mouse"); }
         Rect targetRect;
         if (!GetClientRect(target, out targetRect)) { throw new InvalidOperationException("Drop target bounds unavailable"); }
-        var end = new Point { X = 12 * scale / 96, Y = Math.Max(2, targetRect.Bottom / 4) };
+        var end = new Point { X = 12 * scale / 96, Y = Math.Max(2, targetRect.Bottom * (below ? 3 : 1) / 4) };
         if (!ClientToScreen(target, ref end) || !ScreenToClient(capture, ref end)) { throw new InvalidOperationException("Drop coordinates unavailable"); }
         Send(capture, 0x0200, new IntPtr(1), Position(end));
         if (cancel) {
-            var focus = ThreadInfo(source).Focus;
-            if (focus == IntPtr.Zero) { throw new InvalidOperationException("Drag has no keyboard focus for Escape"); }
-            Send(focus, 0x0100, new IntPtr(0x1b), IntPtr.Zero);
-            Send(focus, 0x0101, new IntPtr(0x1b), IntPtr.Zero);
+            if (cancelMessage == 0x0100) {
+                var focus = ThreadInfo(root).Focus;
+                if (focus == IntPtr.Zero) { throw new InvalidOperationException("Drag has no keyboard focus for Escape"); }
+                Send(focus, 0x0100, new IntPtr(0x1b), IntPtr.Zero);
+                Send(focus, 0x0101, new IntPtr(0x1b), IntPtr.Zero);
+            } else { Send(capture, cancelMessage, IntPtr.Zero, IntPtr.Zero); }
         } else {
-            if (Captured(source) != capture) { throw new InvalidOperationException("Drag unexpectedly lost capture"); }
+            if (Captured(root) != capture) { throw new InvalidOperationException("Drag unexpectedly lost capture"); }
             Send(capture, 0x0202, IntPtr.Zero, Position(end));
         }
-        if (Captured(source) != IntPtr.Zero) { throw new InvalidOperationException("Drag left the mouse captured"); }
+        if (Captured(root) != IntPtr.Zero) { throw new InvalidOperationException("Drag left the mouse captured"); }
     }
 }
 '@
@@ -134,6 +157,11 @@ function Wait-For([scriptblock]$Condition, [string]$Label, [int]$Seconds = 25) {
         if (& $Condition) { return }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
+    if ($null -ne $script:viewport -and $script:viewport -ne [IntPtr]::Zero) {
+        $cards = @([WtsDragProbe]::Cards($script:viewport))
+        $cards | Select-Object Top, Class, Text | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $fixture 'failed-cards.json') -Encoding utf8NoBOM
+        Write-Host "Observed $($cards.Count) cards. Evidence at $fixture"
+    }
     throw "Timed out waiting for $Label"
 }
 
@@ -187,7 +215,7 @@ function Card-Order {
             if (-not $expected.ContainsKey($name) -or $count -ne $expected[$name]) { throw "Unexpected worktree count for $name" }
             "repo:$name"
         }
-        else { "tree:$($lines[1])" }
+        elseif (-not $_.Text.StartsWith('Presentation order warning')) { "tree:$($lines[1])" }
     }) -join ','
 }
 
@@ -201,6 +229,7 @@ $fixtureHome = Join-Path $fixture 'home'
 New-Item -ItemType Directory -Path $fixtureHome | Out-Null
 $oldHome = $env:HOME
 $oldProfile = $env:USERPROFILE
+$oldPath = $env:PATH
 $process = $null
 $previousDpiContext = [WtsDragProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
 try {
@@ -217,8 +246,9 @@ try {
     }
     $config = Join-Path $fixtureHome '.config/wts/config.json'
     $registrations = [IO.File]::ReadAllText($config)
+    $preferences = Join-Path $fixtureHome '.config/wts/config.order.json'
     Start-Dashboard
-    $text = @([WtsDragProbe]::Cards($script:viewport) | ForEach-Object { $_.Text }) -join "`n"
+    $text = [WtsDragProbe]::AllText($script:handle)
     if ($text -cmatch 'REPOSITORIES|WORKTREES|LINE CHANGES') { throw 'Dashboard still shows summary totals' }
     $currentCard = Find-Card 'current'
     $currentPaths = @($currentCard.Text -split "`r?`n" | Where-Object { [IO.Path]::IsPathFullyQualified($_) })
@@ -233,11 +263,27 @@ try {
     [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
     $repositoryOrder = 'repo:beta,tree:beta,tree:beta-tree,repo:alpha,tree:alpha,tree:alpha-tree,repo:current,tree:current'
     Assert-Order $repositoryOrder 'Repository handle moves its whole group'
+    $source = Find-Card 'beta' -Repository
+    $target = Find-Card 'alpha-tree'
+    [WtsDragProbe]::DragBelow($source.Handle, $target.Handle)
+    Assert-Order $initial 'Repository handle can move a group down past another group'
+    $source = Find-Card 'beta' -Repository
+    $target = Find-Card 'alpha' -Repository
+    [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
+    Assert-Order $repositoryOrder 'Repository handle can move a group back up'
     $source = Find-Card 'alpha-tree'
     $target = Find-Card 'alpha'
     [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
     $worktreeOrder = 'repo:beta,tree:beta,tree:beta-tree,repo:alpha,tree:alpha-tree,tree:alpha,repo:current,tree:current'
     Assert-Order $worktreeOrder 'Worktree handle reorders within its repository'
+    $source = Find-Card 'alpha-tree'
+    $target = Find-Card 'alpha'
+    [WtsDragProbe]::DragBelow($source.Handle, $target.Handle)
+    Assert-Order $repositoryOrder 'Worktree handle can move a row down'
+    $source = Find-Card 'alpha-tree'
+    $target = Find-Card 'alpha'
+    [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
+    Assert-Order $worktreeOrder 'Worktree handle can move a row back up'
     $source = Find-Card 'alpha'
     $target = Find-Card 'beta'
     [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
@@ -246,6 +292,14 @@ try {
     $target = Find-Card 'beta' -Repository
     [WtsDragProbe]::Drag($source.Handle, $target.Handle, $true)
     Assert-Order $worktreeOrder 'Escape cancels a drag'
+    $savedBeforeCancel = [IO.File]::ReadAllText($preferences)
+    foreach ($message in @(0x001f, 0x0215)) {
+        $source = Find-Card 'alpha' -Repository
+        $target = Find-Card 'beta' -Repository
+        [WtsDragProbe]::CancelDrag($source.Handle, $target.Handle, [uint32]$message)
+        Assert-Order $worktreeOrder "Cancellation message $message preserves order"
+        if ([IO.File]::ReadAllText($preferences) -ne $savedBeforeCancel) { throw 'Cancelled drag changed saved order' }
+    }
     [IO.File]::WriteAllText((Join-Path $alpha 'lines.txt'), "before`nchanged`n")
     Wait-For { (Find-Card 'alpha').Text -match '\+1\s+-0\b' } 'live count refresh' 40
     Assert-Order $worktreeOrder 'Refresh preserves repository and worktree order'
@@ -271,19 +325,67 @@ try {
     Start-Dashboard 6
     Assert-Order 'repo:beta,tree:beta,tree:beta-tree,repo:alpha,tree:alpha-tree,tree:alpha' 'Launching outside Git does not resurrect an unregistered repository'
     $outsideOrder = Card-Order
+    $savedOrder = [IO.File]::ReadAllText($preferences)
+    $attributes = [IO.File]::GetAttributes($preferences)
+    try {
+        [IO.File]::SetAttributes($preferences, ($attributes -bor [IO.FileAttributes]::ReadOnly))
+        $source = Find-Card 'alpha' -Repository
+        $target = Find-Card 'beta' -Repository
+        [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
+        Wait-For { [WtsDragProbe]::AllText($script:handle) -match 'Order was not saved' } 'visible failed-save warning'
+        Assert-Order $outsideOrder 'Failed save keeps the previous visible order'
+        if ([IO.File]::ReadAllText($preferences) -ne $savedOrder) { throw 'Failed save changed stored order' }
+    } finally { [IO.File]::SetAttributes($preferences, $attributes) }
+    [IO.File]::WriteAllText($preferences, 'broken')
+    Wait-For { [WtsDragProbe]::AllText($script:handle) -match 'Cannot load presentation order' } 'visible malformed-preference warning'
+    $source = Find-Card 'alpha' -Repository
+    $target = Find-Card 'beta' -Repository
+    [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
+    Assert-Order $outsideOrder 'Malformed preferences keep the last good visible order'
+    if ([IO.File]::ReadAllText($preferences) -ne 'broken') { throw 'Drag overwrote malformed preferences' }
+    [IO.File]::WriteAllText($preferences, $savedOrder)
+    $source = Find-Card 'alpha' -Repository
+    $target = Find-Card 'beta' -Repository
+    [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
+    Assert-Order 'repo:alpha,tree:alpha-tree,tree:alpha,repo:beta,tree:beta,tree:beta-tree' 'Saving recovers after preferences are repaired'
+    Wait-For { [WtsDragProbe]::AllText($script:handle) -notmatch 'Presentation order warning' } 'cleared save warning'
+    $source = Find-Card 'beta' -Repository
+    $target = Find-Card 'alpha' -Repository
+    [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
+    Assert-Order $outsideOrder 'Recovered preferences retain the selected final order'
+    if ([IO.File]::ReadAllText($config) -ne $registrations) { throw 'Dashboard actions changed the final registration set' }
+    Copy-Item -LiteralPath $config -Destination (Join-Path $fixture 'registrations.json')
+    Copy-Item -LiteralPath $preferences -Destination (Join-Path $fixture 'saved-order.json')
     Close-Dashboard
+    $missingGitHome = Join-Path $fixture 'missing-git-home'
+    New-Item -ItemType Directory -Path $missingGitHome | Out-Null
+    $env:USERPROFILE = $missingGitHome
+    $launchDirectory = $current
+    $env:PATH = ''
+    Start-Dashboard 2
+    $failureText = [WtsDragProbe]::AllText($script:handle)
+    if ($failureText -notmatch '(?m)^ERROR\b' -or $failureText -notmatch 'Could not start Git') { throw 'Launch discovery failure is not visible as an error' }
+    if (Test-Path (Join-Path $missingGitHome '.config/wts/config.json')) { throw 'Failed launch discovery wrote registrations' }
+    Close-Dashboard
+    $env:PATH = $oldPath
+    Write-Host 'PASS. Missing Git is a visible launch discovery error without writing registrations.'
     [ordered]@{
         binary = $Binary
         sha256 = (Get-FileHash -LiteralPath $Binary -Algorithm SHA256).Hash
         initial_order = $initial
         reordered = $reorderedOrder
         outside_git_order = $outsideOrder
+        registrations_unchanged = $true
+        saved_order_sha256 = (Get-FileHash -LiteralPath $preferences -Algorithm SHA256).Hash
+        summary_totals_absent = $true
+        missing_git_error_visible = $true
         result = 'PASS'
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $fixture 'proof.json') -Encoding utf8NoBOM
     Write-Host "PASS. Dashboard drag and launch-folder checks. Evidence at $fixture"
 } finally {
     $env:HOME = $oldHome
     $env:USERPROFILE = $oldProfile
+    $env:PATH = $oldPath
     if ($null -ne $process -and -not $process.HasExited) { $process.Kill($true); $process.WaitForExit() }
     if ($previousDpiContext -ne [IntPtr]::Zero) { [void][WtsDragProbe]::SetThreadDpiAwarenessContext($previousDpiContext) }
 }

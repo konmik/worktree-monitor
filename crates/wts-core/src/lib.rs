@@ -44,7 +44,15 @@ impl Service {
     }
 
     pub fn monitor(self) -> Result<Monitor, Error> {
-        Monitor::start(self)
+        Monitor::start(self, None)
+    }
+
+    pub fn monitor_from(self, launch_directory: PathBuf) -> Result<Monitor, Error> {
+        Monitor::start(self, Some(launch_directory))
+    }
+
+    pub fn config_path(&self) -> &Path {
+        &self.config_path
     }
 }
 

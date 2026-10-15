@@ -34,7 +34,7 @@ fn run(arguments: Arguments) -> Result<bool, Box<dyn std::error::Error>> {
             println!("{}", if changed { "Repository removed." } else { "Repository is not registered." });
             Ok(true)
         }
-        None if arguments.live => { window_win::run(service)?; Ok(true) }
+        None if arguments.live => { window_win::run(service, std::env::current_dir()?)?; Ok(true) }
         None => {
             let snapshot = service.snapshot(&Cancel::new());
             io::stdout().lock().write_all(snapshot.text().as_bytes())?;

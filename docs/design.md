@@ -2,7 +2,7 @@
 
 ## Usage
 
-`wts add <path>` registers a repository from any of its worktrees. `wts` prints a snapshot. `wts --live` displays the same data in an always-on-top Windows window. `wts remove <path>` unregisters the repository.
+`wts add <path>` registers a repository from any of its worktrees. `wts` prints a snapshot. `wts --live` displays registered repositories and the repository it is launched from in an always-on-top Windows window. Launch context does not change registrations. `wts remove <path>` unregisters the repository.
 
 ## Shape
 
@@ -29,16 +29,18 @@ Codex's worktree and Git utilities supplied a second local precedent for subproc
 
 ## Dashboard
 
-The Windows dashboard projects structured snapshots into summary metrics, repository sections, and worktree rows. It does not parse CLI output. Known totals include successful rows only, with incomplete data explicitly marked when scans fail. Zero changed lines are not presented as proof of a clean Git status.
+The Windows dashboard projects structured snapshots into repository sections and worktree rows. It does not parse CLI output or show summary totals. Each worktree shows its own counts or scan error. Zero changed lines are not presented as proof of a clean Git status.
 
-The visual design uses charcoal surfaces, monospace typography, acid-green additions, coral-red deletions and errors, and teal branch labels. Native owner-drawn controls retain real captions for accessibility. A clipped native viewport owns scrolling, while the header and summary remain fixed. There are no invented history charts, activity scores, or decorative animations.
+The visual design uses charcoal surfaces, monospace typography, acid-green additions, coral-red deletions and errors, and teal branch labels. Native owner-drawn controls retain real captions for accessibility. A clipped native viewport owns scrolling, while the header stays fixed. Drag handles move whole repository sections or worktrees within their own section. Saved display order does not change registrations or create worktrees. There are no invented history charts, activity scores, or decorative animations.
 
 | Dashboard alternative | Choice |
 | --- | --- |
 | Native repository cards | Selected for clear hierarchy, colored counters, branch badges, and an actual visual redesign. |
 | Dark terminal ledger | Rejected because a recolored text buffer still makes long paths and worktrees harder to scan. |
 
-The terminal sketch contributed the vivid green and teal palette and WTS wordmark. Core scanning, configuration, CLI output, and monitor ownership remain unchanged. The viewport preserves scroll on unchanged and count-only updates.
+The terminal sketch contributed the vivid green and teal palette and WTS wordmark. Core counting, registration storage, CLI output, and monitor ownership remain unchanged. The viewport preserves scroll on unchanged and count-only updates.
+
+Display order lives in a separate window-library model. Stable Git common-directory and worktree-root paths identify groups and rows. A completed drop updates `config.order.json` through its own nonblocking lock and atomic replacement. A failed save keeps the prior order and shows a warning. The core accepts explicit live launch context but does not register it. Saved ranks cannot discover or register repositories.
 
 ## Evidence and tradeoffs
 
