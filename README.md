@@ -19,7 +19,7 @@ Plain `wts` prints one current snapshot. `wts-ui` opens the Windows status windo
 
 The live window includes the repository you launch it from, even when it is not registered. This does not register it. Drag a repository header to move its whole group. Drag a worktree card to reorder it within its repository. The window remembers these positions across refreshes and restarts. Change counts appear on individual worktrees, without summary totals.
 
-The window has no title bar or visible frame. Drag empty space to move it, or drag an edge or corner to resize it. The scrollbar uses the right gutter without changing card widths. It hides after three seconds without scrolling or resizing. Repository headers show names without branch totals.
+The window has no title bar or visible frame. Drag the top line or empty space to move it, or drag an edge or corner to resize it. The app uses a notification-area icon instead of a taskbar button. Click the icon to show the window, or right-click for Show/Hide and Exit. The scrollbar uses the right gutter without changing card widths. It hides after three seconds without scrolling or resizing. Repository headers show names without branch totals.
 
 Use **Hide** on a worktree to remove it from the list. **Show all** reveals hidden worktrees without clearing their saved settings. Use **Unhide** to keep a revealed worktree visible when you turn **Show all** off. Hiding a worktree does not unregister it or stop monitoring it.
 

@@ -21,7 +21,8 @@ use windows_sys::Win32::UI::Controls::{SetScrollInfo, SetWindowTheme, DRAWITEMST
     ODS_HOTLIGHT, ODS_SELECTED, BST_CHECKED, WM_MOUSELEAVE};
 use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetCapture, GetFocus, IsWindowEnabled, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE, TME_NONCLIENT};
-use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
+use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass, Shell_NotifyIconW, NOTIFYICONDATAW, NIF_MESSAGE, NIF_ICON, NIF_TIP, NIF_SHOWTIP,
+    NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NIN_SELECT, NINF_KEY, NOTIFYICON_VERSION_4};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use wts_core::{Counts, Monitor, MonitorUpdate, Service};
 
@@ -34,6 +35,7 @@ const MUTED: COLORREF = rgb(132, 150, 156);
 const STATIC_OWNERDRAW: u32 = 13;
 const STATIC_NOTIFY: u32 = 256;
 const WM_SYNC_INDICATORS: u32 = WM_APP + 42;
+const WM_TRAY_ICON: u32 = WM_APP + 43;
 
 const fn rgb(red: u32, green: u32, blue: u32) -> COLORREF { red | (green << 8) | (blue << 16) }
 
@@ -151,6 +153,79 @@ struct State {
     indicator_overlay: HWND,
     indicators_dirty: bool,
     indicators_queued: bool,
+    tray: Option<TrayIcon>,
+    taskbar_created: u32,
+}
+
+struct TrayIcon {
+    data: NOTIFYICONDATAW,
+    added: bool,
+}
+
+impl TrayIcon {
+    unsafe fn new(window: HWND) -> Result<Self, io::Error> {
+        let mut data: NOTIFYICONDATAW = std::mem::zeroed();
+        data.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+        data.hWnd = window;
+        data.uID = 1;
+        data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
+        data.uCallbackMessage = WM_TRAY_ICON;
+        data.hIcon = LoadIconW(null_mut(), IDI_APPLICATION);
+        if data.hIcon.is_null() { return Err(io::Error::last_os_error()); }
+        data.szTip[..4].copy_from_slice(&wide("WTS"));
+        let mut icon = Self { data, added: false };
+        icon.add()?;
+        Ok(icon)
+    }
+
+    unsafe fn add(&mut self) -> Result<(), io::Error> {
+        if self.added { return Ok(()); }
+        if Shell_NotifyIconW(NIM_ADD, &self.data) == 0 && Shell_NotifyIconW(NIM_MODIFY, &self.data) == 0 {
+            return Err(io::Error::other("Cannot add the WTS notification icon"));
+        }
+        self.added = true;
+        self.data.Anonymous.uVersion = NOTIFYICON_VERSION_4;
+        if Shell_NotifyIconW(NIM_SETVERSION, &self.data) == 0 {
+            return Err(io::Error::other("Cannot set the WTS notification icon version"));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for TrayIcon {
+    fn drop(&mut self) {
+        if self.added { unsafe { Shell_NotifyIconW(NIM_DELETE, &self.data); } }
+    }
+}
+
+unsafe fn show_from_tray(window: HWND) {
+    ShowWindow(window, if IsIconic(window) != 0 { SW_RESTORE } else { SW_SHOWNOACTIVATE });
+    SetForegroundWindow(window);
+}
+
+unsafe fn tray_menu(window: HWND, point: POINT) -> Result<(), io::Error> {
+    let menu = CreatePopupMenu();
+    if menu.is_null() { return Err(io::Error::last_os_error()); }
+    let visible = IsWindowVisible(window) != 0 && IsIconic(window) == 0;
+    let populated = AppendMenuW(menu, MF_STRING, 1, wide(if visible { "Hide" } else { "Show" }).as_ptr()) != 0
+        && AppendMenuW(menu, MF_STRING, 2, wide("Exit").as_ptr()) != 0;
+    if !populated {
+        let error = io::Error::last_os_error();
+        DestroyMenu(menu);
+        return Err(error);
+    }
+    SetForegroundWindow(window);
+    let command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+        point.x, point.y, 0, window, null());
+    DestroyMenu(menu);
+    match command {
+        1 if visible => { ShowWindow(window, SW_HIDE); }
+        1 => show_from_tray(window),
+        2 => { PostMessageW(window, WM_CLOSE, 0, 0); }
+        _ => {}
+    }
+    PostMessageW(window, WM_NULL, 0, 0);
+    Ok(())
 }
 
 struct Drag {
@@ -1184,7 +1259,7 @@ unsafe fn native_hit_test(root: HWND, viewport: HWND, point: POINT) -> Option<Na
         || client.y < 0 || client.y >= bounds.bottom { return None; }
     let child = ChildWindowFromPointEx(root, client, CWP_SKIPINVISIBLE);
     if child.is_null() { return None; }
-    if child == root { return Some(NativeHit::Empty); }
+    if child == root || GetDlgCtrlID(child) == 1002 { return Some(NativeHit::Empty); }
     if child == viewport {
         let mut viewport_point = point;
         if ScreenToClient(viewport, &mut viewport_point) == 0 { return None; }
@@ -1239,7 +1314,7 @@ unsafe fn track_hover(window: HWND, message: u32) {
 unsafe extern "system" fn edge_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
     track_hover(window, message);
     if message == WM_NCDESTROY { RemoveWindowSubclass(window, Some(edge_procedure), 1); }
-    if message == WM_NCHITTEST && edge_hit_transparent(window, mouse_point(lparam)) {
+    if message == WM_NCHITTEST && (GetDlgCtrlID(window) == 1002 || edge_hit_transparent(window, mouse_point(lparam))) {
         return HTTRANSPARENT as LRESULT;
     }
     DefSubclassProc(window, message, wparam, lparam)
@@ -1661,6 +1736,29 @@ unsafe fn callback(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, v
 unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, pointer: *mut State, viewport: bool) -> LRESULT {
     track_hover(window, message);
     match message {
+        message if !viewport && message == (*pointer).taskbar_created => {
+            if let Some(icon) = &mut (*pointer).tray {
+                icon.added = false;
+                if let Err(error) = icon.add() {
+                    (*pointer).failure = Some(error);
+                    PostMessageW(window, WM_CLOSE, 0, 0);
+                }
+            }
+            0
+        }
+        WM_TRAY_ICON if !viewport && (lparam as u32 >> 16) == 1 => {
+            match lparam as u32 & 0xffff {
+                NIN_SELECT => show_from_tray(window),
+                event if event == NIN_SELECT | NINF_KEY => show_from_tray(window),
+                WM_CONTEXTMENU => {
+                    let mut point = mouse_point(wparam as LPARAM);
+                    if point.x == -1 && point.y == -1 { GetCursorPos(&mut point); }
+                    if let Err(error) = tray_menu(window, point) { (*pointer).failure = Some(error); }
+                }
+                _ => {}
+            }
+            0
+        }
         WM_SYNC_INDICATORS if !viewport => {
             (*pointer).indicators_queued = false;
             if !sync_indicators(window, &mut *pointer) {
@@ -1818,6 +1916,7 @@ unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, p
             0
         }
         WM_DESTROY if !viewport => {
+            (*pointer).tray = None;
             cancel_drag(pointer);
             (*pointer).indicator_overlay = null_mut();
             KillTimer(window, 1);
@@ -1878,9 +1977,11 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
         order_path, placement_path, starting: true, order, order_warning, order_write_failed: false, order_check: Instant::now(),
         visibility_path, visibility, visibility_warning, visibility_write_failed: false, visibility_check: Instant::now(),
         show_all_button: null_mut(), controls_visible: false, next_action_id: 3000, drag: None,
-        indicator_overlay: null_mut(), indicators_dirty: true, indicators_queued: false });
+        indicator_overlay: null_mut(), indicators_dirty: true, indicators_queued: false, tray: None, taskbar_created: 0 });
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        state.taskbar_created = RegisterWindowMessageW(wide("TaskbarCreated").as_ptr());
+        if state.taskbar_created == 0 { return Err(io::Error::last_os_error()); }
         let instance = GetModuleHandleW(null());
         if instance.is_null() { return Err(io::Error::last_os_error()); }
         let class = wide("WtsStatusWindow");
@@ -1902,7 +2003,7 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
             UnregisterClassW(class.as_ptr(), instance);
             return Err(error);
         }
-        let window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED, class.as_ptr(), wide("WTS Worktree status").as_ptr(),
+        let window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TOOLWINDOW, class.as_ptr(), wide("WTS Worktree status").as_ptr(),
             WS_POPUP | WS_SYSMENU | WS_THICKFRAME | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, CW_USEDEFAULT, CW_USEDEFAULT, 640, 540, null_mut(), null_mut(), instance,
             (&mut *state as *mut State).cast());
         if window.is_null() {
@@ -1947,10 +2048,15 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
             } else { (rect.left, rect.top, 640 * dpi / 96, 540 * dpi / 96) };
             SetWindowPos(window, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE)
         };
-        if positioned == 0 || SetLayeredWindowAttributes(window, 0, 51, LWA_ALPHA) == 0 {
+        let tray = TrayIcon::new(window);
+        if let Err(error) = tray {
+            state.failure = Some(error);
+            DestroyWindow(window);
+        } else if positioned == 0 || SetLayeredWindowAttributes(window, 0, 51, LWA_ALPHA) == 0 {
             state.failure = Some(io::Error::last_os_error());
             DestroyWindow(window);
         } else {
+            state.tray = tray.ok();
             ShowWindow(window, if restored == Some(ShowState::Maximized) { SW_SHOWMAXIMIZED } else { SW_SHOWNOACTIVATE });
             let style = GetWindowLongPtrW(window, GWL_EXSTYLE);
             SetWindowLongPtrW(window, GWL_EXSTYLE, style & !(WS_EX_NOACTIVATE as isize));
