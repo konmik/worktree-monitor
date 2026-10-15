@@ -182,9 +182,32 @@ function New-Repository([string]$Name, [switch]$Linked) {
 }
 
 function Start-Dashboard([int]$ExpectedCards = 8) {
-    $script:process = Start-Process -FilePath $Binary -ArgumentList '--live' -WorkingDirectory $launchDirectory -NoNewWindow -PassThru
+    $start = [Diagnostics.ProcessStartInfo]::new($Binary)
+    $start.ArgumentList.Add('--live')
+    $start.WorkingDirectory = $launchDirectory
+    $start.UseShellExecute = $false
+    $start.RedirectStandardInput = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $script:launcher = [Diagnostics.Process]::Start($start)
+    $stdout = $script:launcher.StandardOutput.ReadToEndAsync()
+    $stderr = $script:launcher.StandardError.ReadToEndAsync()
+    $script:launcher.StandardInput.Close()
+    $script:process = $null
     $script:handle = [IntPtr]::Zero
-    Wait-For { $script:handle = [WtsDragProbe]::Find([uint32]$script:process.Id); $script:handle -ne [IntPtr]::Zero } 'dashboard window'
+    Wait-For {
+        foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($script:launcher.Id)")) {
+            $script:handle = [WtsDragProbe]::Find([uint32]$child.ProcessId)
+            if ($script:handle -ne [IntPtr]::Zero) {
+                $script:process = [Diagnostics.Process]::GetProcessById([int]$child.ProcessId)
+                [void]$script:process.Handle
+                return $true
+            }
+        }
+        return $false
+    } 'dashboard child window'
+    if (-not $script:launcher.WaitForExit(3000) -or $script:launcher.ExitCode -ne 0) { throw 'Dashboard launcher did not exit successfully' }
+    if (-not $stdout.Wait(1000) -or -not $stderr.Wait(1000)) { throw 'Dashboard launcher did not release stdout and stderr' }
     $dpi = [WtsDragProbe]::GetDpiForWindow($script:handle)
     if (-not [WtsDragProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, (800 * $dpi / 96), (1400 * $dpi / 96), 20)) { throw 'Dashboard resize failed' }
     $script:viewport = [WtsDragProbe]::GetDlgItem($script:handle, 1001)
@@ -231,6 +254,7 @@ $oldHome = $env:HOME
 $oldProfile = $env:USERPROFILE
 $oldPath = $env:PATH
 $process = $null
+$launcher = $null
 $previousDpiContext = [WtsDragProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
 try {
     $env:HOME = Join-Path $fixture 'unix-home'
@@ -387,5 +411,14 @@ try {
     $env:USERPROFILE = $oldProfile
     $env:PATH = $oldPath
     if ($null -ne $process -and -not $process.HasExited) { $process.Kill($true); $process.WaitForExit() }
+    if ($null -ne $launcher) {
+        foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($launcher.Id)")) {
+            try {
+                $owned = [Diagnostics.Process]::GetProcessById([int]$child.ProcessId)
+                if (-not $owned.HasExited) { $owned.Kill($true); $owned.WaitForExit() }
+            } catch [ArgumentException] {} catch [InvalidOperationException] {}
+        }
+        if (-not $launcher.HasExited) { $launcher.Kill($true); $launcher.WaitForExit() }
+    }
     if ($previousDpiContext -ne [IntPtr]::Zero) { [void][WtsDragProbe]::SetThreadDpiAwarenessContext($previousDpiContext) }
 }

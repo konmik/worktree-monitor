@@ -108,7 +108,7 @@ try {
         & $Binary add $repo
         if ($LASTEXITCODE -ne 0) { throw 'Visual fixture registration failed' }
     }
-    $process = Start-Process -FilePath $Binary -ArgumentList '--live' -WorkingDirectory $fixtureHome -NoNewWindow -PassThru
+    $process = Start-Process -FilePath $Binary -ArgumentList '--live', '--live-child' -WorkingDirectory $fixtureHome -NoNewWindow -PassThru
     $handle = [IntPtr]::Zero
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
     do {

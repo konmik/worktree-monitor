@@ -9,6 +9,8 @@ use wts_core::{Cancel, Service};
 struct Arguments {
     #[arg(long, help = "Open the always-on-top Windows status window")]
     live: bool,
+    #[arg(long, hide = true, requires = "live")]
+    live_child: bool,
     #[command(subcommand)]
     command: Option<Registration>,
 }
@@ -22,6 +24,11 @@ enum Registration {
 }
 
 fn run(arguments: Arguments) -> Result<bool, Box<dyn std::error::Error>> {
+    #[cfg(windows)]
+    if arguments.live && !arguments.live_child {
+        launch_window()?;
+        return Ok(true);
+    }
     let service = Service::user()?;
     match arguments.command {
         Some(Registration::Add { path }) => {
@@ -43,10 +50,53 @@ fn run(arguments: Arguments) -> Result<bool, Box<dyn std::error::Error>> {
     }
 }
 
+#[cfg(windows)]
+fn launch_window() -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn SetHandleInformation(handle: *mut std::ffi::c_void, mask: u32, flags: u32) -> i32;
+    }
+
+    for handle in [io::stdin().as_raw_handle(), io::stdout().as_raw_handle(), io::stderr().as_raw_handle()] {
+        if !handle.is_null() && handle as isize != -1 && unsafe { SetHandleInformation(handle, 1, 0) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+
+    Command::new(std::env::current_exe()?)
+        .args(["--live", "--live-child"])
+        .creation_flags(0x00000008)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    Ok(())
+}
+
 fn main() -> ExitCode {
     match run(Arguments::parse()) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(error) => { eprintln!("Error: {error}"); ExitCode::FAILURE }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Arguments;
+    use clap::Parser;
+
+    #[test]
+    fn window_host_requires_live_mode() {
+        assert!(Arguments::try_parse_from(["wts", "--live-child"]).is_err());
+        let host = Arguments::try_parse_from(["wts", "--live", "--live-child"]).unwrap();
+        assert!(host.live);
+        assert!(host.live_child);
+        assert!(host.command.is_none());
+        assert!(Arguments::try_parse_from(["wts", "--live", "--live-child", "add", "."]).is_err());
     }
 }

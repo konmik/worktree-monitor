@@ -125,6 +125,7 @@ New-Item -ItemType Directory -Path $repo, $fixtureHome | Out-Null
 $oldHome = $env:HOME
 $oldProfile = $env:USERPROFILE
 $process = $null
+$launcher = $null
 $previousDpiContext = [WtsWindowProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
 try {
     $env:HOME = Join-Path $fixture 'unix-home'
@@ -138,11 +139,33 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Registration failed' }
     $config = Join-Path $fixtureHome '.config/wts/config.json'
     if (-not (Test-Path -LiteralPath $config)) { throw 'Registry was not written at the required home path' }
-    $process = Start-Process -FilePath $Binary -ArgumentList '--live' -WorkingDirectory $fixtureHome -NoNewWindow -PassThru
+    $start = [Diagnostics.ProcessStartInfo]::new($Binary)
+    $start.ArgumentList.Add('--live')
+    $start.WorkingDirectory = $fixtureHome
+    $start.UseShellExecute = $false
+    $start.RedirectStandardInput = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $launcher = [Diagnostics.Process]::Start($start)
+    $stdout = $launcher.StandardOutput.ReadToEndAsync()
+    $stderr = $launcher.StandardError.ReadToEndAsync()
+    $launcher.StandardInput.Close()
     $script:handle = [IntPtr]::Zero
-    Wait-For { $script:handle = [WtsWindowProbe]::Find([uint32]$process.Id); $script:handle -ne [IntPtr]::Zero } 'visible window'
+    Wait-For {
+        foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($launcher.Id)")) {
+            $script:handle = [WtsWindowProbe]::Find([uint32]$child.ProcessId)
+            if ($script:handle -ne [IntPtr]::Zero) {
+                $script:process = [Diagnostics.Process]::GetProcessById([int]$child.ProcessId)
+                [void]$script:process.Handle
+                return $true
+            }
+        }
+        return $false
+    } 'visible child window'
+    if (-not $launcher.WaitForExit(3000) -or $launcher.ExitCode -ne 0) { throw 'Live launcher did not exit successfully' }
+    if (-not $stdout.Wait(1000) -or -not $stderr.Wait(1000)) { throw 'Live launcher did not release stdout and stderr' }
     if ([WtsWindowProbe]::SharesConsole([uint32]$process.Id)) { throw 'Live window is still attached to the launching terminal' }
-    Write-Host 'PASS. Live window is detached from the launching terminal.'
+    Write-Host 'PASS. Live launcher exited, stdout and stderr reached EOF, and the child window is detached from the launching terminal.'
     $initialStyle = [WtsWindowProbe]::GetWindowLongPtr($script:handle, -20).ToInt64()
     $foregroundOnShow = [WtsWindowProbe]::GetForegroundWindow()
     if (($initialStyle -band 8) -eq 0) { throw 'Window is not always on top' }
@@ -214,6 +237,12 @@ try {
         activated_on_show = $foregroundOnShow -eq $script:handle
         activated_on_refresh = $foregroundOnRefresh -eq $script:handle
         console_detached = $true
+        launcher_exited = $launcher.HasExited
+        launcher_exit_code = $launcher.ExitCode
+        stdout_eof = $stdout.IsCompletedSuccessfully
+        stderr_eof = $stderr.IsCompletedSuccessfully
+        launcher_pid = $launcher.Id
+        window_pid = $process.Id
         registry_empty = [IO.File]::ReadAllText((Join-Path $fixture 'empty.txt')) -match '(?i)no (registered )?repo'
         window_destroyed = -not [WtsWindowProbe]::IsWindow($script:handle)
         scroll_before = $beforeScroll
@@ -226,5 +255,14 @@ try {
     $env:HOME = $oldHome
     $env:USERPROFILE = $oldProfile
     if ($null -ne $process -and -not $process.HasExited) { $process.Kill($true); $process.WaitForExit() }
+    if ($null -ne $launcher) {
+        foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($launcher.Id)")) {
+            try {
+                $owned = [Diagnostics.Process]::GetProcessById([int]$child.ProcessId)
+                if (-not $owned.HasExited) { $owned.Kill($true); $owned.WaitForExit() }
+            } catch [ArgumentException] {} catch [InvalidOperationException] {}
+        }
+        if (-not $launcher.HasExited) { $launcher.Kill($true); $launcher.WaitForExit() }
+    }
     if ($previousDpiContext -ne [IntPtr]::Zero) { [void][WtsWindowProbe]::SetThreadDpiAwarenessContext($previousDpiContext) }
 }
