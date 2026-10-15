@@ -21,8 +21,6 @@ public static class WtsSpacingProbe {
     [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr window, int id);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out Rect rect);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr window, StringBuilder value, int count);
-    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
-    [DllImport("user32.dll")] public static extern bool RedrawWindow(IntPtr window, IntPtr rect, IntPtr region, uint flags);
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
     [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     public static string Text(IntPtr window) {
@@ -51,6 +49,15 @@ function Is-Worktree($Row) {
     return $content -match '\r?\nS\s+\+\d+/-\d+|\r?\nCounts unavailable' -or [IO.Path]::IsPathFullyQualified(($content -split '\r?\n')[0])
 }
 
+function Assert-WindowBounds($Window, $Original) {
+    $bounds = [WtsSpacingProbe+Rect]::new()
+    if (-not [WtsSpacingProbe]::GetWindowRect($Window, [ref]$bounds)) { throw 'Monitor bounds unavailable' }
+    if ($bounds.Left -ne $Original.Left -or $bounds.Top -ne $Original.Top -or $bounds.Right -ne $Original.Right -or $bounds.Bottom -ne $Original.Bottom) {
+        throw "Monitor bounds changed from ($($Original.Left), $($Original.Top), $($Original.Right), $($Original.Bottom)) to ($($bounds.Left), $($bounds.Top), $($bounds.Right), $($bounds.Bottom))"
+    }
+    return $bounds
+}
+
 $process = Get-Process -Id $ProcessId
 $deadline = [DateTime]::UtcNow.AddSeconds(30)
 do {
@@ -68,6 +75,7 @@ try {
     $viewport = [WtsSpacingProbe]::GetDlgItem($window, 1001)
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
     do {
+        $null = Assert-WindowBounds $window $original
         $rows = [WtsSpacingProbe]::Rows($viewport)
         $pairs = 0
         for ($index = 1; $index -lt $rows.Count; $index++) {
@@ -78,25 +86,27 @@ try {
     } while ([DateTime]::UtcNow -lt $deadline)
     $phases = if ($Startup) { @('startup', 'loaded') } else { @('current') }
     foreach ($phase in $phases) {
-    if ($phase -eq 'loaded') {
-        $deadline = [DateTime]::UtcNow.AddSeconds(90)
-        do {
-            $status = [WtsSpacingProbe]::Text([WtsSpacingProbe]::GetDlgItem($window, 1002))
-            if ($status -match '^LIVE|^ERROR') { break }
-            Start-Sleep -Milliseconds 100
-        } while ([DateTime]::UtcNow -lt $deadline)
-        if ($status -notmatch '^LIVE|^ERROR') { throw 'Startup did not finish' }
-    }
-    foreach ($width in @(800, 380)) {
-        if (-not [WtsSpacingProbe]::SetWindowPos($window, [IntPtr]::Zero, $original.Left, $original.Top, $width, 720, 20)) { throw 'Resize failed' }
-        [void][WtsSpacingProbe]::RedrawWindow($window, [IntPtr]::Zero, [IntPtr]::Zero, 0x0180)
-        $bitmap = [Drawing.Bitmap]::new($width, 720)
+        if ($phase -eq 'loaded') {
+            $deadline = [DateTime]::UtcNow.AddSeconds(90)
+            do {
+                $null = Assert-WindowBounds $window $original
+                $status = [WtsSpacingProbe]::Text([WtsSpacingProbe]::GetDlgItem($window, 1002))
+                if ($status -match '^LIVE|^ERROR') { break }
+                Start-Sleep -Milliseconds 100
+            } while ([DateTime]::UtcNow -lt $deadline)
+            if ($status -notmatch '^LIVE|^ERROR') { throw 'Startup did not finish' }
+        }
+        $bounds = Assert-WindowBounds $window $original
+        $width = $bounds.Right - $bounds.Left
+        $height = $bounds.Bottom - $bounds.Top
+        $bitmap = [Drawing.Bitmap]::new($width, $height)
         $graphics = [Drawing.Graphics]::FromImage($bitmap)
         $dc = $graphics.GetHdc()
         try {
             if (-not [WtsSpacingProbe]::PrintWindow($window, $dc, 0)) { throw 'Monitor capture failed' }
         } finally { $graphics.ReleaseHdc($dc); $graphics.Dispose() }
-        try { $bitmap.Save((Join-Path $Output "$phase-width-$width.png")) } finally { $bitmap.Dispose() }
+        try { $bitmap.Save((Join-Path $Output "$phase-width-$width-height-$height.png")) } finally { $bitmap.Dispose() }
+        $null = Assert-WindowBounds $window $original
         $rows = [WtsSpacingProbe]::Rows($viewport)
         $pairs = 0
         for ($index = 1; $index -lt $rows.Count; $index++) {
@@ -104,17 +114,16 @@ try {
             $current = $rows[$index]
             if ((Is-Worktree $previous) -and (Is-Worktree $current)) {
                 $gap = $current.Bounds.Top - $previous.Bounds.Bottom
-                $checks.Add(@{ phase = $phase; width = $width; previous = $previous.Text; current = $current.Text; gap = $gap })
+                $checks.Add(@{ phase = $phase; width = $width; height = $height; bounds = @{ left = $bounds.Left; top = $bounds.Top; right = $bounds.Right; bottom = $bounds.Bottom }; previous = $previous.Text; current = $current.Text; gap = $gap })
                 if ($gap -ne 0) { throw "Adjacent worktrees have a $gap pixel gap at width $width" }
                 $pairs++
             }
         }
         if ($pairs -eq 0) { throw 'No adjacent worktrees available to verify' }
-    }
+        $null = Assert-WindowBounds $window $original
     }
     $checks | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $Output 'proof.json')
-    Write-Host "PASS. Adjacent worktree bounds touch at wide and narrow widths. Evidence: $Output"
+    Write-Host "PASS. Adjacent worktree bounds touch and monitor bounds are unchanged. Evidence: $Output"
 } finally {
-    [void][WtsSpacingProbe]::SetWindowPos($window, [IntPtr]::Zero, $original.Left, $original.Top, $original.Right - $original.Left, $original.Bottom - $original.Top, 20)
     [void][WtsSpacingProbe]::SetThreadDpiAwarenessContext($previousDpi)
 }
