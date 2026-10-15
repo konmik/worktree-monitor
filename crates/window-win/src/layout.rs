@@ -242,4 +242,29 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn adjacent_worktrees_follow_the_last_text_line_without_padding() {
+        for (dpi, cell) in [(96, 15), (120, 18), (144, 22), (192, 30)] {
+            let typography = Typography::new(dpi, cell);
+            let attached = RowSpacing::new(typography, true, true);
+            let last = RowSpacing::new(typography, true, false);
+            for lines in [1, 2, 7] {
+                for width in [180, 380, 800] {
+                    let sizes = [
+                        RowSize { height: attached.height(typography, lines), action: true, spacing: attached },
+                        RowSize { height: last.height(typography, 2), action: true, spacing: last },
+                    ];
+                    let layout = content(width, dpi, typography, &sizes).unwrap();
+                    let previous = &layout.rows[0];
+                    let next = &layout.rows[1];
+                    let last_line = previous.rect.top + attached.top(typography, lines - 1);
+                    assert_eq!(next.rect.top - last_line, typography.advance.max(cell));
+                    assert_eq!(next.rect.top, previous.rect.top + previous.rect.height);
+                    assert_eq!(next.action.unwrap().top, 0);
+                    assert_eq!(next.rect.height, typography.advance + cell + typography.padding);
+                }
+            }
+        }
+    }
 }

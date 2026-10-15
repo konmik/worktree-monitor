@@ -293,7 +293,7 @@ unsafe fn item_height(card: &Card, dc: HDC, width: i32, dpi: i32, resources: &Re
 }
 
 fn attached_rows(previous: &DisplayItem, next: &DisplayItem) -> bool {
-    matches!(previous, DisplayItem::Repository { .. })
+    matches!(previous, DisplayItem::Repository { .. } | DisplayItem::Worktree { .. } | DisplayItem::PendingWorktree { .. })
         && matches!(next, DisplayItem::Worktree { .. } | DisplayItem::PendingWorktree { .. })
 }
 
@@ -400,7 +400,8 @@ mod row_tests {
         let notice = DisplayItem::Notice { title: "error".into(), message: "failure".into(), error: true };
         assert!(attached_rows(&repository, &branch));
         assert!(!attached_rows(&repository, &notice));
-        assert!(!attached_rows(&branch, &branch));
+        assert!(attached_rows(&branch, &branch));
+        assert!(!attached_rows(&branch, &repository));
         for dpi in [96, 120, 144, 192] {
             let resources = unsafe { Resources::new(dpi) }.unwrap();
             let typography = resources.typography;
