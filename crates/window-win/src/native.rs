@@ -39,6 +39,7 @@ const fn rgb(red: u32, green: u32, blue: u32) -> COLORREF { red | (green << 8) |
 struct Resources {
     font: HFONT,
     typography: Typography,
+    space_width: i32,
     background: HBRUSH,
     teal: HBRUSH,
     muted: HBRUSH,
@@ -46,7 +47,7 @@ struct Resources {
 
 impl Resources {
     unsafe fn new(dpi: i32) -> Option<Self> {
-        let mut resources = Self { font: null_mut(), typography: Typography::new(dpi, 1), background: CreateSolidBrush(BACKGROUND),
+        let mut resources = Self { font: null_mut(), typography: Typography::new(dpi, 1), space_width: 1, background: CreateSolidBrush(BACKGROUND),
             teal: CreateSolidBrush(TEAL), muted: CreateSolidBrush(MUTED) };
         let dc = CreateCompatibleDC(null_mut());
         if dc.is_null() { return None; }
@@ -65,6 +66,7 @@ impl Resources {
             if actual.trim_end_matches('\0').eq_ignore_ascii_case(face) && monospaced {
                 resources.font = font;
                 resources.typography = Typography::new(dpi, metrics.tmHeight);
+                resources.space_width = metrics.tmAveCharWidth;
                 break;
             }
             DeleteObject(font);
@@ -159,9 +161,11 @@ impl Drop for State {
 
 fn wide(text: &str) -> Vec<u16> { text.encode_utf16().chain(Some(0)).collect() }
 fn scaled(value: i32, dpi: i32) -> i32 { (value * dpi / 96).max(1) }
-fn worktree_inset(width: i32, dpi: i32) -> i32 { scaled(14, dpi).min(width.saturating_sub(1) / 2) }
-fn worktree_text_width(width: i32, dpi: i32) -> i32 {
-    (width - worktree_inset(width, dpi) * 2).max(1)
+fn content_inset(width: i32, dpi: i32, resources: &Resources) -> i32 {
+    (scaled(14, dpi) - resources.space_width).max(0).min(width.saturating_sub(1) / 2)
+}
+fn content_text_width(width: i32, dpi: i32, resources: &Resources) -> i32 {
+    (width - content_inset(width, dpi, resources) * 2).max(1)
 }
 
 unsafe fn set_item(card: &mut Card, display: DisplayItem) {
@@ -277,19 +281,18 @@ unsafe fn wrapped_lines(dc: HDC, text: &str, width: i32, font: HFONT) -> Vec<Str
 }
 
 unsafe fn item_height(card: &Card, dc: HDC, width: i32, dpi: i32, resources: &Resources) -> i32 {
-    let s = |value| scaled(value, dpi);
     let lines = match &card.display {
         DisplayItem::Repository { bare, .. } => 1 + usize::from(*bare),
         DisplayItem::PendingWorktree { .. } => 2,
         DisplayItem::Worktree { result, .. } => {
-            let text_width = worktree_text_width(width, dpi);
+            let text_width = content_text_width(width, dpi, resources);
             match result {
                 Ok(_) => 2,
                 Err(error) => 2 + wrapped_lines(dc, &format!("ERROR ({:?}): {}", error.kind, error.message), text_width, resources.font).len(),
             }
         }
         DisplayItem::Notice { message, .. } => 1 + if message.is_empty() { 0 } else {
-            let text_width = (width - s(28)).max(1);
+            let text_width = content_text_width(width, dpi, resources);
             wrapped_lines(dc, message, text_width, resources.font).len()
         },
         _ => 1,
@@ -361,6 +364,27 @@ mod row_tests {
                 }
             }
             ReleaseDC(null_mut(), screen);
+        }
+    }
+
+    #[test]
+    fn content_padding_shrinks_by_one_font_space_at_each_dpi() {
+        unsafe {
+            let dc = CreateCompatibleDC(null_mut());
+            for dpi in [96, 120, 144, 192] {
+                let resources = Resources::new(dpi).unwrap();
+                let space_width = wrapped_width(dc, " ", resources.font);
+                let width = scaled(400, dpi);
+                let inset = content_inset(width, dpi, &resources);
+                assert_eq!(inset, scaled(14, dpi) - space_width);
+                assert_eq!(content_text_width(width, dpi, &resources), width - scaled(14, dpi) * 2 + space_width * 2);
+                for width in 1..scaled(28, dpi) {
+                    let inset = content_inset(width, dpi, &resources);
+                    assert!(inset >= 0);
+                    assert!(width - inset * 2 > 0);
+                }
+            }
+            DeleteDC(dc);
         }
     }
 
@@ -613,8 +637,10 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
         let top = card.spacing.top(typography, index);
         bounds(left, top, right, top + typography.cell)
     };
-    let heading_right = if matches!(card.display, DisplayItem::Repository { .. }) { width - s(12) }
-        else { card.action_rect.map_or(width - s(12), |rect| rect.left - s(8)) };
+    let inset = content_inset(width, state.dpi, resources);
+    let right_padding = (s(12) - resources.space_width).max(0);
+    let heading_right = if matches!(card.display, DisplayItem::Repository { .. }) { width - right_padding }
+        else { card.action_rect.map_or(width - right_padding, |rect| rect.left - s(8)) };
     let dragging = state.drag.as_ref().is_some_and(|drag| drag.source_handle == card.window);
     fill(dc, rect, resources.background);
     match &card.display {
@@ -624,13 +650,12 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
             text(dc, &caption, bounds(0, y, width, y + typography.cell), resources.font, color, line);
         }
         DisplayItem::Repository { bare, .. } => {
-            draw_name(dc, lines[0], line_bounds(s(14), 0, heading_right), resources.font,
+            draw_name(dc, lines[0], line_bounds(inset, 0, heading_right), resources.font,
                 if dragging { GREEN } else { TEAL }, false, card.refreshing);
-            if *bare { text(dc, lines[1], line_bounds(s(14), 1, width - s(12)), resources.font, MUTED, line); }
+            if *bare { text(dc, lines[1], line_bounds(inset, 1, width - right_padding), resources.font, MUTED, line); }
         }
         DisplayItem::Worktree { path, result } => {
-            let inset = worktree_inset(width, state.dpi);
-            let text_width = worktree_text_width(width, state.dpi);
+            let text_width = content_text_width(width, state.dpi, resources);
             let right = inset + text_width;
             let heading_width = (heading_right - inset).max(0).min(text_width);
             let path = path.display().to_string();
@@ -668,14 +693,13 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
             }
         }
         DisplayItem::PendingWorktree { path } => {
-            let inset = worktree_inset(width, state.dpi);
             let heading_width = (heading_right - inset).max(0);
             draw_name(dc, &path.display().to_string(), line_bounds(inset, 0, inset + heading_width), resources.font,
                 if dragging { GREEN } else { MUTED }, true, card.refreshing);
         }
         DisplayItem::Notice { title, message, error } => {
-            text(dc, title, line_bounds(s(14), 0, width - s(14)), resources.font, if *error { RED } else { WHITE }, line);
-            wrapped_text(dc, message, line_bounds(s(14), 1, width - s(14)), resources, if *error { RED } else { MUTED });
+            text(dc, title, line_bounds(inset, 0, width - inset), resources.font, if *error { RED } else { WHITE }, line);
+            wrapped_text(dc, message, line_bounds(inset, 1, width - inset), resources, if *error { RED } else { MUTED });
         }
     }
     if let Some(target) = state.drag.as_ref().and_then(|drag| drag.target.as_ref()) {

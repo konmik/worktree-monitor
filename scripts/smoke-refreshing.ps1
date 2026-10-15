@@ -102,7 +102,7 @@ public static class WtsRefreshingProbe {
             SetBkMode(expected, 1);
             SetTextColor(expected, 84u | (213u << 8) | (197u << 16));
             if (refreshing) DrawTextW(expected, "*", 1, ref rect, 0x0820);
-            int left = 14 * dpi / 96 + extent.X + space.X;
+            int left = Math.Max(0, 14 * dpi / 96 - space.X) + extent.X + space.X;
             int top = repository ? 8 * dpi / 96 : 0;
             int ink = 0;
             for (int y = 0; y < marker.Y; y++) {
