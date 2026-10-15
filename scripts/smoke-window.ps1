@@ -15,6 +15,7 @@ public static class WtsWindowProbe {
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumProc callback, IntPtr data);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr handle, out uint processId);
+    [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr window);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr handle, StringBuilder text, int count);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessageTimeout(IntPtr handle, uint message, UIntPtr wparam, StringBuilder text, uint flags, uint timeout, out UIntPtr result);
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr handle, int index);
@@ -128,11 +129,10 @@ public static class WtsWindowProbe {
         }
     }
     public static void DragEmptySpace(IntPtr window, IntPtr viewport) {
-        Rect before, after, view, card;
+        Rect before, after, view;
         GetWindowRect(window, out before);
         GetWindowRect(viewport, out view);
-        GetWindowRect(FirstCard(viewport), out card);
-        int x = (view.Left + view.Right) / 2, y = card.Bottom + 1;
+        int x = (view.Left + view.Right) / 2, y = view.Bottom - 8 * (int)GetDpiForWindow(window) / 96;
         var target = WindowFromPoint(new Point { X = x, Y = y });
         if (y < view.Top || y >= view.Bottom || (target != viewport && target != window)) throw new InvalidOperationException("Empty-gap drag point is not the fixture window");
         Drag(window, x, y, 40, 30);
@@ -151,10 +151,9 @@ public static class WtsWindowProbe {
         }, "Dragging the corner did not resize the window");
     }
     public static void CancelEmptyMove(IntPtr window, IntPtr viewport) {
-        Rect view, card;
+        Rect view;
         GetWindowRect(viewport, out view);
-        GetWindowRect(FirstCard(viewport), out card);
-        Drag(window, (view.Left + view.Right) / 2, card.Bottom + 1, 0, 0, true);
+        Drag(window, (view.Left + view.Right) / 2, view.Bottom - 8 * (int)GetDpiForWindow(window) / 96, 0, 0, true);
     }
     public static void ClickScrollbar(IntPtr window, IntPtr scrollbar) {
         Rect bar;
@@ -278,6 +277,8 @@ try {
     $script:branch = (& git -c core.fsmonitor=false -c core.autocrlf=false -c commit.gpgsign=false -c "core.hooksPath=$fixture" -C $repo branch --show-current | Out-String).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Git branch lookup failed' }
     [IO.File]::WriteAllText((Join-Path $repo 'lines.txt'), "before`nadded`n")
+    Run-Git @('config', 'filter.wts-metric.clean', 'sleep 1; cat')
+    [IO.File]::WriteAllText((Join-Path $repo '.git/info/attributes'), "lines.txt filter=wts-metric`n")
     & $Binary add $repo
     if ($LASTEXITCODE -ne 0) { throw 'Registration failed' }
     $config = Join-Path $fixtureHome '.config/wts/config.json'
@@ -318,16 +319,16 @@ try {
     Wait-For { Has-Counts 1 0 } 'initial source count'
     $initial = [WtsWindowProbe]::Text($script:handle)
     if ($initial -cmatch 'REPOSITORIES|WORKTREES|LINE CHANGES') { throw 'Dashboard still shows summary totals' }
-    $initialPolling = [regex]::Match($initial, 'Polling ([0-9]+\.[0-9]+)s in last minute')
-    if (-not $initialPolling.Success -or $initial -match 'Polling interval') { throw 'Rolling polling time is missing or still shows the interval' }
-    $initialPollingSeconds = [double]::Parse($initialPolling.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture)
+    $initialRead = [regex]::Match($initial, '\[read: (100|[0-9]{1,2})%\]')
+    if (-not $initialRead.Success -or $initial -match 'Polling interval') { throw 'Read percentage is missing or still shows the interval' }
+    $initialReadPercent = [int]$initialRead.Groups[1].Value
     [IO.File]::WriteAllText((Join-Path $fixture 'initial.txt'), $initial)
     $viewport = [WtsWindowProbe]::GetDlgItem($script:handle, 1001)
     if ($viewport -eq [IntPtr]::Zero) { throw 'Dashboard viewport is missing' }
     if (@([WtsWindowProbe]::Captions($viewport) | Where-Object { $_ -match '^repo(?:\r?\nRefreshing)?$' }).Count -ne 1) { throw 'Repository name is missing or still has a branch counter' }
     $scrollbar = [WtsWindowProbe]::Scrollbar($script:handle)
     $sinceResize = [Diagnostics.Stopwatch]::StartNew()
-    if (-not [WtsWindowProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, 600, 130, 22)) { throw 'Window resize failed' }
+    if (-not [WtsWindowProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, 600, 90, 22)) { throw 'Window resize failed' }
     [WtsWindowProbe]::CheckFrame($script:handle, $viewport)
     $card = [WtsWindowProbe]::FirstCard($viewport)
     if ($card -eq [IntPtr]::Zero) { throw 'Visible dashboard cards are missing' }
@@ -343,7 +344,7 @@ try {
     if ($barBounds.Left -lt $viewBounds.Right -or $barBounds.Right -gt $windowBounds.Right -or $barBounds.Top -lt $viewBounds.Top -or $barBounds.Bottom -gt $viewBounds.Bottom -or $barBounds.Right -le $barBounds.Left -or $barBounds.Bottom -le $barBounds.Top) { throw 'Scrollbar does not fit the right gutter' }
     Start-Sleep -Milliseconds 1500
     $sinceResize.Restart()
-    foreach ($height in @(131, 130)) {
+    foreach ($height in @(91, 90)) {
         if (-not [WtsWindowProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, 600, $height, 22)) { throw 'Repeated window resize failed' }
     }
     Wait-ScrollbarHidden $scrollbar $sinceResize
@@ -370,14 +371,15 @@ try {
         $height = [WtsWindowProbe]::Height($viewport)
         $focus = [WtsWindowProbe]::GetForegroundWindow().ToInt64()
         [IO.File]::AppendAllText((Join-Path $fixture 'scroll-trace.txt'), "$line`t$height`t$focus`t$($text.Replace("`r", '').Replace("`n", '\n'))`n")
-        $polling = [regex]::Match($text, 'Polling ([0-9]+\.[0-9]+)s in last minute')
-        if ($polling.Success -and [double]::Parse($polling.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) -gt $initialPollingSeconds) { return $true }
+        $polling = [regex]::Match($text, '\[read: (100|[0-9]{1,2})%\]')
+        if ($polling.Success -and [int]$polling.Groups[1].Value -gt $initialReadPercent) { return $true }
         if ([DateTime]::UtcNow -ge $script:nextMetricChange) {
-            [IO.File]::WriteAllText((Join-Path $repo 'lines.txt'), "before`nadded`n")
+            [IO.File]::SetLastWriteTimeUtc((Join-Path $repo 'lines.txt'), [DateTime]::UtcNow)
             $script:nextMetricChange = [DateTime]::UtcNow.AddMilliseconds(600)
         }
         return $false
-    } 'rolling polling time to include scheduled scans' 20
+    } 'read percentage to include scheduled scans' 20
+    Wait-For { [WtsWindowProbe]::Text($script:handle) -notmatch '(?m)^Refreshing\r?$' } 'metric scan completion' 20
     $afterScroll = [WtsWindowProbe]::ScrollPosition($viewport)
     [IO.File]::WriteAllText((Join-Path $fixture 'scroll.txt'), "before=$beforeScroll`nafter=$afterScroll`n")
     if ($afterScroll -ne $beforeScroll) { throw "Unchanged refresh reset the scroll position from $beforeScroll to $afterScroll" }
@@ -390,7 +392,7 @@ try {
     if ([WtsWindowProbe]::ScrollPosition($viewport) -ne $beforeScroll) { throw 'Count-only refresh reset viewport scroll' }
     $updatedAnchor = [WtsWindowProbe]::Top($card) - [WtsWindowProbe]::Top($viewport)
     if ($updatedAnchor -ne $cardScrolled) { throw "Count-only refresh moved the card anchor from $cardScrolled to $updatedAnchor" }
-    if ($updated -notmatch 'Polling [0-9]+\.[0-9]+s in last minute' -or $updated -match 'Polling interval') { throw 'Count refresh lost the rolling polling time' }
+    if ($updated -notmatch '\[read: (100|[0-9]{1,2})%\]' -or $updated -match 'Polling interval') { throw 'Count refresh lost the read percentage' }
     $foregroundOnRefresh = [WtsWindowProbe]::GetForegroundWindow()
     if ($foregroundOnRefresh -eq $script:handle) { throw 'Refresh took foreground focus' }
     if (([WtsWindowProbe]::GetWindowLongPtr($script:handle, -20).ToInt64() -band 0x08000000) -ne 0) { throw 'Window cannot be activated by clicking' }
@@ -423,8 +425,8 @@ try {
         sha256 = (Get-FileHash -LiteralPath $Binary -Algorithm SHA256).Hash
         ui_binary = $uiBinary
         ui_sha256 = $uiHash
-        initial_polling_seconds = $initialPollingSeconds
-        rolling_polling_time = $true
+        initial_read_percent = $initialReadPercent
+        read_percentage = $true
         frameless = $true
         gutter_scrollbar = $true
         idle_scrollbar_hidden = $true
@@ -448,7 +450,7 @@ try {
         exit_code = $process.ExitCode
         result = 'PASS'
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $fixture 'proof.json') -Encoding utf8NoBOM
-    Write-Host "PASS. Terminal detached, always on top, live counts, scroll preservation, rolling polling time, config error/recovery, registry reload, and clean close. Evidence at $fixture"
+    Write-Host "PASS. Terminal detached, always on top, live counts, scroll preservation, read percentage, config error/recovery, registry reload, and clean close. Evidence at $fixture"
 } finally {
     $env:HOME = $oldHome
     $env:USERPROFILE = $oldProfile

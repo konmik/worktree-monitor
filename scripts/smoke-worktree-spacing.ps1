@@ -90,11 +90,14 @@ try {
             $deadline = [DateTime]::UtcNow.AddSeconds(90)
             do {
                 $null = Assert-WindowBounds $window $original
-                $status = [WtsSpacingProbe]::Text([WtsSpacingProbe]::GetDlgItem($window, 1002))
-                if ($status -match '^LIVE|^ERROR') { break }
+                $rows = [WtsSpacingProbe]::Rows($viewport)
+                $pending = @($rows | Where-Object {
+                    $_.Text -match '\r?\nRefreshing$' -or ((Is-Worktree $_) -and $_.Text -notmatch '\r?\nS\s+\+\d+/-\d+|\r?\nCounts unavailable')
+                })
+                if ($pending.Count -eq 0 -and @($rows | Where-Object { Is-Worktree $_ }).Count -gt 0) { break }
                 Start-Sleep -Milliseconds 100
             } while ([DateTime]::UtcNow -lt $deadline)
-            if ($status -notmatch '^LIVE|^ERROR') { throw 'Startup did not finish' }
+            if ($pending.Count -ne 0 -or @($rows | Where-Object { Is-Worktree $_ }).Count -eq 0) { throw 'Startup did not finish' }
         }
         $bounds = Assert-WindowBounds $window $original
         $width = $bounds.Right - $bounds.Left

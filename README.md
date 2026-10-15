@@ -29,7 +29,7 @@ Each worktree shows its branch and `S +n/-n · T +n/-n · X +n/-n`. `S` counts s
 
 Git's ignore rules and binary attributes apply. Binary files have a separate count, not an invented line count. Ignored untracked files and submodule contents are not counted. Missing or unreadable worktrees show errors rather than zero changes.
 
-WTS installs filesystem monitors before scanning all worktrees once at startup. Later scan passes include only changed or newly discovered worktrees. All discovery and scanning runs serially, with at least ten seconds between the end of one pass and the start of the next. Changes during a pass remain queued for the next pass. Unchanged worktrees are not scanned again. There is no periodic rescan, backoff, or debounce. The window shows time spent scanning and discovering repositories during the last minute, not CPU time or time waiting between passes.
+WTS installs filesystem monitors before scanning all worktrees once at startup. Later scan passes include only changed or newly discovered worktrees. All discovery and scanning runs serially, with at least ten seconds between the end of one pass and the start of the next. Changes during a pass remain queued for the next pass. Unchanged worktrees are not scanned again. There is no periodic rescan, backoff, or debounce. The window shows `[read: N%]`, the percentage of the last minute spent scanning and discovering repositories, rounded to the nearest integer. This measures elapsed scan time, not CPU use or time waiting between passes.
 
 The monitor ignores changes inside Git-ignored folders, except tracked files and Git rule files that affect counts. On Windows, it filters native notifications before queuing monitoring work so parent folders can still be renamed. Changes to ignore rules update the filter.
 
@@ -63,7 +63,7 @@ pwsh -NoProfile -File scripts/smoke-refreshing.ps1
 pwsh -NoProfile -File scripts/smoke-refreshing.ps1 -SavedOrder
 ```
 
-The smoke checks use isolated temporary repositories and configuration. The window checks need an interactive Windows desktop. They check the real window, live counts, polling time, registry reload, saved visibility, drag redraws, and closing.
+The smoke checks use isolated temporary repositories and configuration. The window checks need an interactive Windows desktop. They check the real window, live counts, read percentage, registry reload, saved visibility, drag redraws, and closing.
 
 `pwsh -NoProfile -File scripts/capture-window.ps1 -Client` creates three real Git fixtures, verifies native accessibility, and captures the actual dashboard without surrounding desktop content. It leaves the image and fixture evidence under the OpenCode temporary directory and closes its own window.
 

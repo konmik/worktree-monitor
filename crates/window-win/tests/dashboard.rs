@@ -70,16 +70,22 @@ fn partial_errors_preserve_known_counts_and_missing_values() {
     let view = DashboardView::from_snapshot(&snapshot);
     assert_eq!(view.items.len(), 6);
     assert_eq!(view.items[2].display.caption(), "main\nS +4/-2 · binaries: 1");
-    assert_eq!(view.health.caption(Duration::from_secs(20)), "ERROR · Polling 20.0s in last minute");
+    assert_eq!(view.health, Health::Errors);
     assert_eq!(view.items[0].display.caption(), "Configuration error\nConfig: Invalid config");
     assert_eq!(view.items[3].display.caption(), "/broken\nCounts unavailable · binaries unavailable\nERROR (Git): Cannot inspect worktree");
     assert_eq!(view.items[4].display.caption(), "lost");
 }
 
 #[test]
-fn status_formats_polling_time_for_the_last_minute() {
-    let status = DisplayItem::Status { health: Health::Live, polling_time_last_minute: Duration::from_millis(1200) };
-    assert_eq!(status.caption(), "LIVE · Polling 1.2s in last minute");
+fn status_shows_rounded_read_percentage_for_the_last_minute() {
+    for (millis, percent) in [(0, 0), (299, 0), (300, 1), (1200, 2), (1800, 3), (60_000, 100), (120_000, 100)] {
+        for health in [Health::Scanning, Health::Live, Health::Errors] {
+            let status = DisplayItem::Status { health, polling_time_last_minute: Duration::from_millis(millis) };
+            assert_eq!(status.caption(), format!("[read: {percent}%]"));
+        }
+    }
+    let status = DisplayItem::Status { health: Health::Live, polling_time_last_minute: Duration::MAX };
+    assert_eq!(status.caption(), "[read: 100%]");
 }
 
 #[test]
@@ -98,7 +104,7 @@ fn branch_detached_and_unborn_are_distinct() {
 fn empty_bare_scanning_and_zero_measurements_are_truthful() {
     let empty = DashboardView::from_snapshot(&Snapshot::default());
     assert_eq!(empty.items[0].display.caption(), "No registered repositories.\n");
-    assert_eq!(empty.health.caption(Duration::from_secs(5)), "LIVE · Polling 5.0s in last minute");
+    assert_eq!(empty.health, Health::Live);
     let scanning = DashboardView::scanning();
     assert_eq!(scanning.health, Health::Scanning);
     assert!(scanning.items.is_empty());
@@ -159,7 +165,7 @@ fn launch_discovery_error_has_its_own_notice_and_error_health() {
     let snapshot = Snapshot::default();
     let mut view = DashboardView::from_snapshot(&snapshot);
     view.launch_error(&Error { kind: ErrorKind::Io, message: "Could not start Git".into() });
-    assert_eq!(view.health.caption(Duration::from_secs(5)), "ERROR · Polling 5.0s in last minute");
+    assert_eq!(view.health, Health::Errors);
     assert_eq!(view.items.len(), 2);
     assert_eq!(view.items[0].key, ItemKey::Launch);
     assert_eq!(view.items[0].display, DisplayItem::Notice {

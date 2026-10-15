@@ -1128,18 +1128,23 @@ function Invoke-EdgeScrollTest {
 
 function Get-StatusText {
     $status = @([WtsVisibilityNativeProbe]::Children($script:handle) | Where-Object {
-        $_.Parent -eq $script:handle -and $_.Class -ieq 'STATIC' -and $_.Text -match '^(SCANNING|LIVE|ERROR) · Polling '
+        $_.Parent -eq $script:handle -and $_.Class -ieq 'STATIC' -and $_.Text -match '^\[read: (100|[0-9]{1,2})%\]$'
     })
-    if ($status.Count -ne 1) { throw "Expected one polling status card, found $($status.Count)" }
+    if ($status.Count -ne 1) { throw "Expected one read indicator, found $($status.Count)" }
     [string]$status[0].Text
 }
 
 function Invoke-MetricPaintTest([array]$Cards, [string]$Path) {
+    $repo = Split-Path -Parent $Path
+    $attributes = Join-Path $repo '.git/info/attributes'
+    Run-Git $repo @('config', 'filter.wts-metric.clean', 'sleep 1; cat')
+    [IO.File]::WriteAllText($attributes, "lines.txt filter=wts-metric`n")
+    try {
     Clear-Paint $Cards
     $statusBefore = Get-StatusText
-    $initialMetric = [regex]::Match($statusBefore, 'Polling ([0-9]+\.[0-9]+)s in last minute')
-    if (-not $initialMetric.Success) { throw 'Initial polling duration is missing' }
-    $initialSeconds = [double]::Parse($initialMetric.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture)
+    $initialMetric = [regex]::Match($statusBefore, '\[read: (100|[0-9]{1,2})%\]')
+    if (-not $initialMetric.Success) { throw 'Initial read percentage is missing' }
+    $initialPercent = [int]$initialMetric.Groups[1].Value
     $metricAdvanced = $false
     $lastStatus = $statusBefore
     $statusChanges = 0
@@ -1148,11 +1153,10 @@ function Invoke-MetricPaintTest([array]$Cards, [string]$Path) {
     $badCards = 0
     $minimumDeadline = [DateTime]::UtcNow.AddMilliseconds(1400)
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
-    $contents = [IO.File]::ReadAllBytes($Path)
     $nextChange = [DateTime]::UtcNow
     while ([DateTime]::UtcNow -lt $deadline -and (-not $metricAdvanced -or [DateTime]::UtcNow -lt $minimumDeadline)) {
         if (-not $metricAdvanced -and [DateTime]::UtcNow -ge $nextChange) {
-            [IO.File]::WriteAllBytes($Path, $contents)
+            [IO.File]::SetLastWriteTimeUtc($Path, [DateTime]::UtcNow)
             $nextChange = [DateTime]::UtcNow.AddMilliseconds(600)
             $minimumDeadline = [DateTime]::UtcNow.AddMilliseconds(1400)
         }
@@ -1168,8 +1172,8 @@ function Invoke-MetricPaintTest([array]$Cards, [string]$Path) {
             if ($update.Pending) { [void][WtsVisibilityNativeProbe]::UpdateWindow($Card.Handle) }
         }
         $status = Get-StatusText
-        $metric = [regex]::Match($status, 'Polling ([0-9]+\.[0-9]+)s in last minute')
-        if ($metric.Success -and $status.StartsWith('LIVE') -and [double]::Parse($metric.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) -gt $initialSeconds) { $metricAdvanced = $true }
+        $metric = [regex]::Match($status, '\[read: (100|[0-9]{1,2})%\]')
+        if ($metric.Success -and [int]$metric.Groups[1].Value -gt $initialPercent) { $metricAdvanced = $true }
         if ($status -cne $lastStatus) { $statusChanges++ }
         $lastStatus = $status
         $samples++
@@ -1177,7 +1181,7 @@ function Invoke-MetricPaintTest([array]$Cards, [string]$Path) {
     }
     Clear-Paint $Cards
     if ($badViewport -gt 0 -or $badCards -gt 0) { throw "Metric-only updates produced broad paint invalidation (viewport=$badViewport cards=$badCards)" }
-    if (-not $metricAdvanced) { throw 'No increase in polling time was observed during the paint check' }
+    if (-not $metricAdvanced) { throw 'No increase in read percentage was observed during the paint check' }
     [ordered]@{
         result = 'PASS'
         maximum_window_ms = 15000
@@ -1185,9 +1189,13 @@ function Invoke-MetricPaintTest([array]$Cards, [string]$Path) {
         status_before = $statusBefore
         status_after = $lastStatus
         status_changes = $statusChanges
-        observed_polling_time_update = $true
+        observed_read_percentage_update = $true
         broad_viewport_updates = $badViewport
         broad_card_updates = $badCards
+    }
+    } finally {
+        Remove-Item -LiteralPath $attributes
+        Run-Git $repo @('config', '--unset', 'filter.wts-metric.clean')
     }
 }
 

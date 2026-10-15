@@ -509,8 +509,9 @@ unsafe fn layout(window: HWND, state: &mut State, restore: Option<(ItemKey, i32)
     let resources = state.resources.as_ref().unwrap();
     let dc = GetDC(window);
     let toggle_width = if state.controls_visible { wrapped_width(dc, "[ ] Show all", resources.font) } else { 0 };
+    let space_width = wrapped_width(dc, " ", resources.font);
     ReleaseDC(window, dc);
-    let dashboard = match layout::dashboard(client.right, client.bottom, state.dpi, resources.typography, toggle_width) {
+    let dashboard = match layout::dashboard(client.right, client.bottom, state.dpi, resources.typography, space_width, toggle_width) {
         Ok(layout) => layout,
         Err(error) => { state.failure = Some(error); PostMessageW(window, WM_CLOSE, 0, 0); return; }
     };
@@ -620,7 +621,7 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
         DisplayItem::Status { health, .. } => {
             let color = match health { Health::Live => GREEN, Health::Errors => RED, Health::Scanning => MUTED };
             let y = (height - typography.cell) / 2;
-            text(dc, &format!("> {caption}"), bounds(0, y, width, y + typography.cell), resources.font, color, line);
+            text(dc, &caption, bounds(0, y, width, y + typography.cell), resources.font, color, line);
         }
         DisplayItem::Repository { bare, .. } => {
             draw_name(dc, lines[0], line_bounds(s(14), 0, heading_right), resources.font,

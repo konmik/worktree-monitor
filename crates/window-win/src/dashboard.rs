@@ -8,18 +8,6 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Health { Scanning, Live, Errors }
 
-impl Health {
-    pub fn caption(self, polling_time_last_minute: Duration) -> String {
-        let label = match self { Self::Scanning => "SCANNING", Self::Live => "LIVE", Self::Errors => "ERROR" };
-        format!("{label} · Polling {} in last minute", duration_caption(polling_time_last_minute))
-    }
-}
-
-fn duration_caption(duration: Duration) -> String {
-    let tenths = duration.as_millis().saturating_add(50) / 100;
-    format!("{}.{:01}s", tenths / 10, tenths % 10)
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum ItemKey {
     Configuration,
@@ -101,7 +89,10 @@ impl DisplayItem {
 
     pub fn caption(&self) -> String {
         match self {
-            Self::Status { health, polling_time_last_minute } => health.caption(*polling_time_last_minute),
+            Self::Status { polling_time_last_minute, .. } => {
+                let percent = (polling_time_last_minute.as_millis().saturating_add(300) / 600).min(100);
+                format!("[read: {percent}%]")
+            }
             Self::Repository { name, bare } => {
                 let mut text = name.clone();
                 if *bare { text.push_str("\nNo working trees (bare repository)."); }
