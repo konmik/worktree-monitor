@@ -634,8 +634,25 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
                     draw_name(dc, lines[0], line_bounds(inset, 0, inset + heading_width), resources.font,
                         if dragging { GREEN } else { WHITE }, false, card.refreshing);
                     let y = card.spacing.top(typography, 1);
-                    text(dc, &stats.counts.to_string(), bounds(inset, y, right, y + typography.cell), resources.font,
-                        if dragging { GREEN } else { MUTED }, line);
+                    let source_changed = stats.counts.source.additions > 0 || stats.counts.source.deletions > 0;
+                    let mut parts = vec![
+                        ("S ".to_owned(), MUTED),
+                        (format!("+{}", stats.counts.source.additions), if source_changed { GREEN } else { MUTED }),
+                        ("/".to_owned(), MUTED),
+                        (format!("-{}", stats.counts.source.deletions), if source_changed { RED } else { MUTED }),
+                    ];
+                    if let Some((_, suffix)) = stats.counts.to_string().split_once(" · ") {
+                        parts.push((format!(" · {suffix}"), MUTED));
+                    }
+                    let mut x = inset;
+                    for (part, color) in parts {
+                        let part_width = wrapped_width(dc, &part, resources.font).min(right.saturating_sub(x));
+                        if part_width > 0 {
+                            text(dc, &part, bounds(x, y, (x + part_width).min(right), y + typography.cell), resources.font,
+                                if dragging { GREEN } else { color }, line);
+                        }
+                        x = (x + part_width).min(right);
+                    }
                 }
                 Err(error) => {
                     draw_name(dc, &path, line_bounds(inset, 0, inset + heading_width), resources.font,
