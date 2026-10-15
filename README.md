@@ -29,7 +29,7 @@ Git's ignore rules and binary attributes apply. Binary files have a separate cou
 
 WTS installs filesystem monitors before scanning all worktrees once at startup. Later scan passes include only changed or newly discovered worktrees. All discovery and scanning runs serially, with at least ten seconds between the end of one pass and the start of the next. Changes during a pass remain queued for the next pass. Unchanged worktrees are not scanned again. There is no periodic rescan, backoff, or debounce. The window shows time spent scanning and discovering repositories during the last minute, not CPU time or time waiting between passes.
 
-Repository headers and worktree cards show **Refreshing** during scans. Each indicator stays visible for at least one second. Existing counts remain visible while a worktree refreshes.
+Repository headers and worktree cards show a teal circular refresh arrow icon during scans. Each icon stays visible for at least one second. Existing counts remain visible while a worktree refreshes.
 
 ## Configuration
 

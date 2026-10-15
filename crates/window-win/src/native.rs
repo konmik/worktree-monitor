@@ -301,21 +301,32 @@ unsafe fn position_cards(state: &State) {
             SetWindowPos(window, null_mut(), rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, flags);
         }
     }
-    for card in &state.cards { position_action(card, state.width, state.dpi); }
+    if let Some(resources) = &state.resources {
+        let dc = GetDC(state.viewport);
+        for card in &state.cards { position_action(card, state.width, state.dpi, dc, resources); }
+        ReleaseDC(state.viewport, dc);
+    }
     InvalidateRect(state.viewport, null(), 0);
 }
 
-unsafe fn position_action(card: &Card, width: i32, dpi: i32) {
+unsafe fn position_action(card: &Card, width: i32, dpi: i32, dc: HDC, resources: &Resources) {
     let Some(action) = card.action else { return; };
-    let action_width = scaled(WORKTREE_ACTION_WIDTH, dpi).min(width.max(1));
+    let (_, action_left, action_width) = worktree_header_geometry(card, width, dpi, dc, resources);
     let action_height = scaled(24, dpi).min(card.height.max(1));
-    let action_left = worktree_action_left(width, dpi);
     SetWindowPos(action, null_mut(), action_left, scaled(7, dpi), action_width, action_height,
         SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
 }
 
-fn worktree_action_left(width: i32, dpi: i32) -> i32 {
-    (width - scaled(WORKTREE_ACTION_WIDTH, dpi).min(width.max(1)) - scaled(10, dpi)).max(0)
+unsafe fn worktree_header_geometry(card: &Card, width: i32, dpi: i32, dc: HDC, resources: &Resources) -> (i32, i32, i32) {
+    let s = |value| scaled(value, dpi);
+    let inset = worktree_inset(width, dpi);
+    let available = (width - inset * 2 - s(34)).max(0);
+    let action_width = s(WORKTREE_ACTION_WIDTH).min(available);
+    let caption = card.display.caption();
+    let padding = if matches!(card.display, DisplayItem::Worktree { result: Ok(_), .. }) { s(18) } else { 0 };
+    let heading_width = (wrapped_width(dc, caption.lines().next().unwrap_or(""), resources.fonts[0]) + padding)
+        .min((available - action_width).max(0));
+    (heading_width, inset + heading_width + s(8), action_width)
 }
 
 unsafe fn scroll_to(state: &mut State, position: i32) {
@@ -428,9 +439,10 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
     let bounds = |left, top, right, bottom| RECT { left: rect.left + left, top: rect.top + top,
         right: rect.left + right, bottom: rect.top + bottom };
     let inline_indicator = width >= s(360);
+    let (worktree_heading_width, action_left, action_width) = worktree_header_geometry(card, width, state.dpi, dc, resources);
     let indicator_right = if matches!(card.display, DisplayItem::Repository { .. }) { width - s(12) }
-        else { worktree_action_left(width, state.dpi) - s(8) };
-    let indicator_left = (indicator_right - wrapped_width(dc, "Refreshing", resources.fonts[0])).max(s(14));
+        else { (width - s(WORKTREE_ACTION_WIDTH + 18)).max(action_left + action_width + s(26)) };
+    let indicator_left = (indicator_right - s(18)).max(s(14));
     let heading_right = if inline_indicator { indicator_left - s(8) } else { indicator_right };
     fill(dc, rect, resources.background);
     match &card.display {
@@ -453,7 +465,7 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
             let inset = worktree_inset(width, state.dpi);
             let text_width = worktree_text_width(width, state.dpi);
             let right = inset + text_width;
-            let heading_width = (heading_right - inset).max(0).min(text_width);
+            let heading_width = worktree_heading_width.min(text_width);
             let path = path.display().to_string();
             match result {
                 Ok(stats) => {
@@ -499,7 +511,7 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
             SelectObject(dc, resources.border);
             RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, s(10), s(10));
             let inset = worktree_inset(width, state.dpi);
-            let heading_width = (heading_right - inset).max(0);
+            let heading_width = worktree_heading_width;
             let fitted = ellipsize_start(&path.display().to_string(), heading_width, |value| wrapped_width(dc, value, resources.fonts[0]));
             text(dc, &fitted, bounds(inset, s(12), inset + heading_width, s(32)), resources.fonts[0], MUTED, DT_SINGLELINE);
             text(dc, lines[1], bounds(inset, s(36), width - inset, s(57)), resources.fonts[0], MUTED, line);
@@ -514,8 +526,17 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
     }
     if card.refreshing {
         let indicator = if inline_indicator { bounds(indicator_left, s(12), indicator_right, s(32)) }
-            else { bounds(s(14), height - s(24), width - s(12), height - s(4)) };
-        text(dc, "Refreshing", indicator, resources.fonts[0], TEAL, line);
+            else { bounds(s(14), height - s(24), s(32), height - s(4)) };
+        let x = indicator.left;
+        let y = indicator.top;
+        SelectObject(dc, resources.accent);
+        SetArcDirection(dc, AD_CLOCKWISE);
+        Arc(dc, x + s(4), y + s(6), x + s(12), y + s(14),
+            x + s(12), y + s(10), x + s(8), y + s(6));
+        SelectObject(dc, resources.teal);
+        let arrow = [POINT { x: x + s(10), y: y + s(6) },
+            POINT { x: x + s(7), y: y + s(4) }, POINT { x: x + s(7), y: y + s(8) }];
+        Polygon(dc, arrow.as_ptr(), arrow.len() as i32);
     }
     if let Some(target) = state.drag.as_ref().and_then(|drag| drag.target.as_ref()) {
         let y = if target.marker == card.top { Some(0) }
