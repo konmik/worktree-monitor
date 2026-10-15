@@ -84,6 +84,17 @@ public static class WtsResizeProbe {
         using (var graphics = Graphics.FromImage(bitmap)) { graphics.CopyFromScreen(origin.X, origin.Y, 0, 0, bitmap.Size); }
         return bitmap;
     }
+    public static string VerticalGeometry(IntPtr parent) {
+        var rows = new List<string>();
+        EnumChildWindows(parent, (handle, data) => {
+            if (GetParent(handle) != parent) return true;
+            Rect rect;
+            GetWindowRect(handle, out rect);
+            rows.Add(rect.Top + "," + rect.Bottom);
+            return true;
+        }, IntPtr.Zero);
+        return string.Join("\n", rows);
+    }
     public static List<string> Wrap(IntPtr dc, string text, int width) {
         var result = new List<string>();
         foreach (var paragraph in text.Split('\n')) {
@@ -140,7 +151,7 @@ public static class WtsResizeProbe {
                 var cell = new Rect();
                 DrawText(dc, "Mg", 2, ref cell, 0x0c20);
                 int advance = (int)Math.Round(12 * 1.2 * dpi / 96, MidpointRounding.AwayFromZero);
-                int lineCount = 2 + lines.Count + (card.Right < 360 * dpi / 96 ? 1 : 0);
+                int lineCount = 2 + lines.Count;
                 int expected = 8 * dpi / 96 + (lineCount - 1) * advance + cell.Bottom;
                 if (card.Bottom != expected) throw new InvalidOperationException("Wrapped error height " + card.Bottom + " disagrees with independently measured height " + expected + " at DPI " + dpi + " and width " + card.Right);
                 if (verifyPixels) {
@@ -284,6 +295,14 @@ try {
     } 'fixture counts'
     $workArea = [WtsResizeProbe+Rect]::new()
     if (-not [WtsResizeProbe]::SystemParametersInfo(0x0030, 0, [ref]$workArea, 0)) { throw 'Work area unavailable' }
+    $verticalGeometry = $null
+    foreach ($width in @(800, 560, 550, 540, 530, 380, 180, 800)) {
+        if (-not [WtsResizeProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, $workArea.Left + 32, $workArea.Top + 32, $width, 720, 20)) { throw 'Spacing resize failed' }
+        Compare-Repaint "spacing-$width"
+        $currentGeometry = [WtsResizeProbe]::VerticalGeometry($viewport)
+        if ($null -eq $verticalGeometry) { $verticalGeometry = $currentGeometry }
+        elseif ($currentGeometry -ne $verticalGeometry) { throw "Unwrapped rows changed vertical spacing at width $width" }
+    }
     $index = 0
     foreach ($size in @(@(640, 540), @(800, 720), @(460, 330), @(740, 620), @(600, 130), @(640, 540), @(380, 620), @(800, 720))) {
         $index++

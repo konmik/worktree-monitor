@@ -273,15 +273,14 @@ unsafe fn wrapped_lines(dc: HDC, text: &str, width: i32, font: HFONT) -> Vec<Str
 
 unsafe fn item_height(card: &Card, dc: HDC, width: i32, dpi: i32, resources: &Resources) -> i32 {
     let s = |value| scaled(value, dpi);
-    let indicator_lines = usize::from(!inline_refresh(&card.display, card.spacing, width, dpi));
     let lines = match &card.display {
-        DisplayItem::Repository { bare, .. } => 1 + usize::from(*bare) + indicator_lines,
-        DisplayItem::PendingWorktree { .. } => 2 + indicator_lines,
+        DisplayItem::Repository { bare, .. } => 1 + usize::from(*bare),
+        DisplayItem::PendingWorktree { .. } => 2,
         DisplayItem::Worktree { result, .. } => {
             let text_width = worktree_text_width(width, dpi);
             match result {
-                Ok(_) => 2 + indicator_lines,
-                Err(error) => 2 + indicator_lines + wrapped_lines(dc, &format!("ERROR ({:?}): {}", error.kind, error.message), text_width, resources.font).len(),
+                Ok(_) => 2,
+                Err(error) => 2 + wrapped_lines(dc, &format!("ERROR ({:?}): {}", error.kind, error.message), text_width, resources.font).len(),
             }
         }
         DisplayItem::Notice { message, .. } => 1 + if message.is_empty() { 0 } else {
@@ -298,13 +297,44 @@ fn attached_rows(previous: &DisplayItem, next: &DisplayItem) -> bool {
         && matches!(next, DisplayItem::Worktree { .. } | DisplayItem::PendingWorktree { .. })
 }
 
-fn inline_refresh(display: &DisplayItem, spacing: RowSpacing, width: i32, dpi: i32) -> bool {
-    width >= scaled(360, dpi) || spacing.gap_after == 0 && matches!(display, DisplayItem::Repository { bare: false, .. })
-}
-
 #[cfg(test)]
 mod row_tests {
     use super::*;
+
+    #[test]
+    fn narrowing_only_adds_height_for_wrapped_text() {
+        use wts_core::{Counts, Error, ErrorKind, Head, WorktreeStats};
+        let items = [
+            DisplayItem::Repository { name: "repository".into(), bare: false },
+            DisplayItem::Repository { name: "bare".into(), bare: true },
+            DisplayItem::PendingWorktree { path: "branch".into() },
+            DisplayItem::Worktree { path: "branch".into(), result: Ok(WorktreeStats {
+                head: Head::Branch("master".into()), counts: Counts::default(),
+            }) },
+            DisplayItem::Worktree { path: "branch".into(), result: Err(Error {
+                kind: ErrorKind::Git, message: "failure".into(),
+            }) },
+        ];
+        for dpi in [96, 120, 144, 192] {
+            let resources = unsafe { Resources::new(dpi) }.unwrap();
+            let dc = unsafe { GetDC(null_mut()) };
+            for display in &items {
+                for attached_before in [false, true] {
+                    let card = Card { window: null_mut(), action: None, action_hidden: None, key: None,
+                        display: display.clone(), refreshing: false, top: 0, height: 0, action_rect: None,
+                        spacing: RowSpacing::new(resources.typography, attached_before, false) };
+                    let height = unsafe { item_height(&card, dc, scaled(800, dpi), dpi, &resources) };
+                    for width in [359, 360, 361] {
+                        assert_eq!(unsafe { item_height(&card, dc, scaled(width, dpi), dpi, &resources) }, height);
+                    }
+                    if matches!(display, DisplayItem::Worktree { result: Err(_), .. }) {
+                        assert!(unsafe { item_height(&card, dc, scaled(100, dpi), dpi, &resources) } > height);
+                    }
+                }
+            }
+            unsafe { ReleaseDC(null_mut(), dc); }
+        }
+    }
 
     #[test]
     fn attached_narrow_heading_keeps_refresh_inline() {
@@ -320,9 +350,6 @@ mod row_tests {
             let spacing = RowSpacing::new(typography, false, true);
             let card = Card { window: null_mut(), action: None, action_hidden: None, key: None,
                 display: repository.clone(), refreshing: false, top: 0, height: 0, action_rect: None, spacing };
-            assert!(inline_refresh(&repository, spacing, scaled(180, dpi), dpi));
-            assert!(!inline_refresh(&branch, spacing, scaled(180, dpi), dpi));
-            assert!(!inline_refresh(&repository, RowSpacing::new(typography, false, false), scaled(180, dpi), dpi));
             assert_eq!(unsafe { item_height(&card, null_mut(), scaled(180, dpi), dpi, &resources) },
                 typography.padding + typography.cell.max(typography.advance));
         }
@@ -507,7 +534,6 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
     let lines: Vec<_> = caption.lines().collect();
     let bounds = |left, top, right, bottom| RECT { left: rect.left + left, top: rect.top + top,
         right: rect.left + right, bottom: rect.top + bottom };
-    let inline_indicator = inline_refresh(&card.display, card.spacing, width, state.dpi);
     let typography = resources.typography;
     let line_bounds = |left, index, right| {
         let top = card.spacing.top(typography, index);
@@ -516,7 +542,7 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
     let indicator_right = if matches!(card.display, DisplayItem::Repository { .. }) { width - s(12) }
         else { card.action_rect.map_or(width - s(12), |rect| rect.left - s(8)) };
     let indicator_left = (indicator_right - s(12)).max(s(14));
-    let heading_right = if inline_indicator { indicator_left - s(8) } else { indicator_right };
+    let heading_right = indicator_left - s(8);
     let dragging = state.drag.as_ref().is_some_and(|drag| drag.source_handle == card.window);
     fill(dc, rect, resources.background);
     match &card.display {
@@ -526,7 +552,7 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
             text(dc, &format!("> {caption}"), bounds(0, y, width, y + typography.cell), resources.font, color, line);
         }
         DisplayItem::Repository { bare, .. } => {
-            text(dc, lines[0], line_bounds(s(14), 0, if inline_indicator { heading_right } else { width - s(12) }), resources.font, if dragging { GREEN } else { TEAL }, line);
+            text(dc, lines[0], line_bounds(s(14), 0, heading_right), resources.font, if dragging { GREEN } else { TEAL }, line);
             if *bare { text(dc, lines[1], line_bounds(s(14), 1, width - s(12)), resources.font, MUTED, line); }
         }
         DisplayItem::Worktree { path, result } => {
@@ -580,9 +606,7 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
         }
     }
     if card.refreshing {
-        let indicator = if inline_indicator { line_bounds(indicator_left, 0, indicator_right) }
-            else { bounds(s(14), height - card.spacing.bottom - typography.cell, width - s(12), height - card.spacing.bottom) };
-        text(dc, "*", indicator, resources.font, TEAL, DT_SINGLELINE);
+        text(dc, "*", line_bounds(indicator_left, 0, indicator_right), resources.font, TEAL, DT_SINGLELINE);
     }
     if let Some(target) = state.drag.as_ref().and_then(|drag| drag.target.as_ref()) {
         let y = if target.marker == card.top { Some(0) }
