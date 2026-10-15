@@ -16,7 +16,7 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{SetScrollInfo, SetWindowTheme, DRAWITEMSTRUCT,
     ODT_BUTTON, ODT_STATIC, ODS_CHECKED, ODS_DISABLED, ODS_FOCUS, ODS_GRAYED,
     ODS_HOTLIGHT, ODS_SELECTED, BST_CHECKED};
-use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
+use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetCapture, GetFocus, IsWindowEnabled, ReleaseCapture, SetCapture, SetFocus};
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
@@ -95,6 +95,7 @@ struct Card {
 struct State {
     monitor: Monitor,
     viewport: HWND,
+    scrollbar: HWND,
     fixed: Vec<Card>,
     cards: Vec<Card>,
     resources: Option<Resources>,
@@ -106,6 +107,7 @@ struct State {
     scroll: i32,
     content: i32,
     page: i32,
+    scrollbar_idle: Option<Instant>,
     width: i32,
     wheel_remainder: i32,
     next_card_id: usize,
@@ -153,6 +155,10 @@ fn worktree_text_width(width: i32, dpi: i32) -> i32 {
     (width - worktree_inset(width, dpi) * 2).max(1)
 }
 
+unsafe fn scrollbar_width(dpi: i32) -> i32 {
+    GetSystemMetricsForDpi(SM_CXVSCROLL, dpi.max(96) as u32).max(scaled(16, dpi))
+}
+
 unsafe fn set_item(card: &mut Card, display: DisplayItem) {
     if card.display != display {
         if matches!(card.display, DisplayItem::PendingWorktree { .. }) != matches!(display, DisplayItem::PendingWorktree { .. }) {
@@ -168,7 +174,12 @@ unsafe fn create_card(parent: HWND, id: usize, action_id: Option<usize>, key: Op
     let window = CreateWindowExW(WS_EX_CONTROLPARENT, wide("STATIC").as_ptr(), wide(&display.caption()).as_ptr(),
         WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | STATIC_OWNERDRAW | STATIC_NOTIFY, 0, 0, 1, 1, parent, id as _, GetModuleHandleW(null()), null());
     if window.is_null() { return None; }
-    if key.as_ref().is_some_and(draggable) && SetWindowSubclass(window, Some(card_procedure), 1, 0) == 0 {
+    let subclassed = if key.is_some() {
+        SetWindowSubclass(window, Some(card_procedure), 1, 0)
+    } else {
+        SetWindowSubclass(window, Some(edge_procedure), 1, 0)
+    };
+    if subclassed == 0 {
         DestroyWindow(window);
         return None;
     }
@@ -178,6 +189,11 @@ unsafe fn create_card(parent: HWND, id: usize, action_id: Option<usize>, key: Op
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32, 0, 0, 1, 1, window,
             action_id as _, GetModuleHandleW(null()), null());
         if action.is_null() {
+            DestroyWindow(window);
+            return None;
+        }
+        if SetWindowSubclass(action, Some(edge_procedure), 1, 0) == 0 {
+            DestroyWindow(action);
             DestroyWindow(window);
             return None;
         }
@@ -318,22 +334,50 @@ fn worktree_action_left(width: i32, dpi: i32) -> i32 {
     (width - scaled(WORKTREE_ACTION_WIDTH, dpi).min(width.max(1)) - scaled(10, dpi)).max(0)
 }
 
+unsafe fn wake_scrollbar(state: &mut State) {
+    if state.scrollbar.is_null() { return; }
+    if state.content > state.page {
+        ShowWindow(state.scrollbar, SW_SHOWNOACTIVATE);
+        state.scrollbar_idle = Some(Instant::now() + Duration::from_secs(3));
+    } else {
+        ShowWindow(state.scrollbar, SW_HIDE);
+        state.scrollbar_idle = None;
+    }
+}
+
+unsafe fn update_scrollbar(state: &mut State, activity: bool) {
+    if state.scrollbar.is_null() { return; }
+    if state.content <= state.page {
+        ShowWindow(state.scrollbar, SW_HIDE);
+        state.scrollbar_idle = None;
+    } else if activity {
+        wake_scrollbar(state);
+    }
+}
+
+unsafe fn set_scroll_info(state: &State) {
+    let info = SCROLLINFO { cbSize: std::mem::size_of::<SCROLLINFO>() as u32, fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
+        nMin: 0, nMax: (state.content - 1).max(0), nPage: state.page.max(0) as u32, nPos: state.scroll, ..std::mem::zeroed() };
+    if !state.scrollbar.is_null() { SetScrollInfo(state.scrollbar, SB_CTL, &info, 1); }
+}
+
 unsafe fn scroll_to(state: &mut State, position: i32) {
     let position = position.clamp(0, (state.content - state.page).max(0));
     if position != state.scroll {
         state.scroll = position;
-        let info = SCROLLINFO { cbSize: std::mem::size_of::<SCROLLINFO>() as u32, fMask: SIF_POS, nPos: position, ..std::mem::zeroed() };
-        SetScrollInfo(state.viewport, SB_VERT, &info, 1);
+        set_scroll_info(state);
         position_cards(state);
         let marker = state.drag.as_ref().and_then(|drag| drag.target.as_ref().map(|target| target.marker));
         let marker_rect = marker.and_then(|marker| project_marker(state, marker));
         if let Some(drag) = state.drag.as_mut() { drag.marker_rect = marker_rect; }
     }
+    wake_scrollbar(state);
 }
 
-unsafe fn layout(window: HWND, state: &mut State, restore: Option<(ItemKey, i32)>) {
+unsafe fn layout(window: HWND, state: &mut State, restore: Option<(ItemKey, i32)>, scrollbar_activity: bool) {
     if state.resources.is_none() { return; }
     if state.fixed.len() != 1 || state.viewport.is_null() { return; }
+    let was_overflowing = state.content > state.page;
     let mut client: RECT = std::mem::zeroed();
     if GetClientRect(window, &mut client) == 0 || client.right <= 0 || client.bottom <= 0 { return; }
     let s = |value| scaled(value, state.dpi);
@@ -343,43 +387,42 @@ unsafe fn layout(window: HWND, state: &mut State, restore: Option<(ItemKey, i32)
     let gap = s(if tiny { 5 } else if short { 8 } else { 12 });
     let status_height = s(20);
     let header = status_height;
-    let width = (client.right - margin * 2).max(1);
+    let available = (client.right - margin * 2).max(1);
+    let gutter = scrollbar_width(state.dpi);
+    let width = available.saturating_sub(gutter).max(1);
     let toggle_width = scaled(104, state.dpi).min(width);
     let toggle_height = scaled(24, state.dpi).min(status_height);
     MoveWindow(state.fixed[0].window, margin, margin, (width - toggle_width).max(1), status_height, 0);
     MoveWindow(state.show_all_button, margin + width - toggle_width, margin + (status_height - toggle_height) / 2,
         toggle_width, toggle_height, 0);
     let top = margin + header + gap;
-    let page = (client.bottom - top - margin).max(1);
+    let page = (client.bottom - top).max(1);
     MoveWindow(state.viewport, margin, top, width, page, 0);
+    if !state.scrollbar.is_null() {
+        MoveWindow(state.scrollbar, margin + width, top, available.saturating_sub(width).max(1), page, 0);
+    }
     let mut viewport: RECT = std::mem::zeroed();
     GetClientRect(state.viewport, &mut viewport);
     state.width = viewport.right.max(1);
     state.page = viewport.bottom.max(1);
-    for pass in 0..2 {
-        let resources = state.resources.as_ref().unwrap();
-        let dc = GetDC(window);
-        let mut y: i32 = 0;
-        for card in &mut state.cards {
-            card.top = y;
-            card.height = item_height(card, dc, state.width, state.dpi, resources);
-            y = y.saturating_add(card.height).saturating_add(s(8));
-        }
-        ReleaseDC(window, dc);
-        state.content = y.saturating_sub(s(8)).max(0);
-        if let Some((key, offset)) = &restore {
-            if let Some(card) = state.cards.iter().find(|card| card.key.as_ref() == Some(key)) {
-                state.scroll = card.top.saturating_add(*offset);
-            }
-        }
-        state.scroll = state.scroll.clamp(0, (state.content - state.page).max(0));
-        let info = SCROLLINFO { cbSize: std::mem::size_of::<SCROLLINFO>() as u32, fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
-            nMin: 0, nMax: (state.content - 1).max(0), nPage: state.page as u32, nPos: state.scroll, ..std::mem::zeroed() };
-        SetScrollInfo(state.viewport, SB_VERT, &info, 1);
-        GetClientRect(state.viewport, &mut viewport);
-        if state.width == viewport.right.max(1) || pass == 1 { break; }
-        state.width = viewport.right.max(1);
+    let resources = state.resources.as_ref().unwrap();
+    let dc = GetDC(window);
+    let mut y: i32 = 0;
+    for card in &mut state.cards {
+        card.top = y;
+        card.height = item_height(card, dc, state.width, state.dpi, resources);
+        y = y.saturating_add(card.height).saturating_add(s(8));
     }
+    ReleaseDC(window, dc);
+    state.content = y.saturating_sub(s(8)).max(0);
+    if let Some((key, offset)) = &restore {
+        if let Some(card) = state.cards.iter().find(|card| card.key.as_ref() == Some(key)) {
+            state.scroll = card.top.saturating_add(*offset);
+        }
+    }
+    state.scroll = state.scroll.clamp(0, (state.content - state.page).max(0));
+    set_scroll_info(state);
+    update_scrollbar(state, scrollbar_activity || !was_overflowing && state.content > state.page);
     position_cards(state);
     RedrawWindow(window, null(), null_mut(), RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME);
 }
@@ -692,6 +735,7 @@ unsafe fn draw_item(state: &State, lparam: LPARAM) -> LRESULT {
 }
 
 unsafe fn handle_scroll(state: &mut State, wparam: WPARAM) {
+    wake_scrollbar(state);
     let code = (wparam & 0xffff) as i32;
     let line = scaled(32, state.dpi);
     let page = (state.page - line).max(line);
@@ -704,7 +748,7 @@ unsafe fn handle_scroll(state: &mut State, wparam: WPARAM) {
         SB_BOTTOM => state.content,
         SB_THUMBTRACK | SB_THUMBPOSITION => {
             let mut info = SCROLLINFO { cbSize: std::mem::size_of::<SCROLLINFO>() as u32, fMask: SIF_TRACKPOS, ..std::mem::zeroed() };
-            if GetScrollInfo(state.viewport, SB_VERT, &mut info) == 0 { return; }
+            if state.scrollbar.is_null() || GetScrollInfo(state.scrollbar, SB_CTL, &mut info) == 0 { return; }
             info.nTrackPos
         }
         _ => return,
@@ -728,8 +772,6 @@ unsafe fn keyboard(state: &mut State, key: WPARAM) -> bool {
     true
 }
 
-fn draggable(key: &ItemKey) -> bool { matches!(key, ItemKey::Repository(_) | ItemKey::Worktree(_, _)) }
-
 fn reorderable(state: &State, key: &ItemKey) -> bool {
     let Some(update) = &state.latest else { return false; };
     match key {
@@ -745,6 +787,73 @@ fn reorderable(state: &State, key: &ItemKey) -> bool {
 
 fn mouse_point(lparam: LPARAM) -> POINT {
     POINT { x: (lparam as u16 as i16) as i32, y: ((lparam >> 16) as u16 as i16) as i32 }
+}
+
+#[derive(Clone, Copy)]
+enum NativeHit {
+    Edge(LRESULT),
+    Child,
+    Empty,
+}
+
+unsafe fn resize_hit(window: HWND, point: POINT) -> Option<LRESULT> {
+    if IsZoomed(window) != 0 { return None; }
+    let mut rect: RECT = std::mem::zeroed();
+    if GetWindowRect(window, &mut rect) == 0 || point.x < rect.left || point.x >= rect.right
+        || point.y < rect.top || point.y >= rect.bottom { return None; }
+    let dpi = GetDpiForWindow(window).max(96) as i32;
+    let frame_x = (GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi as u32)
+        + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi as u32)).max(scaled(4, dpi));
+    let frame_y = (GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi as u32)
+        + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi as u32)).max(scaled(4, dpi));
+    let left = point.x < rect.left + frame_x;
+    let right = point.x >= rect.right - frame_x;
+    let top = point.y < rect.top + frame_y;
+    let bottom = point.y >= rect.bottom - frame_y;
+    Some(match (left, right, top, bottom) {
+        (true, _, true, _) => HTTOPLEFT as LRESULT,
+        (_, true, true, _) => HTTOPRIGHT as LRESULT,
+        (true, _, _, true) => HTBOTTOMLEFT as LRESULT,
+        (_, true, _, true) => HTBOTTOMRIGHT as LRESULT,
+        (_, _, true, _) => HTTOP as LRESULT,
+        (_, _, _, true) => HTBOTTOM as LRESULT,
+        (true, _, _, _) => HTLEFT as LRESULT,
+        (_, true, _, _) => HTRIGHT as LRESULT,
+        _ => return None,
+    })
+}
+
+unsafe fn native_hit_test(root: HWND, viewport: HWND, point: POINT) -> Option<NativeHit> {
+    if let Some(hit) = resize_hit(root, point) { return Some(NativeHit::Edge(hit)); }
+    let mut client = point;
+    if ScreenToClient(root, &mut client) == 0 { return None; }
+    let mut bounds: RECT = std::mem::zeroed();
+    if GetClientRect(root, &mut bounds) == 0 || client.x < 0 || client.x >= bounds.right
+        || client.y < 0 || client.y >= bounds.bottom { return None; }
+    let child = ChildWindowFromPointEx(root, client, CWP_SKIPINVISIBLE);
+    if child.is_null() { return None; }
+    if child == root { return Some(NativeHit::Empty); }
+    if child == viewport {
+        let mut viewport_point = point;
+        if ScreenToClient(viewport, &mut viewport_point) == 0 { return None; }
+        let nested = ChildWindowFromPointEx(viewport, viewport_point, CWP_SKIPINVISIBLE);
+        if nested.is_null() || nested == viewport { Some(NativeHit::Empty) } else { Some(NativeHit::Child) }
+    } else {
+        Some(NativeHit::Child)
+    }
+}
+
+unsafe fn edge_hit_transparent(window: HWND, point: POINT) -> bool {
+    let root = GetAncestor(window, GA_ROOT);
+    resize_hit(root, point).is_some()
+}
+
+unsafe extern "system" fn edge_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
+    if message == WM_NCDESTROY { RemoveWindowSubclass(window, Some(edge_procedure), 1); }
+    if message == WM_NCHITTEST && edge_hit_transparent(window, mouse_point(lparam)) {
+        return HTTRANSPARENT as LRESULT;
+    }
+    DefSubclassProc(window, message, wparam, lparam)
 }
 
 fn project_marker(state: &State, marker: i32) -> Option<RECT> {
@@ -882,7 +991,7 @@ unsafe fn refresh(window: HWND, state: &mut State) {
             PostMessageW(window, WM_CLOSE, 0, 0);
             return;
         }
-        layout(window, state, saved);
+        layout(window, state, saved, false);
     }
     for card in &mut state.cards { set_action(card, &state.visibility); }
     refresh_indicators(state);
@@ -963,6 +1072,9 @@ unsafe extern "system" fn card_procedure(window: HWND, message: u32, wparam: WPA
         RemoveWindowSubclass(window, Some(card_procedure), 1);
     }
     if message == WM_NCHITTEST {
+        if edge_hit_transparent(window, mouse_point(lparam)) {
+            return HTTRANSPARENT as LRESULT;
+        }
         let mut point = mouse_point(lparam);
         ScreenToClient(window, &mut point);
         let mut rect: RECT = std::mem::zeroed();
@@ -1007,6 +1119,9 @@ unsafe extern "system" fn card_procedure(window: HWND, message: u32, wparam: WPA
 unsafe extern "system" fn show_all_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, data: usize) -> LRESULT {
     if message == WM_ERASEBKGND { return 1; }
     if message == WM_NCDESTROY { RemoveWindowSubclass(window, Some(show_all_procedure), 1); }
+    if message == WM_NCHITTEST && edge_hit_transparent(window, mouse_point(lparam)) {
+        return HTTRANSPARENT as LRESULT;
+    }
     if message == WM_PAINT || message == WM_PRINTCLIENT {
         let mut paint: PAINTSTRUCT = std::mem::zeroed();
         let dc = if message == WM_PAINT { BeginPaint(window, &mut paint) } else { wparam as HDC };
@@ -1053,11 +1168,41 @@ unsafe fn callback(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, v
 
 unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, pointer: *mut State, viewport: bool) -> LRESULT {
     match message {
+        WM_NCCALCSIZE if !viewport => 0,
+        WM_GETMINMAXINFO if !viewport => {
+            let monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+            let mut info: MONITORINFO = std::mem::zeroed();
+            info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+            if GetMonitorInfoW(monitor, &mut info) != 0 {
+                let limits = &mut *(lparam as *mut MINMAXINFO);
+                limits.ptMaxPosition = POINT { x: info.rcWork.left - info.rcMonitor.left, y: info.rcWork.top - info.rcMonitor.top };
+                limits.ptMaxSize = POINT { x: info.rcWork.right - info.rcWork.left, y: info.rcWork.bottom - info.rcWork.top };
+                0
+            } else { DefWindowProcW(window, message, wparam, lparam) }
+        }
+        WM_NCHITTEST if !viewport => {
+            match native_hit_test(window, (*pointer).viewport, mouse_point(lparam)) {
+                Some(NativeHit::Edge(hit)) => hit,
+                Some(NativeHit::Child) => HTCLIENT as LRESULT,
+                Some(NativeHit::Empty) => HTCAPTION as LRESULT,
+                None => DefWindowProcW(window, message, wparam, lparam),
+            }
+        }
+        WM_NCHITTEST if viewport => {
+            match native_hit_test(GetParent(window), window, mouse_point(lparam)) {
+                Some(NativeHit::Empty) | Some(NativeHit::Edge(_)) | Some(NativeHit::Child) => HTTRANSPARENT as LRESULT,
+                None => DefWindowProcW(window, message, wparam, lparam),
+            }
+        }
+        WM_NCLBUTTONDOWN if !viewport && wparam == HTCAPTION as WPARAM => {
+            ReleaseCapture();
+            DefWindowProcW(window, message, wparam, lparam)
+        }
         WM_CREATE if !viewport => {
             let state = &mut *pointer;
             if controls(window, state) { 0 } else { state.failure = Some(io::Error::last_os_error()); -1 }
         }
-        WM_SIZE if !viewport => { cancel_drag(pointer); let saved = anchor(&*pointer); layout(window, &mut *pointer, saved); 0 }
+        WM_SIZE if !viewport => { cancel_drag(pointer); let saved = anchor(&*pointer); layout(window, &mut *pointer, saved, true); 0 }
         WM_EXITSIZEMOVE if !viewport => {
             let _ = placement_win::save(window, &(*pointer).placement_path);
             0
@@ -1076,11 +1221,16 @@ unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, p
                 SetWindowPos(window, null_mut(), suggested.left, suggested.top, suggested.right - suggested.left,
                     suggested.bottom - suggested.top, SWP_NOZORDER | SWP_NOACTIVATE);
             }
-            layout(window, &mut *pointer, saved);
+            layout(window, &mut *pointer, saved, true);
             0
         }
         WM_TIMER if !viewport => {
             let state = &mut *pointer;
+            if state.scrollbar_idle.is_some_and(|deadline| Instant::now() >= deadline)
+                && GetCapture() != state.scrollbar {
+                ShowWindow(state.scrollbar, SW_HIDE);
+                state.scrollbar_idle = None;
+            }
             if let Some(update) = state.monitor.latest() {
                 state.latest = Some(update);
             }
@@ -1185,12 +1335,17 @@ unsafe fn controls(window: HWND, state: &mut State) -> bool {
     if state.show_all_button.is_null() { return false; }
     if SetWindowSubclass(state.show_all_button, Some(show_all_procedure), 1, state as *const State as usize) == 0 { return false; }
     SendMessageW(state.show_all_button, WM_SETFONT, resources.fonts[1] as WPARAM, 0);
+    state.scrollbar = CreateWindowExW(0, wide("SCROLLBAR").as_ptr(), wide("").as_ptr(),
+        WS_CHILD | WS_VISIBLE | SBS_VERT as u32, 0, 0, 1, 1, window, 1003 as _, GetModuleHandleW(null()), null());
+    if state.scrollbar.is_null() { return false; }
+    if SetWindowSubclass(state.scrollbar, Some(edge_procedure), 1, 0) == 0 { return false; }
+    SetWindowTheme(state.scrollbar, wide("DarkMode_Explorer").as_ptr(), null());
     state.viewport = CreateWindowExW(WS_EX_CONTROLPARENT, wide("WtsDashboardViewport").as_ptr(), wide("Repository worktrees").as_ptr(),
-        WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_TABSTOP,
+        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_TABSTOP,
         0, 0, 1, 1, window, 1001 as _, GetModuleHandleW(null()), (state as *mut State).cast());
     if state.viewport.is_null() || !reconcile(state) { return false; }
     SetWindowTheme(state.viewport, wide("DarkMode_Explorer").as_ptr(), null());
-    layout(window, state, None);
+    layout(window, state, None, true);
     SetTimer(window, 1, 200, None) != 0
 }
 
@@ -1206,10 +1361,10 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
         Ok(visibility) => (visibility, None),
         Err(error) => (Visibility::default(), Some(format!("Cannot load worktree visibility: {error}"))),
     };
-    let mut state = Box::new(State { monitor: service.monitor_from(launch_directory).map_err(io::Error::other)?, viewport: null_mut(),
+    let mut state = Box::new(State { monitor: service.monitor_from(launch_directory).map_err(io::Error::other)?, viewport: null_mut(), scrollbar: null_mut(),
         fixed: Vec::new(), cards: Vec::new(), resources: None, view: DashboardView::scanning(), latest: None,
         refresh_tracker: RefreshTracker::default(), refreshing: HashSet::new(),
-        dpi: 96, scroll: 0, content: 0, page: 0, width: 0, wheel_remainder: 0, next_card_id: 2000, failure: None,
+        dpi: 96, scroll: 0, content: 0, page: 0, scrollbar_idle: None, width: 0, wheel_remainder: 0, next_card_id: 2000, failure: None,
         order_path, placement_path, starting: true, order, order_warning, order_write_failed: false, order_check: Instant::now(),
         visibility_path, visibility, visibility_warning, visibility_write_failed: false, visibility_check: Instant::now(),
         show_all_button: null_mut(), next_action_id: 3000, drag: None });
@@ -1229,7 +1384,7 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
             return Err(error);
         }
         let window = CreateWindowExW(WS_EX_TOPMOST, class.as_ptr(), wide("WTS Worktree status").as_ptr(),
-            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, 640, 540, null_mut(), null_mut(), instance,
+            WS_POPUP | WS_SYSMENU | WS_THICKFRAME | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, CW_USEDEFAULT, CW_USEDEFAULT, 640, 540, null_mut(), null_mut(), instance,
             (&mut *state as *mut State).cast());
         if window.is_null() {
             let error = state.failure.take().unwrap_or_else(io::Error::last_os_error);

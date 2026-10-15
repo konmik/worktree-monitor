@@ -71,8 +71,10 @@ public static class WtsVisibilityNativeProbe {
     [DllImport("user32.dll")] public static extern uint SendInput(uint count, Input[] inputs, int size);
     [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] public static extern int GetWindowLong(IntPtr handle, int index);
     [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr handle);
+    [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr handle, int id);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr handle, out Rect rect);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr handle, out Rect rect);
+    [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr handle, ref Point point);
     [DllImport("user32.dll")] public static extern bool GetScrollInfo(IntPtr handle, int bar, ref ScrollInfo info);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr handle, IntPtr after, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr handle);
@@ -109,8 +111,15 @@ public static class WtsVisibilityNativeProbe {
 
     public static ScrollInfo Scroll(IntPtr handle) {
         var info = new ScrollInfo { Size = (uint)Marshal.SizeOf<ScrollInfo>(), Mask = 7 };
-        if (!GetScrollInfo(handle, 1, ref info)) throw new InvalidOperationException("Scroll state unavailable");
+        var scrollbar = GetDlgItem(GetParent(handle), 1003);
+        if (!GetScrollInfo(scrollbar, 2, ref info)) throw new InvalidOperationException("Scroll state unavailable");
         return info;
+    }
+
+    public static void MoveDragPointer(IntPtr viewport, int x, int y) {
+        var point = new Point { X = x, Y = y };
+        if (!ClientToScreen(viewport, ref point) || !SetCursorPos(point.X, point.Y)) throw new InvalidOperationException("Drag pointer could not be positioned");
+        Send(viewport, 0x0200, new IntPtr(1), Position(x, y));
     }
 
     public static string Text(IntPtr handle) {
@@ -424,7 +433,7 @@ function Get-Cards {
         $_.Parent -eq $script:viewport -and $_.Class -ieq 'STATIC' -and $_.Text.Length -gt 0 -and [WtsVisibilityNativeProbe]::IsWindowVisible($_.Handle)
     })
     @($children | ForEach-Object {
-        [pscustomobject]@{ Handle = $_.Handle; Text = $_.Text; Class = $_.Class; Bounds = $_.Bounds; Top = $_.Bounds.Top }
+        [pscustomobject]@{ Handle = $_.Handle; Text = $_.Text -replace '\r?\nRefreshing$', ''; Class = $_.Class; Bounds = $_.Bounds; Top = $_.Bounds.Top }
     } | Sort-Object Top)
 }
 
@@ -440,7 +449,7 @@ function New-ExpectedRows([array]$Repositories) {
             Name = $repository.Name
             PathText = $null
             Branch = $null
-            Caption = "$($repository.Name) [2]"
+            Caption = $repository.Name
         })
         [void]$rows.Add([pscustomobject]@{
             Kind = 'worktree'
@@ -1079,6 +1088,7 @@ function Invoke-DragProbe([string]$Name, $Source, $Target) {
 
 function Invoke-EdgeScrollTest {
     $original = [WtsVisibilityNativeProbe]::WindowBounds($script:handle)
+    $edgeTrace = [Collections.Generic.List[object]]::new()
     $scale = [int][WtsVisibilityNativeProbe]::GetDpiForWindow($script:handle)
     if (-not [WtsVisibilityNativeProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, [int](760 * $scale / 96), [int](400 * $scale / 96), 0x16)) { throw 'Edge-scroll fixture resize failed' }
     try {
@@ -1089,9 +1099,10 @@ function Invoke-EdgeScrollTest {
         $viewportBounds = [WtsVisibilityNativeProbe]::ClientBounds($script:viewport)
         $x = [int](12 * $scale / 96)
         $bottom = [pscustomobject]@{ X = $x; Y = $viewportBounds.Bottom - [int](8 * $scale / 96) }
-        [void][WtsVisibilityNativeProbe]::Send($script:viewport, 0x0200, [IntPtr]1, [WtsVisibilityNativeProbe]::Position($bottom.X, $bottom.Y))
+        [WtsVisibilityNativeProbe]::MoveDragPointer($script:viewport, $bottom.X, $bottom.Y)
         Wait-For {
             $scroll = [WtsVisibilityNativeProbe]::Scroll($script:viewport)
+            $edgeTrace.Add([ordered]@{ position = $scroll.Position; max = $scroll.Max; page = $scroll.Page; capture = [WtsVisibilityNativeProbe]::Capture($script:handle).ToInt64(); viewport = $script:viewport.ToInt64(); point_x = $bottom.X; point_y = $bottom.Y; card_top = [WtsVisibilityNativeProbe]::WindowBounds($source.Handle).Top; viewport_top = [WtsVisibilityNativeProbe]::WindowBounds($script:viewport).Top })
             $scroll.Position -gt 0 -and $scroll.Position -eq ($scroll.Max - [int]$scroll.Page + 1)
         } 'drag auto-scroll to the bottom' 10
         $bottomPosition = [WtsVisibilityNativeProbe]::Scroll($script:viewport).Position
@@ -1101,11 +1112,12 @@ function Invoke-EdgeScrollTest {
         Settle-Paint $cards
         $stationary = Measure-DragMove 'edge-bottom-stationary' $bottom $cards $source $target
         if ($stationary.viewport.broad -or $stationary.unrelated_broad_invalidated_count -gt 0) { throw 'A clamped edge drag redrew unrelated rows' }
-        [void][WtsVisibilityNativeProbe]::Send($script:viewport, 0x0200, [IntPtr]1, [WtsVisibilityNativeProbe]::Position($x, [int](8 * $scale / 96)))
+        [WtsVisibilityNativeProbe]::MoveDragPointer($script:viewport, $x, [int](8 * $scale / 96))
         Wait-For { [WtsVisibilityNativeProbe]::Scroll($script:viewport).Position -eq 0 } 'drag auto-scroll to the top' 10
         if ([WtsVisibilityNativeProbe]::Capture($script:handle) -ne $script:viewport) { throw 'Reverse edge scrolling lost drag capture' }
         [ordered]@{ result = 'PASS'; bottom_position = $bottomPosition; returned_to_top = $true; capture_preserved = $true; stationary_edge_broad_repaints = 0 }
     } finally {
+        $edgeTrace | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Output 'edge-scroll.json') -Encoding utf8NoBOM
         Stop-Drag
         if (-not [WtsVisibilityNativeProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0,
             $original.Right - $original.Left, $original.Bottom - $original.Top, 0x16)) { throw 'Edge-scroll fixture restoration failed' }

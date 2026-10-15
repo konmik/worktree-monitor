@@ -110,7 +110,7 @@ fn filtering_show_all_unhide_and_ordering_preserve_discovery_health_and_counts()
     let visibility = Visibility::persist_toggle(&fixture.path(), &repository, &trees[0].path).unwrap();
     let filtered = DashboardView::from_snapshot_with_visibility(&ordered, &visibility, false);
     assert_eq!(filtered.health, Health::Errors);
-    assert_eq!(filtered.items[0].display.caption(), "alpha [2]");
+    assert_eq!(filtered.items[0].display.caption(), "alpha");
     assert_eq!(worktree_keys(&filtered).len(), 3);
     assert_eq!(worktree_keys(&filtered)[0], &ItemKey::Worktree(identity(&repository), identity(&trees[1].path)));
     let all = DashboardView::from_snapshot_with_visibility(&ordered, &visibility, true);
@@ -138,7 +138,7 @@ fn hiding_the_only_failed_worktree_does_not_clear_error_health() {
     let filtered = DashboardView::from_snapshot_with_visibility(&fixture.snapshot, &visibility, false);
     assert_eq!(filtered.health, Health::Errors);
     assert_eq!(worktree_keys(&filtered), vec![&ItemKey::Worktree(identity(&repository), identity(&visible))]);
-    assert_eq!(filtered.items[0].display.caption(), "alpha [2]");
+    assert_eq!(filtered.items[0].display.caption(), "alpha");
     let all = DashboardView::from_snapshot_with_visibility(&fixture.snapshot, &visibility, true);
     assert_eq!(all.health, Health::Errors);
     assert_eq!(worktree_keys(&all), vec![

@@ -24,7 +24,7 @@ fn keeps_per_row_counts_without_aggregation() {
     ])] };
     let view = DashboardView::from_snapshot(&snapshot);
     assert_eq!(view.items.len(), 3);
-    assert_eq!(view.items[0].display.caption(), "repo [2]");
+    assert_eq!(view.items[0].display.caption(), "repo");
     assert_eq!(view.items[1].display.caption(), "main\nS +18446744073709551615/-9 · T +0/-0 · X +0/-0 · binaries: 2");
     assert_eq!(view.items[2].display.caption(), "topic\nS +7/-3 · T +0/-0 · X +0/-0 · binaries: 1");
     assert_eq!(view.health, Health::Live);
@@ -58,7 +58,7 @@ fn partial_errors_preserve_known_counts_and_missing_values() {
     assert_eq!(view.health.caption(Duration::from_secs(20)), "ERROR · Polling 20.0s in last minute");
     assert_eq!(view.items[0].display.caption(), "Configuration error\nConfig: Invalid config");
     assert_eq!(view.items[3].display.caption(), "/broken\nCounts unavailable · binaries unavailable\nERROR (Git): Cannot inspect worktree");
-    assert_eq!(view.items[4].display.caption(), "lost [?]");
+    assert_eq!(view.items[4].display.caption(), "lost");
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn empty_bare_scanning_and_zero_measurements_are_truthful() {
     assert_eq!(scanning.health, Health::Scanning);
     assert_eq!(scanning.items.len(), 1);
     let bare = DashboardView::from_snapshot(&Snapshot { repos: vec![repo(vec![])], config_error: None });
-    assert_eq!(bare.items[0].display.caption(), "repo [0]\nNo working trees (bare repository).");
+    assert_eq!(bare.items[0].display.caption(), "repo\nNo working trees (bare repository).");
     let rows = DashboardView::from_snapshot(&Snapshot { config_error: None, repos: vec![repo(vec![
         tree("/zero", Head::Branch("main".into()), 0, 0, 0),
         tree("/binary", Head::Branch("main".into()), 0, 0, 2),
@@ -110,7 +110,7 @@ fn count_only_changes_keep_item_keys_and_row_failure_keeps_discovery_complete() 
     second.repos[0].worktrees.as_mut().unwrap()[0].result = Err(failure());
     let after = DashboardView::from_snapshot(&second);
     assert_eq!(before.items.iter().map(|item| &item.key).collect::<Vec<_>>(), after.items.iter().map(|item| &item.key).collect::<Vec<_>>());
-    assert_eq!(after.items[0].display.caption(), "repo [1]");
+    assert_eq!(after.items[0].display.caption(), "repo");
     assert!(matches!(after.items[1].display, DisplayItem::Worktree { result: Err(_), .. }));
 }
 
@@ -122,7 +122,7 @@ fn repository_failure_does_not_invent_discovered_worktrees() {
     let view = DashboardView::from_snapshot(&snapshot);
     assert_eq!(view.health, Health::Errors);
     assert_eq!(view.items[1].key, ItemKey::RepositoryError(identity(&PathBuf::from("/lost/.git"))));
-    assert_eq!(view.items[0].display.caption(), "lost [?]");
+    assert_eq!(view.items[0].display.caption(), "lost");
     assert_eq!(view.items[1].display.caption(), "Repository error · counts unavailable\n/lost\nGit: Cannot inspect worktree");
 }
 
@@ -306,7 +306,7 @@ fn pending_scan_projects_known_repository_and_discovered_paths_without_fake_coun
     let view = DashboardView::from_scan(&Snapshot::default(), &pending_targets(), &Default::default(), false);
     assert_eq!(view.health, Health::Scanning);
     assert_eq!(view.items.len(), 3);
-    assert_eq!(view.items[0].display.caption(), "repo [2]");
+    assert_eq!(view.items[0].display.caption(), "repo");
     assert_eq!(view.items[1].key, refreshing_tree("/repo"));
     assert_eq!(view.items[1].display.caption(), "/repo\nBranch pending · counts pending · binaries pending");
     assert!(matches!(view.items[2].display, DisplayItem::PendingWorktree { .. }));
@@ -318,7 +318,7 @@ fn scan_projection_keeps_completed_counts_and_identity_as_pending_rows_complete(
     let targets = pending_targets();
     let first = Snapshot { config_error: None, repos: vec![repo(vec![tree("/repo", Head::Branch("main".into()), 8, 3, 1)])] };
     let view = DashboardView::from_scan(&first, &targets, &Default::default(), false);
-    assert_eq!(view.items[0].display.caption(), "repo [2]");
+    assert_eq!(view.items[0].display.caption(), "repo");
     assert_eq!(view.items[1].display.caption(), "main\nS +8/-3 · T +0/-0 · X +0/-0 · binaries: 1");
     assert_eq!(view.items[1].display.caption_with_refresh(true), "main\nS +8/-3 · T +0/-0 · X +0/-0 · binaries: 1\nRefreshing");
     assert_eq!(view.items[1].display.caption_with_refresh(false), view.items[1].display.caption());
@@ -350,7 +350,7 @@ fn scan_projection_respects_hidden_pending_rows_and_show_all() {
         ScanTarget::Worktree { repository, path: tree }];
     let hidden = DashboardView::from_scan(&Snapshot::default(), &targets, &visibility, false);
     assert_eq!(hidden.items.len(), 1);
-    assert_eq!(hidden.items[0].display.caption(), "repo [1]");
+    assert_eq!(hidden.items[0].display.caption(), "repo");
     assert_eq!(hidden.health, Health::Scanning);
     let shown = DashboardView::from_scan(&Snapshot::default(), &targets, &visibility, true);
     assert_eq!(shown.items.len(), 2);
@@ -361,7 +361,7 @@ fn scan_projection_respects_hidden_pending_rows_and_show_all() {
     }] };
     let hidden_error = DashboardView::from_scan(&snapshot, &targets, &visibility, false);
     assert_eq!(hidden_error.items.len(), 1);
-    assert_eq!(hidden_error.items[0].display.caption(), "repo [1]");
+    assert_eq!(hidden_error.items[0].display.caption(), "repo");
     assert_eq!(hidden_error.health, Health::Errors);
     assert!(matches!(DashboardView::from_scan(&snapshot, &targets, &visibility, true).items[1].display,
         DisplayItem::Worktree { result: Err(_), .. }));
@@ -378,12 +378,12 @@ fn scan_targets_control_membership_when_snapshot_is_stale_or_targets_grow() {
     let view = DashboardView::from_scan(&snapshot, &targets, &Default::default(), false);
     assert_eq!(view.health, Health::Live);
     assert_eq!(view.items.len(), 2);
-    assert_eq!(view.items[0].display.caption(), "repo [1]");
+    assert_eq!(view.items[0].display.caption(), "repo");
     targets.push(ScanTarget::Worktree { repository: "/repo/.git".into(), path: "/new".into() });
     let grown = DashboardView::from_scan(&snapshot, &targets, &Default::default(), false);
     assert_eq!(grown.health, Health::Scanning);
     assert_eq!(grown.items.len(), 3);
-    assert_eq!(grown.items[0].display.caption(), "repo [2]");
+    assert_eq!(grown.items[0].display.caption(), "repo");
     assert_eq!(grown.items[2].key, refreshing_tree("/new"));
     assert!(matches!(grown.items[2].display, DisplayItem::PendingWorktree { .. }));
     assert_eq!(DashboardView::from_scan(&snapshot, &[], &Default::default(), false),
@@ -395,7 +395,7 @@ fn scan_projection_preserves_bare_unknown_and_notice_precedence() {
     let targets = vec![ScanTarget::Repository { common_dir: "/repo/.git".into(), path: "/repo".into() }];
     let unknown = DashboardView::from_scan(&Snapshot::default(), &targets, &Default::default(), false);
     assert_eq!(unknown.health, Health::Scanning);
-    assert_eq!(unknown.items[0].display.caption(), "repo [?]");
+    assert_eq!(unknown.items[0].display.caption(), "repo");
     let snapshot = Snapshot { config_error: None, repos: vec![repo(vec![])] };
     assert_eq!(DashboardView::from_scan(&snapshot, &targets, &Default::default(), false), DashboardView::from_snapshot(&snapshot));
     let snapshot = Snapshot { config_error: Some(failure()), repos: vec![repo(vec![])] };

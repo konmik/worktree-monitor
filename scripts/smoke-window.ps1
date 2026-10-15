@@ -8,6 +8,8 @@ using System.Text;
 using System.Runtime.InteropServices;
 public static class WtsWindowProbe {
     public struct Rect { public int Left, Top, Right, Bottom; }
+    public struct Point { public int X, Y; }
+    public struct GuiInfo { public uint Size, Flags; public IntPtr Active, Focus, Capture, MenuOwner, MoveSize, Caret; public Rect CaretRect; }
     public struct ScrollInfo { public uint Size, Mask; public int Min, Max; public uint Page; public int Position, TrackPosition; }
     public delegate bool EnumProc(IntPtr handle, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr data);
@@ -25,6 +27,14 @@ public static class WtsWindowProbe {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr handle, out Rect rect);
     [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr handle, int id);
     [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr handle);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr handle, StringBuilder text, int count);
+    [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr handle, ref Point point);
+    [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point point);
+    [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr handle, uint flags);
+    [DllImport("user32.dll")] public static extern bool GetGUIThreadInfo(uint thread, ref GuiInfo info);
+    [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
     [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")] public static extern bool GetScrollInfo(IntPtr handle, int bar, ref ScrollInfo info);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr handle, uint message, IntPtr wparam, IntPtr lparam);
@@ -81,9 +91,132 @@ public static class WtsWindowProbe {
         return found;
     }
     public static int ScrollPosition(IntPtr handle) {
+        handle = Scrollbar(GetParent(handle));
         var info = new ScrollInfo { Size = (uint)Marshal.SizeOf(typeof(ScrollInfo)), Mask = 7 };
-        if (!GetScrollInfo(handle, 1, ref info)) { throw new InvalidOperationException("Viewport scroll state unavailable"); }
+        if (!GetScrollInfo(handle, 2, ref info)) { throw new InvalidOperationException("Scrollbar state unavailable"); }
         return info.Position;
+    }
+    public static IntPtr Scrollbar(IntPtr parent) {
+        IntPtr found = IntPtr.Zero;
+        EnumChildWindows(parent, (handle, data) => {
+            var name = new StringBuilder(128);
+            GetClassName(handle, name, name.Capacity);
+            if (GetParent(handle) == parent && name.ToString().Equals("SCROLLBAR", StringComparison.OrdinalIgnoreCase)) { found = handle; return false; }
+            return true;
+        }, IntPtr.Zero);
+        if (found == IntPtr.Zero) throw new InvalidOperationException("Native scrollbar is missing");
+        return found;
+    }
+    public static IntPtr Position(int x, int y) {
+        return new IntPtr(unchecked((int)(((uint)(ushort)y << 16) | (ushort)x)));
+    }
+    public static void CheckFrame(IntPtr window, IntPtr viewport) {
+        long style = GetWindowLongPtr(window, -16).ToInt64();
+        if ((style & 0x00C00000) != 0 || (style & 0x00040000) == 0) throw new InvalidOperationException("Window is not frameless and resizable");
+        Rect bounds, client, view;
+        GetWindowRect(window, out bounds);
+        GetClientRect(window, out client);
+        GetWindowRect(viewport, out view);
+        var origin = new Point();
+        ClientToScreen(window, ref origin);
+        if (bounds.Left != origin.X || bounds.Top != origin.Y || bounds.Right != origin.X + client.Right || bounds.Bottom != origin.Y + client.Bottom) throw new InvalidOperationException("Nonclient frame remains visible");
+        if (view.Bottom != origin.Y + client.Bottom) throw new InvalidOperationException("Bottom padding remains");
+        int middleX = (bounds.Left + bounds.Right) / 2, middleY = (bounds.Top + bounds.Bottom) / 2;
+        int[,] points = { {bounds.Left + 1, bounds.Top + 1, 13}, {middleX, bounds.Top + 1, 12}, {bounds.Right - 2, bounds.Top + 1, 14}, {bounds.Left + 1, middleY, 10}, {bounds.Right - 2, middleY, 11}, {bounds.Left + 1, bounds.Bottom - 2, 16}, {middleX, bounds.Bottom - 2, 15}, {bounds.Right - 2, bounds.Bottom - 2, 17} };
+        for (int i = 0; i < points.GetLength(0); i++) {
+            if (SendMessage(window, 0x0084, IntPtr.Zero, Position(points[i, 0], points[i, 1])).ToInt64() != points[i, 2]) throw new InvalidOperationException("Resize hit test failed at edge " + i);
+        }
+    }
+    public static void DragEmptySpace(IntPtr window, IntPtr viewport) {
+        Rect before, after, view, card;
+        GetWindowRect(window, out before);
+        GetWindowRect(viewport, out view);
+        GetWindowRect(FirstCard(viewport), out card);
+        int x = (view.Left + view.Right) / 2, y = card.Bottom + 1;
+        var target = WindowFromPoint(new Point { X = x, Y = y });
+        if (y < view.Top || y >= view.Bottom || (target != viewport && target != window)) throw new InvalidOperationException("Empty-gap drag point is not the fixture window");
+        Drag(window, x, y, 40, 30);
+        WaitFor(() => {
+            GetWindowRect(window, out after);
+            return after.Left != before.Left || after.Top != before.Top;
+        }, "Dragging empty space did not move the window");
+    }
+    public static void DragCorner(IntPtr window) {
+        Rect before, after;
+        GetWindowRect(window, out before);
+        Drag(window, before.Right - 2, before.Bottom - 2, 40, 30);
+        WaitFor(() => {
+            GetWindowRect(window, out after);
+            return after.Right - after.Left > before.Right - before.Left && after.Bottom - after.Top > before.Bottom - before.Top;
+        }, "Dragging the corner did not resize the window");
+    }
+    public static void CancelEmptyMove(IntPtr window, IntPtr viewport) {
+        Rect view, card;
+        GetWindowRect(viewport, out view);
+        GetWindowRect(FirstCard(viewport), out card);
+        Drag(window, (view.Left + view.Right) / 2, card.Bottom + 1, 0, 0, true);
+    }
+    public static void ClickScrollbar(IntPtr window, IntPtr scrollbar) {
+        Rect bar;
+        GetWindowRect(scrollbar, out bar);
+        var point = new Point { X = (bar.Left + bar.Right) / 2, Y = bar.Top + (bar.Right - bar.Left) / 2 };
+        Point saved;
+        if (!GetCursorPos(out saved)) throw new InvalidOperationException("Cursor position unavailable");
+        bool pressed = false;
+        try {
+            if (!SetCursorPos(point.X, point.Y) || WindowFromPoint(point) != scrollbar) throw new InvalidOperationException("Scrollbar click target is not the fixture control");
+            mouse_event(2, 0, 0, 0, UIntPtr.Zero);
+            pressed = true;
+            WaitFor(() => ScrollPosition(GetDlgItem(window, 1001)) == 0, "Native scrollbar arrow did not scroll to the top");
+            mouse_event(4, 0, 0, 0, UIntPtr.Zero);
+            pressed = false;
+        } finally {
+            if (pressed) mouse_event(4, 0, 0, 0, UIntPtr.Zero);
+            if (!SetCursorPos(saved.X, saved.Y)) throw new InvalidOperationException("Cursor restoration failed");
+        }
+    }
+    private static void WaitFor(Func<bool> condition, string error) {
+        var deadline = DateTime.UtcNow.AddSeconds(3);
+        do {
+            if (condition()) return;
+            System.Threading.Thread.Sleep(20);
+        } while (DateTime.UtcNow < deadline);
+        throw new InvalidOperationException(error);
+    }
+    private static void Drag(IntPtr window, int x, int y, int dx, int dy, bool cancel = false) {
+        Point saved;
+        if (!GetCursorPos(out saved)) throw new InvalidOperationException("Cursor position unavailable");
+        bool pressed = false;
+        try {
+            if (!SetCursorPos(x, y) || GetAncestor(WindowFromPoint(new Point { X = x, Y = y }), 2) != window) throw new InvalidOperationException("Mouse target is not the fixture window");
+            mouse_event(2, 0, 0, 0, UIntPtr.Zero);
+            pressed = true;
+            uint owner;
+            uint thread = GetWindowThreadProcessId(window, out owner);
+            WaitFor(() => {
+                var info = new GuiInfo { Size = (uint)Marshal.SizeOf(typeof(GuiInfo)) };
+                return GetGUIThreadInfo(thread, ref info) && GetAncestor(info.Capture, 2) == window;
+            }, "Fixture did not capture the mouse for dragging");
+            if (cancel) {
+                var info = new GuiInfo { Size = (uint)Marshal.SizeOf(typeof(GuiInfo)) };
+                GetGUIThreadInfo(thread, ref info);
+                if (!PostMessage(info.Capture, 0x0100, new IntPtr(0x1b), IntPtr.Zero)) throw new InvalidOperationException("Escape could not be sent to the fixture");
+                WaitFor(() => GetGUIThreadInfo(thread, ref info) && info.Capture == IntPtr.Zero, "Escape left the window move holding mouse capture");
+                return;
+            }
+            Rect before;
+            GetWindowRect(window, out before);
+            if (!SetCursorPos(x + dx, y + dy)) throw new InvalidOperationException("Mouse drag failed");
+            WaitFor(() => {
+                Rect changed;
+                return GetWindowRect(window, out changed) && (changed.Left != before.Left || changed.Top != before.Top || changed.Right != before.Right || changed.Bottom != before.Bottom);
+            }, "Fixture drag did not update window bounds");
+            mouse_event(4, 0, 0, 0, UIntPtr.Zero);
+            pressed = false;
+        } finally {
+            if (pressed) mouse_event(4, 0, 0, 0, UIntPtr.Zero);
+            if (!SetCursorPos(saved.X, saved.Y)) throw new InvalidOperationException("Cursor restoration failed");
+        }
     }
     public static int Top(IntPtr handle) {
         Rect rect;
@@ -105,6 +238,11 @@ function Wait-For([scriptblock]$Condition, [string]$Label, [int]$Seconds = 40) {
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
     throw "Timed out waiting for $Label"
+}
+
+function Wait-ScrollbarHidden([IntPtr]$Scrollbar, [Diagnostics.Stopwatch]$SinceActivity) {
+    Wait-For { -not [WtsWindowProbe]::IsWindowVisible($Scrollbar) } 'idle scrollbar to hide' 5
+    if ($SinceActivity.Elapsed.TotalSeconds -lt 2.9) { throw 'Scrollbar hid before three seconds' }
 }
 
 function Run-Git([string[]]$Arguments) {
@@ -170,6 +308,8 @@ try {
     if (-not $launcher.WaitForExit(3000) -or $launcher.ExitCode -ne 0) { throw 'Live launcher did not exit successfully' }
     if (-not $stdout.Wait(1000) -or -not $stderr.Wait(1000)) { throw 'Live launcher did not release stdout and stderr' }
     if ([WtsWindowProbe]::SharesConsole([uint32]$process.Id)) { throw 'Live window is still attached to the launching terminal' }
+    $uiBinary = $process.MainModule.FileName
+    $uiHash = (Get-FileHash -LiteralPath $uiBinary -Algorithm SHA256).Hash
     Write-Host 'PASS. Live launcher exited, stdout and stderr reached EOF, and the child window is detached from the launching terminal.'
     $initialStyle = [WtsWindowProbe]::GetWindowLongPtr($script:handle, -20).ToInt64()
     $foregroundOnShow = [WtsWindowProbe]::GetForegroundWindow()
@@ -184,14 +324,45 @@ try {
     [IO.File]::WriteAllText((Join-Path $fixture 'initial.txt'), $initial)
     $viewport = [WtsWindowProbe]::GetDlgItem($script:handle, 1001)
     if ($viewport -eq [IntPtr]::Zero) { throw 'Dashboard viewport is missing' }
+    if (@([WtsWindowProbe]::Captions($viewport) | Where-Object { $_ -match '^repo(?:\r?\nRefreshing)?$' }).Count -ne 1) { throw 'Repository name is missing or still has a branch counter' }
+    $scrollbar = [WtsWindowProbe]::Scrollbar($script:handle)
+    $sinceResize = [Diagnostics.Stopwatch]::StartNew()
     if (-not [WtsWindowProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, 600, 130, 22)) { throw 'Window resize failed' }
+    [WtsWindowProbe]::CheckFrame($script:handle, $viewport)
     $card = [WtsWindowProbe]::FirstCard($viewport)
     if ($card -eq [IntPtr]::Zero) { throw 'Visible dashboard cards are missing' }
+    $visibleBounds = [WtsWindowProbe+Rect]::new()
+    [void][WtsWindowProbe]::GetWindowRect($card, [ref]$visibleBounds)
+    if (-not [WtsWindowProbe]::IsWindowVisible($scrollbar)) { throw 'Resizing did not show the scrollbar' }
+    $viewBounds = [WtsWindowProbe+Rect]::new()
+    $barBounds = [WtsWindowProbe+Rect]::new()
+    $windowBounds = [WtsWindowProbe+Rect]::new()
+    [void][WtsWindowProbe]::GetWindowRect($viewport, [ref]$viewBounds)
+    [void][WtsWindowProbe]::GetWindowRect($scrollbar, [ref]$barBounds)
+    [void][WtsWindowProbe]::GetWindowRect($script:handle, [ref]$windowBounds)
+    if ($barBounds.Left -lt $viewBounds.Right -or $barBounds.Right -gt $windowBounds.Right -or $barBounds.Top -lt $viewBounds.Top -or $barBounds.Bottom -gt $viewBounds.Bottom -or $barBounds.Right -le $barBounds.Left -or $barBounds.Bottom -le $barBounds.Top) { throw 'Scrollbar does not fit the right gutter' }
+    Start-Sleep -Milliseconds 1500
+    $sinceResize.Restart()
+    foreach ($height in @(131, 130)) {
+        if (-not [WtsWindowProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, 600, $height, 22)) { throw 'Repeated window resize failed' }
+    }
+    Wait-ScrollbarHidden $scrollbar $sinceResize
+    $hiddenBounds = [WtsWindowProbe+Rect]::new()
+    [void][WtsWindowProbe]::GetWindowRect($card, [ref]$hiddenBounds)
+    if ($visibleBounds.Left -ne $hiddenBounds.Left -or $visibleBounds.Right -ne $hiddenBounds.Right) { throw 'Scrollbar visibility shifted cards' }
     $cardBefore = [WtsWindowProbe]::Top($card) - [WtsWindowProbe]::Top($viewport)
-    [void][WtsWindowProbe]::SendMessage($viewport, 0x0115, [IntPtr]1, [IntPtr]::Zero)
+    $sinceScroll = [Diagnostics.Stopwatch]::StartNew()
+    [void][WtsWindowProbe]::SendMessage($script:handle, 0x0115, [IntPtr]1, $scrollbar)
+    if (-not [WtsWindowProbe]::IsWindowVisible($scrollbar)) { throw 'Scrolling did not reveal the scrollbar' }
     $beforeScroll = [WtsWindowProbe]::ScrollPosition($viewport)
     $cardScrolled = [WtsWindowProbe]::Top($card) - [WtsWindowProbe]::Top($viewport)
     if ($beforeScroll -le 0 -or $cardScrolled -ge $cardBefore) { throw 'Viewport scroll did not move the real cards' }
+    Start-Sleep -Milliseconds 1500
+    $sinceScroll.Restart()
+    [void][WtsWindowProbe]::SendMessage($viewport, 0x0115, [IntPtr]0, [IntPtr]::Zero)
+    [void][WtsWindowProbe]::SendMessage($viewport, 0x0115, [IntPtr]1, [IntPtr]::Zero)
+    if ([WtsWindowProbe]::ScrollPosition($viewport) -ne $beforeScroll) { throw 'Scroll activity did not restore the card position' }
+    Wait-ScrollbarHidden $scrollbar $sinceScroll
     $script:nextMetricChange = [DateTime]::MinValue
     Wait-For {
         $text = [WtsWindowProbe]::Text($script:handle)
@@ -224,7 +395,14 @@ try {
     if ($foregroundOnRefresh -eq $script:handle) { throw 'Refresh took foreground focus' }
     if (([WtsWindowProbe]::GetWindowLongPtr($script:handle, -20).ToInt64() -band 0x08000000) -ne 0) { throw 'Window cannot be activated by clicking' }
     [IO.File]::WriteAllText((Join-Path $fixture 'updated.txt'), $updated)
+    [void][WtsWindowProbe]::SendMessage($script:handle, 0x0115, [IntPtr]1, $scrollbar)
+    [WtsWindowProbe]::ClickScrollbar($script:handle, $scrollbar)
     if (-not [WtsWindowProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, 600, 400, 22)) { throw 'Window resize restoration failed' }
+    [void][WtsWindowProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 80, 80, 600, 400, 20)
+    [WtsWindowProbe]::DragEmptySpace($script:handle, $viewport)
+    [WtsWindowProbe]::DragCorner($script:handle)
+    [WtsWindowProbe]::CancelEmptyMove($script:handle, $viewport)
+    Write-Host 'PASS. Frameless edge hit testing, empty-space dragging, corner resizing, flush bottom, and idle gutter scrollbars.'
     $validConfig = [IO.File]::ReadAllText($config)
     [IO.File]::WriteAllText($config, '{broken')
     Wait-For { [WtsWindowProbe]::Text($script:handle) -match '(?i)error' -and (Has-Counts 2 0) } 'invalid config with last-good rows retained'
@@ -243,8 +421,16 @@ try {
     [ordered]@{
         binary = $Binary
         sha256 = (Get-FileHash -LiteralPath $Binary -Algorithm SHA256).Hash
+        ui_binary = $uiBinary
+        ui_sha256 = $uiHash
         initial_polling_seconds = $initialPollingSeconds
         rolling_polling_time = $true
+        frameless = $true
+        gutter_scrollbar = $true
+        idle_scrollbar_hidden = $true
+        empty_space_drag = $true
+        corner_resize_drag = $true
+        bottom_padding = 0
         topmost = ($initialStyle -band 8) -ne 0
         activated_on_show = $foregroundOnShow -eq $script:handle
         activated_on_refresh = $foregroundOnRefresh -eq $script:handle

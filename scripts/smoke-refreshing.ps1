@@ -166,7 +166,7 @@ function Sample {
             if ($found.Count -eq 0) {
                 $found = @($captions | Where-Object {
                     $first = (($_ -split '\r?\n', 2)[0]) -replace '[\\/]+$', ''
-                    $first -ieq $row.path -or $first -imatch ('(?:^|[\\/])' + [regex]::Escape($row.gate) + '$')
+                    [IO.Path]::IsPathFullyQualified($first) -and ($first -ieq $row.path -or $first -imatch ('(?:^|[\\/])' + [regex]::Escape($row.gate) + '$'))
                 })
             }
         } else {
@@ -256,7 +256,7 @@ try {
         Run-Git $repo @('add', '.')
         Run-Git $repo @('-c', 'user.name=Wts Test', '-c', 'user.email=wts@example.invalid', 'commit', '--quiet', '-m', 'Fixture')
         Run-Git $repo @('worktree', 'add', '--quiet', '-b', "$name-topic", $tree)
-        $expected.Add(@{ key = "repo:$name"; pattern = '^' + [regex]::Escape($name) + ' \[(?:\d+|\?)\]$' })
+        $expected.Add(@{ key = "repo:$name"; pattern = '^' + [regex]::Escape($name) + '$' })
         foreach ($entry in @(@{ path = $repo; branch = "$name-main" }, @{ path = $tree; branch = "$name-topic" })) {
             [IO.File]::WriteAllText((Join-Path $entry.path 'source.rs'), "before`nold`n")
             $expected.Add(@{ key = "tree:$($entry.branch)"; branch = $entry.branch; path = $entry.path; gate = Split-Path -Leaf $entry.path; parent = "repo:$name" })

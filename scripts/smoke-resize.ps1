@@ -187,7 +187,7 @@ try {
     $viewport = [WtsResizeProbe]::GetDlgItem($script:handle, 1001)
     Wait-For {
         $geometry = [WtsResizeProbe]::Geometry($viewport)
-        $geometry -match '(?m)^.*infra-tools \[1\].*$' -and [regex]::Matches($geometry, 'S\s+\+1/-0').Count -eq 3 -and $geometry -notmatch 'Refreshing'
+        $geometry -match '(?m)^.*infra-tools$' -and [regex]::Matches($geometry, 'S\s+\+1/-0').Count -eq 3 -and $geometry -notmatch 'Refreshing'
     } 'fixture counts'
     $workArea = [WtsResizeProbe+Rect]::new()
     if (-not [WtsResizeProbe]::SystemParametersInfo(0x0030, 0, [ref]$workArea, 0)) { throw 'Work area unavailable' }

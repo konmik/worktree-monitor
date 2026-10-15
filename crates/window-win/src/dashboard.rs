@@ -63,7 +63,7 @@ impl RefreshTracker {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DisplayItem {
     Status { health: Health, polling_time_last_minute: Duration },
-    Repository { name: String, worktrees: Option<usize>, bare: bool },
+    Repository { name: String, bare: bool },
     Worktree { path: PathBuf, result: Result<WorktreeStats, Error> },
     PendingWorktree { path: PathBuf },
     Notice { title: String, message: String, error: bool },
@@ -102,8 +102,8 @@ impl DisplayItem {
     pub fn caption(&self) -> String {
         match self {
             Self::Status { health, polling_time_last_minute } => health.caption(*polling_time_last_minute),
-            Self::Repository { name, worktrees, bare } => {
-                let mut text = format!("{name} [{}]", worktrees.map_or_else(|| "?".into(), |count| count.to_string()));
+            Self::Repository { name, bare } => {
+                let mut text = name.clone();
                 if *bare { text.push_str("\nNo working trees (bare repository)."); }
                 text
             }
@@ -154,12 +154,8 @@ impl DashboardView {
                 title: "No registered repositories.".into(), message: String::new(), error: false } });
         }
         for repo in &snapshot.repos {
-            let count = match &repo.worktrees {
-                Ok(trees) => Some(trees.len()),
-                Err(_) => None,
-            };
             items.push(ViewItem { key: ItemKey::Repository(identity(&repo.common_dir)),
-                display: DisplayItem::Repository { name: name(&repo.path), worktrees: count,
+                display: DisplayItem::Repository { name: name(&repo.path),
                     bare: repo.worktrees.as_ref().is_ok_and(|trees| trees.is_empty()) } });
             match &repo.worktrees {
                 Ok(trees) => {
@@ -195,11 +191,9 @@ impl DashboardView {
                 ScanTarget::Worktree { repository: common, path } if identity(common) == repository => Some(path),
                 _ => None,
             }).collect();
-            let failed = completed.is_some_and(|repo| repo.worktrees.is_err());
-            let count = if failed || (completed.is_none() && children.is_empty()) { None } else { Some(children.len()) };
             pending |= completed.is_none() && children.is_empty();
             items.push(ViewItem { key: ItemKey::Repository(repository.clone()), display: DisplayItem::Repository {
-                name: name(completed.map_or(path, |repo| &repo.path)), worktrees: count,
+                name: name(completed.map_or(path, |repo| &repo.path)),
                 bare: completed.is_some_and(|repo| repo.worktrees.as_ref().is_ok_and(|trees| trees.is_empty())) && children.is_empty(),
             } });
             if let Some(repo) = completed.filter(|repo| repo.worktrees.is_err()) {

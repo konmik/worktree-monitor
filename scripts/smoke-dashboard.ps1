@@ -266,7 +266,7 @@ function Close-Dashboard {
 function Find-Card([string]$Name, [switch]$Repository, [switch]$Optional) {
     $cards = @([WtsDragProbe]::Cards($script:viewport))
     if ($Repository) {
-        $cards = @($cards | Where-Object { $_.Text.StartsWith("$Name [") })
+        $cards = @($cards | Where-Object { ($_.Text -split "`r?`n")[0] -eq $Name -and $_.Text -notmatch 'S\s+\+' })
     } else {
         $entry = @($script:worktreePaths.GetEnumerator() | Where-Object { (Path-Key $_.Value) -eq (Path-Key $Name) })
         if ($entry.Count -ne 1) { throw "Expected one fixture mapping for $Name, found $($entry.Count)" }
@@ -277,7 +277,7 @@ function Find-Card([string]$Name, [switch]$Repository, [switch]$Optional) {
         $cardMatches = [Collections.Generic.List[object]]::new()
         foreach ($card in $cards) {
             $lines = @($card.Text -split "`r?`n")
-            if ($lines[0] -match '^(.+) \[\d+\]') { $current = $Matches[1]; continue }
+            if ($lines[0] -in @('alpha', 'beta', 'current') -and $card.Text -notmatch 'S\s+\+') { $current = $lines[0]; continue }
             if ($current -eq $repositoryName -and $lines.Count -ge 2 -and $lines[0] -eq $branch) { [void]$cardMatches.Add($card) }
         }
         $cards = $cardMatches.ToArray()
@@ -296,11 +296,8 @@ function Card-Order {
     $order = [Collections.Generic.List[string]]::new()
     foreach ($card in @([WtsDragProbe]::Cards($script:viewport))) {
         $lines = $card.Text -split "`r?`n"
-        if ($lines[0] -match '^(.+) \[(\d+)\]$') {
-            $name = $Matches[1]
-            $count = [int]$Matches[2]
-            $expected = @{ alpha = 2; beta = 2; current = 1 }
-            if (-not $expected.ContainsKey($name) -or $count -ne $expected[$name]) { throw "Unexpected worktree count for $name" }
+        if ($lines[0] -in @('alpha', 'beta', 'current') -and $card.Text -notmatch 'S\s+\+') {
+            $name = $lines[0]
             $repository = $name
             [void]$order.Add("repo:$name")
         }

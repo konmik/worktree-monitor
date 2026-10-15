@@ -324,6 +324,7 @@ try {
     Start-Window 'maximize'
     [void][WtsFeatureProbe]::ShowWindow($script:window, 3)
     Wait-For { [WtsFeatureProbe]::IsZoomed($script:window) } 'maximization'
+    if (-not (Same-Bounds $area (Bounds $script:window))) { throw 'Maximized frameless window does not fit the work area' }
     Close-Window
     Start-Window 'maximized restart'
     if (-not [WtsFeatureProbe]::IsZoomed($script:window)) { throw 'Maximized state was lost' }
