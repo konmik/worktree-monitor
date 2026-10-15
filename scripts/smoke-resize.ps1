@@ -38,6 +38,7 @@ public static class WtsResizeProbe {
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int DrawText(IntPtr dc, string text, int length, ref Rect rect, uint flags);
     [DllImport("gdi32.dll")] public static extern IntPtr SelectObject(IntPtr dc, IntPtr handle);
     [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr CreateFontW(int height, int width, int escapement, int orientation, int weight, uint italic, uint underline, uint strikeout, uint charset, uint outputPrecision, uint clipPrecision, uint quality, uint pitchAndFamily, string face);
+    [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern int GetTextFaceW(IntPtr dc, int count, StringBuilder face);
     [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr handle);
     [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll", EntryPoint="SystemParametersInfoW")] public static extern bool SystemParametersInfo(uint action, uint parameter, out Rect rect, uint flags);
@@ -87,7 +88,18 @@ public static class WtsResizeProbe {
             int inset = Math.Min(14 * dpi / 96, (card.Right - 1) / 2);
             var measured = new Rect { Right = Math.Max(1, card.Right - inset * 2) };
             var dc = GetDC(handle);
-            var font = CreateFontW(-14 * dpi / 96, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 49, "Consolas");
+            var font = IntPtr.Zero;
+            foreach (var face in new[] { "Berkeley Mono", "Berkeley Mono Variable", "Consolas", "Cascadia Mono", "Courier New" }) {
+                font = CreateFontW(-14 * dpi / 96, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 49, face);
+                var previous = SelectObject(dc, font);
+                var actual = new StringBuilder(64);
+                GetTextFaceW(dc, actual.Capacity, actual);
+                SelectObject(dc, previous);
+                if (actual.ToString().Equals(face, StringComparison.OrdinalIgnoreCase)) break;
+                DeleteObject(font);
+                font = IntPtr.Zero;
+            }
+            if (font == IntPtr.Zero) throw new InvalidOperationException("Terminal font unavailable");
             var old = SelectObject(dc, font);
             try {
                 var error = caption.Substring(start).Replace("\nRefreshing", "");

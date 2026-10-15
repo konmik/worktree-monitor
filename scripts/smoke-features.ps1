@@ -25,6 +25,7 @@ public static class WtsFeatureProbe {
     [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumProc callback, IntPtr data);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr window, StringBuilder text, int count);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr window, StringBuilder text, int count);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] public static extern bool EnableWindow(IntPtr window, bool enabled);
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
@@ -44,6 +45,7 @@ public static class WtsFeatureProbe {
     [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr window);
     [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr window, IntPtr dc);
     [DllImport("gdi32.dll")] public static extern IntPtr SelectObject(IntPtr dc, IntPtr handle);
+    [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern int GetTextFaceW(IntPtr dc, int count, StringBuilder face);
     [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr CreateFontW(int height, int width, int escapement, int orientation, int weight, uint italic, uint underline, uint strikeout, uint charset, uint outputPrecision, uint clipPrecision, uint quality, uint pitchAndFamily, string face);
     [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr handle);
     [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern bool GetTextExtentPoint32W(IntPtr dc, string text, int length, out Size size);
@@ -76,7 +78,7 @@ public static class WtsFeatureProbe {
     public static int Measure(IntPtr window, string text) {
         var dc = GetDC(window);
         if (dc == IntPtr.Zero) throw new InvalidOperationException("Text DC unavailable");
-        var font = CreateFontW(-14 * (int)GetDpiForWindow(window) / 96, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 49, "Consolas");
+        var font = TerminalFont(window, dc);
         var old = SelectObject(dc, font);
         try {
             Size size;
@@ -87,6 +89,39 @@ public static class WtsFeatureProbe {
             DeleteObject(font);
             ReleaseDC(window, dc);
         }
+    }
+    public static IntPtr TerminalFont(IntPtr window, IntPtr dc) {
+        foreach (var face in new[] { "Berkeley Mono", "Berkeley Mono Variable", "Consolas", "Cascadia Mono", "Courier New" }) {
+            var font = CreateFontW(-14 * (int)GetDpiForWindow(window) / 96, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 49, face);
+            var old = SelectObject(dc, font);
+            var actual = new StringBuilder(64);
+            GetTextFaceW(dc, actual.Capacity, actual);
+            SelectObject(dc, old);
+            if (actual.ToString().Equals(face, StringComparison.OrdinalIgnoreCase)) return font;
+            DeleteObject(font);
+        }
+        throw new InvalidOperationException("Terminal font unavailable");
+    }
+    public static string AssertFont(IntPtr root, IntPtr sample) {
+        var font = SendMessage(sample, 0x0031, IntPtr.Zero, IntPtr.Zero);
+        if (font == IntPtr.Zero) throw new InvalidOperationException("Control font unavailable");
+        EnumChildWindows(root, (window, data) => {
+            var type = new StringBuilder(64);
+            GetClassName(window, type, type.Capacity);
+            if (IsWindowVisible(window) && (type.ToString() == "STATIC" || type.ToString() == "Button") &&
+                SendMessage(window, 0x0031, IntPtr.Zero, IntPtr.Zero) != font)
+                throw new InvalidOperationException("Visible text does not share one font");
+            return true;
+        }, IntPtr.Zero);
+        var dc = GetDC(sample);
+        var localFont = TerminalFont(sample, dc);
+        var old = SelectObject(dc, localFont);
+        try {
+            var face = new StringBuilder(64);
+            if (GetTextFaceW(dc, face.Capacity, face) == 0) throw new InvalidOperationException("Actual font unavailable");
+            if (Measure(sample, "iiii") != Measure(sample, "WWWW")) throw new InvalidOperationException("Font is not monospace");
+            return face.ToString();
+        } finally { SelectObject(dc, old); DeleteObject(localFont); ReleaseDC(sample, dc); }
     }
     public static int[] Pixels(Bitmap image, int left, int right, int top, int bottom) {
         var counts = new int[3];
@@ -119,11 +154,11 @@ public static class WtsFeatureProbe {
                         graphics.CopyFromScreen(rect.Left, rect.Top, 0, 0, image.Size);
                     }
                     image.Save(System.IO.Path.Combine(output, "button-state-" + state + ".png"));
-                    var surface = Color.FromArgb(23, 30, 34).ToArgb();
+                    var surface = Color.FromArgb(11, 16, 18).ToArgb();
                     if (image.GetPixel(0, 0).ToArgb() != surface || image.GetPixel(image.Width - 1, 0).ToArgb() != surface ||
                         image.GetPixel(0, image.Height - 1).ToArgb() != surface || image.GetPixel(image.Width - 1, image.Height - 1).ToArgb() != surface)
-                        throw new InvalidOperationException("Button corners differ from card surface in owner-draw state " + state);
-                    var body = state == 1 || state == 4 ? Color.FromArgb(11, 16, 18).ToArgb() : surface;
+                        throw new InvalidOperationException("Button corners differ from terminal background in owner-draw state " + state);
+                    var body = surface;
                     if (image.GetPixel(image.Width / 2, image.Height - 5).ToArgb() != body)
                         throw new InvalidOperationException("Button body color is wrong in owner-draw state " + state);
                 }
@@ -230,7 +265,8 @@ function Assert-Colors {
         if ($button -eq [IntPtr]::Zero) { throw 'Hide button unavailable' }
         $buttonBounds = Bounds $button
         $corner = $image.GetPixel($buttonBounds.Left - $outer.Left, $buttonBounds.Top - $outer.Top)
-        if ($corner.R -ne 23 -or $corner.G -ne 30 -or $corner.B -ne 34) { throw "Hide corner is $($corner.R),$($corner.G),$($corner.B), not card surface 23,30,34" }
+        if ($corner.R -ne 11 -or $corner.G -ne 16 -or $corner.B -ne 18) { throw "Hide corner differs from terminal background" }
+        $proof.font = [WtsFeatureProbe]::AssertFont($script:window, $script:card)
         [WtsFeatureProbe]::ButtonStates($button, $Output)
         $proof.button_corners_match_card = $true
         $proof.button_states = @('normal', 'hover', 'pressed', 'disabled')
