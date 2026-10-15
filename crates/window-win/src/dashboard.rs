@@ -33,7 +33,6 @@ pub enum ItemKey {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DisplayItem {
-    Brand,
     Status { health: Health, polling_time_last_minute: Duration },
     Repository { name: String, worktrees: Option<usize>, bare: bool },
     Worktree { path: PathBuf, result: Result<WorktreeStats, Error> },
@@ -66,16 +65,14 @@ fn head_caption(head: &Head) -> String {
 impl DisplayItem {
     pub fn caption(&self) -> String {
         match self {
-            Self::Brand => "WTS\nWORKTREE MONITOR".into(),
             Self::Status { health, polling_time_last_minute } => health.caption(*polling_time_last_minute),
             Self::Repository { name, worktrees, bare } => {
-                let label = if *worktrees == Some(1) { "worktree" } else { "worktrees" };
-                let mut text = format!("{name} · {} {label}", worktrees.map_or_else(|| "?".into(), |count| count.to_string()));
+                let mut text = format!("{name} [{}]", worktrees.map_or_else(|| "?".into(), |count| count.to_string()));
                 if *bare { text.push_str("\nNo working trees (bare repository)."); }
                 text
             }
             Self::Worktree { path, result } => match result {
-                Ok(stats) => format!("{}\n{}\n{}", head_caption(&stats.head), path.display(), stats.counts),
+                Ok(stats) => format!("{}\n{}", head_caption(&stats.head), stats.counts),
                 Err(error) => format!("{}\nCounts unavailable · binaries unavailable\nERROR ({:?}): {}", path.display(), error.kind, error.message),
             },
             Self::Notice { title, message, .. } => format!("{title}\n{message}"),

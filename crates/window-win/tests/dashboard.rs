@@ -23,9 +23,9 @@ fn keeps_per_row_counts_without_aggregation() {
     ])] };
     let view = DashboardView::from_snapshot(&snapshot);
     assert_eq!(view.items.len(), 3);
-    assert_eq!(view.items[0].display.caption(), "repo · 2 worktrees");
-    assert!(view.items[1].display.caption().contains("S +18446744073709551615/-9 · T +0/-0 · X +0/-0 · binaries: 2"));
-    assert!(view.items[2].display.caption().contains("S +7/-3 · T +0/-0 · X +0/-0 · binaries: 1"));
+    assert_eq!(view.items[0].display.caption(), "repo [2]");
+    assert_eq!(view.items[1].display.caption(), "main\nS +18446744073709551615/-9 · T +0/-0 · X +0/-0 · binaries: 2");
+    assert_eq!(view.items[2].display.caption(), "topic\nS +7/-3 · T +0/-0 · X +0/-0 · binaries: 1");
     assert_eq!(view.health, Health::Live);
     assert_eq!(view.items[1].key, ItemKey::Worktree(identity(&PathBuf::from("/repo/.git")), identity(&PathBuf::from("/repo"))));
 }
@@ -42,7 +42,7 @@ fn renders_source_test_and_extra_counts_in_the_indicator() {
         } }),
     }])] };
     let view = DashboardView::from_snapshot(&snapshot);
-    assert_eq!(view.items[1].display.caption(), "main\n/repo\nS +1/-2 · T +3/-4 · X +5/-6 · binaries: 7");
+    assert_eq!(view.items[1].display.caption(), "main\nS +1/-2 · T +3/-4 · X +5/-6 · binaries: 7");
 }
 
 #[test]
@@ -53,11 +53,11 @@ fn partial_errors_preserve_known_counts_and_missing_values() {
         repos: vec![repo(entries), RepoEntry { common_dir: "/lost/.git".into(), path: "/lost".into(), worktrees: Err(failure()) }] };
     let view = DashboardView::from_snapshot(&snapshot);
     assert_eq!(view.items.len(), 6);
-    assert!(view.items[2].display.caption().contains("S +4/-2 · T +0/-0 · X +0/-0 · binaries: 1"));
+    assert_eq!(view.items[2].display.caption(), "main\nS +4/-2 · T +0/-0 · X +0/-0 · binaries: 1");
     assert_eq!(view.health.caption(Duration::from_secs(20)), "ERROR · Polling 20.0s in last minute");
     assert_eq!(view.items[0].display.caption(), "Configuration error\nConfig: Invalid config");
     assert_eq!(view.items[3].display.caption(), "/broken\nCounts unavailable · binaries unavailable\nERROR (Git): Cannot inspect worktree");
-    assert_eq!(view.items[4].display.caption(), "lost · ? worktrees");
+    assert_eq!(view.items[4].display.caption(), "lost [?]");
 }
 
 #[test]
@@ -87,13 +87,13 @@ fn empty_bare_scanning_and_zero_measurements_are_truthful() {
     assert_eq!(scanning.health, Health::Scanning);
     assert_eq!(scanning.items.len(), 1);
     let bare = DashboardView::from_snapshot(&Snapshot { repos: vec![repo(vec![])], config_error: None });
-    assert_eq!(bare.items[0].display.caption(), "repo · 0 worktrees\nNo working trees (bare repository).");
+    assert_eq!(bare.items[0].display.caption(), "repo [0]\nNo working trees (bare repository).");
     let rows = DashboardView::from_snapshot(&Snapshot { config_error: None, repos: vec![repo(vec![
         tree("/zero", Head::Branch("main".into()), 0, 0, 0),
         tree("/binary", Head::Branch("main".into()), 0, 0, 2),
     ])] });
-    assert_eq!(rows.items[1].display.caption(), "main\n/zero\nS +0/-0 · T +0/-0 · X +0/-0");
-    assert_eq!(rows.items[2].display.caption(), "main\n/binary\nS +0/-0 · T +0/-0 · X +0/-0 · binaries: 2");
+    assert_eq!(rows.items[1].display.caption(), "main\nS +0/-0 · T +0/-0 · X +0/-0");
+    assert_eq!(rows.items[2].display.caption(), "main\nS +0/-0 · T +0/-0 · X +0/-0 · binaries: 2");
     assert!(matches!(rows.items[2].display, DisplayItem::Worktree { .. }));
 }
 
@@ -105,11 +105,11 @@ fn count_only_changes_keep_item_keys_and_row_failure_keeps_discovery_complete() 
     let before = DashboardView::from_snapshot(&first);
     let changed = DashboardView::from_snapshot(&second);
     assert_eq!(before.items.iter().map(|item| &item.key).collect::<Vec<_>>(), changed.items.iter().map(|item| &item.key).collect::<Vec<_>>());
-    assert_eq!(changed.items[1].display.caption(), "main\n/repo\nS +8/-3 · T +0/-0 · X +0/-0 · binaries: 2");
+    assert_eq!(changed.items[1].display.caption(), "main\nS +8/-3 · T +0/-0 · X +0/-0 · binaries: 2");
     second.repos[0].worktrees.as_mut().unwrap()[0].result = Err(failure());
     let after = DashboardView::from_snapshot(&second);
     assert_eq!(before.items.iter().map(|item| &item.key).collect::<Vec<_>>(), after.items.iter().map(|item| &item.key).collect::<Vec<_>>());
-    assert_eq!(after.items[0].display.caption(), "repo · 1 worktree");
+    assert_eq!(after.items[0].display.caption(), "repo [1]");
     assert!(matches!(after.items[1].display, DisplayItem::Worktree { result: Err(_), .. }));
 }
 
@@ -121,7 +121,7 @@ fn repository_failure_does_not_invent_discovered_worktrees() {
     let view = DashboardView::from_snapshot(&snapshot);
     assert_eq!(view.health, Health::Errors);
     assert_eq!(view.items[1].key, ItemKey::RepositoryError(identity(&PathBuf::from("/lost/.git"))));
-    assert_eq!(view.items[0].display.caption(), "lost · ? worktrees");
+    assert_eq!(view.items[0].display.caption(), "lost [?]");
     assert_eq!(view.items[1].display.caption(), "Repository error · counts unavailable\n/lost\nGit: Cannot inspect worktree");
 }
 

@@ -32,7 +32,7 @@ const WHITE: COLORREF = rgb(232, 239, 235);
 const MUTED: COLORREF = rgb(132, 150, 156);
 const STATIC_OWNERDRAW: u32 = 13;
 const STATIC_NOTIFY: u32 = 256;
-const WORKTREE_SUCCESS_HEIGHT: i32 = 84;
+const WORKTREE_SUCCESS_HEIGHT: i32 = 64;
 const WORKTREE_ERROR_HEIGHT: i32 = 76;
 const WORKTREE_ACTION_WIDTH: i32 = 78;
 
@@ -320,7 +320,7 @@ unsafe fn scroll_to(state: &mut State, position: i32) {
 
 unsafe fn layout(window: HWND, state: &mut State, restore: Option<(ItemKey, i32)>) {
     let Some(resources) = &state.resources else { return; };
-    if state.fixed.len() != 2 || state.viewport.is_null() { return; }
+    if state.fixed.len() != 1 || state.viewport.is_null() { return; }
     let mut client: RECT = std::mem::zeroed();
     if GetClientRect(window, &mut client) == 0 || client.right <= 0 || client.bottom <= 0 { return; }
     let s = |value| scaled(value, state.dpi);
@@ -328,15 +328,13 @@ unsafe fn layout(window: HWND, state: &mut State, restore: Option<(ItemKey, i32)
     let tiny = client.bottom < s(150);
     let margin = s(if tiny { 6 } else if short { 10 } else { 18 });
     let gap = s(if tiny { 5 } else if short { 8 } else { 12 });
-    let brand_height = s(if tiny { 24 } else if short { 38 } else { 48 });
     let status_height = s(20);
-    let header = brand_height + status_height;
+    let header = status_height;
     let width = (client.right - margin * 2).max(1);
     let toggle_width = scaled(104, state.dpi).min(width);
-    let toggle_height = scaled(24, state.dpi).min(brand_height);
-    MoveWindow(state.fixed[0].window, margin, margin, (width - toggle_width).max(1), brand_height, 0);
-    MoveWindow(state.fixed[1].window, margin, margin + brand_height, width, status_height, 0);
-    MoveWindow(state.show_all_button, margin + width - toggle_width, margin + (brand_height - toggle_height) / 2,
+    let toggle_height = scaled(24, state.dpi).min(status_height);
+    MoveWindow(state.fixed[0].window, margin, margin, (width - toggle_width).max(1), status_height, 0);
+    MoveWindow(state.show_all_button, margin + width - toggle_width, margin + (status_height - toggle_height) / 2,
         toggle_width, toggle_height, 0);
     let top = margin + header + gap;
     let page = (client.bottom - top - margin).max(1);
@@ -432,15 +430,6 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
         right: rect.left + right, bottom: rect.top + bottom };
     fill(dc, rect, resources.background);
     match &card.display {
-        DisplayItem::Brand => {
-            let compact = height < s(45);
-            let tiny = height < s(30);
-            text(dc, "WTS", bounds(0, if tiny { 0 } else { -s(3) }, width, height),
-                resources.fonts[if tiny { 5 } else if compact { 3 } else { 4 }], GREEN, line);
-            let label_x = if tiny { s(45) } else { s(if compact { 64 } else { 87 }) };
-            text(dc, "WORKTREE MONITOR", bounds(label_x, if tiny { s(7) } else { s(if compact { 12 } else { 18 }) }, width, height),
-                resources.fonts[0], MUTED, line);
-        }
         DisplayItem::Status { health, .. } => {
             let color = match health { Health::Live => GREEN, Health::Errors => RED, Health::Scanning => MUTED };
             let y = (height - s(15)) / 2;
@@ -472,9 +461,7 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
                     SelectObject(dc, resources.border);
                     RoundRect(dc, badge_left, s(10), badge_left + badge_width, s(31), s(6), s(6));
                     text(dc, lines[0], bounds(badge_left + badge_padding, s(13), badge_left + badge_width - badge_padding, s(30)), resources.fonts[0], TEAL, line);
-                    let fitted_path = ellipsize_start(&path, text_width, |value| wrapped_width(dc, value, resources.fonts[0]));
-                    text(dc, &fitted_path, bounds(inset, s(37), right, s(57)), resources.fonts[0], MUTED, DT_SINGLELINE);
-                    let y = s(60);
+                    let y = s(37);
                     let mut parts = vec![
                         ("S ".to_owned(), MUTED),
                         (format!("+{}", stats.counts.source.additions), GREEN),
@@ -820,7 +807,7 @@ unsafe fn move_drag(state: &mut State, point: POINT) {
 }
 
 unsafe fn set_status(state: &mut State) {
-    if let Some(card) = state.fixed.get_mut(1) {
+    if let Some(card) = state.fixed.get_mut(0) {
         set_item(card, DisplayItem::Status { health: state.view.health,
             polling_time_last_minute: state.latest.as_ref().map_or(Duration::ZERO, |update| update.polling_time_last_minute) });
     }
@@ -1143,7 +1130,7 @@ unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, p
 unsafe fn controls(window: HWND, state: &mut State) -> bool {
     if !fonts(window, state) { return false; }
     let resources = state.resources.as_ref().unwrap();
-    let displays = [DisplayItem::Brand, DisplayItem::Status { health: Health::Scanning, polling_time_last_minute: Duration::ZERO }];
+    let displays = [DisplayItem::Status { health: Health::Scanning, polling_time_last_minute: Duration::ZERO }];
     for (index, display) in displays.into_iter().enumerate() {
         let Some(card) = create_card(window, 1002 + index, None, None, display, resources) else { return false; };
         state.fixed.push(card);
