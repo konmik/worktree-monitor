@@ -982,11 +982,16 @@ unsafe fn edge_hit_transparent(window: HWND, point: POINT) -> bool {
     resize_hit(root, point).is_some()
 }
 
-unsafe fn update_control_visibility(window: HWND, state: &mut State) {
+unsafe fn update_hover_state(window: HWND, state: &mut State) {
     let mut point: POINT = std::mem::zeroed();
     let visible = IsWindowVisible(window) != 0 && IsIconic(window) == 0 && GetCursorPos(&mut point) != 0
         && GetAncestor(WindowFromPoint(point), GA_ROOT) == window;
     if visible == state.controls_visible { return; }
+    if SetLayeredWindowAttributes(window, 0, if visible { 255 } else { 51 }, LWA_ALPHA) == 0 {
+        state.failure = Some(io::Error::last_os_error());
+        PostMessageW(window, WM_CLOSE, 0, 0);
+        return;
+    }
     state.controls_visible = visible;
     let focus = GetFocus();
     if !visible && (focus == state.show_all_button || state.cards.iter().any(|card| card.action == Some(focus))) {
@@ -999,7 +1004,7 @@ unsafe fn update_control_visibility(window: HWND, state: &mut State) {
     layout(window, state, None, false);
 }
 
-unsafe fn track_controls(window: HWND, message: u32) {
+unsafe fn track_hover(window: HWND, message: u32) {
     if !matches!(message, WM_MOUSEMOVE | WM_NCMOUSEMOVE | WM_MOUSELEAVE | WM_NCMOUSELEAVE) { return; }
     if matches!(message, WM_MOUSEMOVE | WM_NCMOUSEMOVE) {
         let mut tracking = TRACKMOUSEEVENT { cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
@@ -1009,11 +1014,11 @@ unsafe fn track_controls(window: HWND, message: u32) {
     }
     let root = GetAncestor(window, GA_ROOT);
     let pointer = GetWindowLongPtrW(root, GWLP_USERDATA) as *mut State;
-    if !pointer.is_null() { update_control_visibility(root, &mut *pointer); }
+    if !pointer.is_null() { update_hover_state(root, &mut *pointer); }
 }
 
 unsafe extern "system" fn edge_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
-    track_controls(window, message);
+    track_hover(window, message);
     if message == WM_NCDESTROY { RemoveWindowSubclass(window, Some(edge_procedure), 1); }
     if message == WM_NCHITTEST && edge_hit_transparent(window, mouse_point(lparam)) {
         return HTTRANSPARENT as LRESULT;
@@ -1089,7 +1094,7 @@ unsafe fn paint_scrollbar(window: HWND, state: &State, message: u32, wparam: WPA
 }
 
 unsafe extern "system" fn scrollbar_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, data: usize) -> LRESULT {
-    track_controls(window, message);
+    track_hover(window, message);
     if message == WM_NCDESTROY { RemoveWindowSubclass(window, Some(scrollbar_procedure), 1); }
     if message == WM_NCHITTEST {
         let point = mouse_point(lparam);
@@ -1317,7 +1322,7 @@ unsafe fn finish_drag(pointer: *mut State, point: POINT) {
 }
 
 unsafe extern "system" fn card_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
-    track_controls(window, message);
+    track_hover(window, message);
     if matches!(message, WM_COMMAND | WM_DRAWITEM | WM_CTLCOLORBTN) {
         let viewport = GetParent(window);
         if !viewport.is_null() && !(GetWindowLongPtrW(viewport, GWLP_USERDATA) as *mut State).is_null() {
@@ -1376,7 +1381,7 @@ unsafe extern "system" fn card_procedure(window: HWND, message: u32, wparam: WPA
 }
 
 unsafe extern "system" fn show_all_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, data: usize) -> LRESULT {
-    track_controls(window, message);
+    track_hover(window, message);
     if message == WM_ERASEBKGND { return 1; }
     if message == WM_NCDESTROY { RemoveWindowSubclass(window, Some(show_all_procedure), 1); }
     if message == WM_NCHITTEST && edge_hit_transparent(window, mouse_point(lparam)) {
@@ -1427,7 +1432,7 @@ unsafe fn callback(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, v
 }
 
 unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, pointer: *mut State, viewport: bool) -> LRESULT {
-    track_controls(window, message);
+    track_hover(window, message);
     match message {
         WM_NCCALCSIZE if !viewport => 0,
         WM_NCACTIVATE if !viewport => DefWindowProcW(window, message, wparam, -1),
@@ -1489,7 +1494,7 @@ unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, p
         }
         WM_TIMER if !viewport => {
             let state = &mut *pointer;
-            update_control_visibility(window, state);
+            update_hover_state(window, state);
             if state.scrollbar_idle.is_some_and(|deadline| Instant::now() >= deadline)
                 && GetCapture() != state.scrollbar {
                 ShowWindow(state.scrollbar, SW_HIDE);
@@ -1645,7 +1650,7 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
             UnregisterClassW(class.as_ptr(), instance);
             return Err(error);
         }
-        let window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE, class.as_ptr(), wide("WTS Worktree status").as_ptr(),
+        let window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED, class.as_ptr(), wide("WTS Worktree status").as_ptr(),
             WS_POPUP | WS_SYSMENU | WS_THICKFRAME | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, CW_USEDEFAULT, CW_USEDEFAULT, 640, 540, null_mut(), null_mut(), instance,
             (&mut *state as *mut State).cast());
         if window.is_null() {
@@ -1678,13 +1683,14 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
             } else { (rect.left, rect.top, 640 * dpi / 96, 540 * dpi / 96) };
             SetWindowPos(window, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE)
         };
-        if positioned == 0 {
+        if positioned == 0 || SetLayeredWindowAttributes(window, 0, 51, LWA_ALPHA) == 0 {
             state.failure = Some(io::Error::last_os_error());
             DestroyWindow(window);
         } else {
             ShowWindow(window, if restored == Some(ShowState::Maximized) { SW_SHOWMAXIMIZED } else { SW_SHOWNOACTIVATE });
             let style = GetWindowLongPtrW(window, GWL_EXSTYLE);
             SetWindowLongPtrW(window, GWL_EXSTYLE, style & !(WS_EX_NOACTIVATE as isize));
+            update_hover_state(window, &mut state);
         }
         state.starting = false;
         let mut message: MSG = std::mem::zeroed();
