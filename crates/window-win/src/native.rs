@@ -307,7 +307,7 @@ mod row_tests {
     use super::*;
 
     #[test]
-    fn refresh_marker_pixels_follow_displayed_name_by_one_physical_pixel() {
+    fn refresh_marker_pixels_follow_displayed_name_by_one_space() {
         unsafe {
             let screen = GetDC(null_mut());
             for dpi in [96, 120, 144, 192] {
@@ -326,7 +326,9 @@ mod row_tests {
                     assert_ne!(GetTextExtentPoint32W(expected, name_wide.as_ptr(), (name_wide.len() - 1) as i32, &mut name_size), 0);
                     let mut marker_size = std::mem::zeroed();
                     assert_ne!(GetTextExtentPoint32W(expected, wide("*").as_ptr(), 1, &mut marker_size), 0);
-                    let width = if narrow { name_size.cx + 1 + marker_size.cx } else { scaled(500, dpi) };
+                    let mut space_size = std::mem::zeroed();
+                    assert_ne!(GetTextExtentPoint32W(expected, wide(" ").as_ptr(), 1, &mut space_size), 0);
+                    let width = if narrow { name_size.cx + space_size.cx + marker_size.cx } else { scaled(500, dpi) };
                     let height = resources.typography.cell;
                     let actual_bitmap = CreateCompatibleBitmap(screen, width, height);
                     let expected_bitmap = CreateCompatibleBitmap(screen, width, height);
@@ -337,15 +339,17 @@ mod row_tests {
                     fill(expected, rect, resources.background);
                     draw_name(actual, name, rect, resources.font, WHITE, suffix, true);
                     text(expected, displayed, RECT { right: name_size.cx, ..rect }, resources.font, WHITE, DT_SINGLELINE);
-                    text(expected, "*", RECT { left: name_size.cx + 1, right: name_size.cx + 1 + marker_size.cx, ..rect }, resources.font, TEAL, DT_SINGLELINE);
+                    text(expected, "*", RECT { left: name_size.cx + space_size.cx, right: name_size.cx + space_size.cx + marker_size.cx, ..rect }, resources.font, TEAL, DT_SINGLELINE);
                     let mut marker_pixels = 0;
                     for y in 0..height {
                         for x in 0..width {
                             let pixel = GetPixel(actual, x, y);
                             assert_eq!(pixel, GetPixel(expected, x, y), "DPI {dpi}, {name}, pixel {x},{y}");
-                            if x > name_size.cx && pixel != BACKGROUND { marker_pixels += 1; }
+                            if x >= name_size.cx + space_size.cx && pixel != BACKGROUND { marker_pixels += 1; }
                         }
-                        assert_eq!(GetPixel(actual, name_size.cx, y), BACKGROUND);
+                        for x in name_size.cx..name_size.cx + space_size.cx {
+                            assert_eq!(GetPixel(actual, x, y), BACKGROUND);
+                        }
                     }
                     assert!(marker_pixels > 0);
                     SelectObject(actual, actual_old);
@@ -693,7 +697,8 @@ unsafe fn wrapped_width(dc: HDC, value: &str, font: HFONT) -> i32 {
 
 unsafe fn draw_name(dc: HDC, value: &str, rect: RECT, font: HFONT, color: COLORREF, suffix: bool, refreshing: bool) {
     let marker_width = wrapped_width(dc, "*", font);
-    let available = (rect.right - rect.left - if refreshing { marker_width + 1 } else { 0 }).max(0);
+    let space_width = wrapped_width(dc, " ", font);
+    let available = (rect.right - rect.left - if refreshing { marker_width + space_width } else { 0 }).max(0);
     let measure = |value: &str| wrapped_width(dc, value, font);
     let fitted = if suffix { ellipsize_start(value, available, measure) }
         else if measure(value) <= available { value.to_owned() }
@@ -710,7 +715,7 @@ unsafe fn draw_name(dc: HDC, value: &str, rect: RECT, font: HFONT, color: COLORR
     let name_right = rect.left + measure(&fitted);
     text(dc, &fitted, RECT { right: name_right, ..rect }, font, color, DT_SINGLELINE);
     if refreshing && !fitted.is_empty() {
-        text(dc, "*", RECT { left: name_right + 1, right: name_right + 1 + marker_width, ..rect }, font, TEAL, DT_SINGLELINE);
+        text(dc, "*", RECT { left: name_right + space_width, right: name_right + space_width + marker_width, ..rect }, font, TEAL, DT_SINGLELINE);
     }
 }
 

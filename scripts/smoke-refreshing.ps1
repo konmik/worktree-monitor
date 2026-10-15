@@ -86,9 +86,10 @@ public static class WtsRefreshingProbe {
         }
         if (font == IntPtr.Zero) throw new InvalidOperationException("Terminal font unavailable");
         var old = SelectObject(dc, font);
-        Point extent, marker;
+        Point extent, marker, space;
         GetTextExtentPoint32W(dc, name, name.Length, out extent);
         GetTextExtentPoint32W(dc, "*", 1, out marker);
+        GetTextExtentPoint32W(dc, " ", 1, out space);
         var expected = CreateCompatibleDC(dc);
         var bitmap = CreateCompatibleBitmap(dc, marker.X, marker.Y);
         var previous = SelectObject(expected, bitmap);
@@ -101,15 +102,17 @@ public static class WtsRefreshingProbe {
             SetBkMode(expected, 1);
             SetTextColor(expected, 84u | (213u << 8) | (197u << 16));
             if (refreshing) DrawTextW(expected, "*", 1, ref rect, 0x0820);
-            int left = 14 * dpi / 96 + extent.X + 1;
+            int left = 14 * dpi / 96 + extent.X + space.X;
             int top = repository ? 8 * dpi / 96 : 0;
             int ink = 0;
             for (int y = 0; y < marker.Y; y++) {
-                if (GetPixel(dc, left - 1, top + y) != background) throw new InvalidOperationException("Missing one-pixel gap for " + name);
+                for (int gap = 1; gap <= space.X; gap++) {
+                    if (GetPixel(dc, left - gap, top + y) != background) throw new InvalidOperationException("Missing one-space gap for " + name);
+                }
                 for (int x = 0; x < marker.X; x++) {
                     uint wanted = GetPixel(expected, x, y);
                     if (wanted != background) ink++;
-                    if (GetPixel(dc, left + x, top + y) != wanted) throw new InvalidOperationException("Marker differs from measured name width plus one physical pixel: " + name);
+                    if (GetPixel(dc, left + x, top + y) != wanted) throw new InvalidOperationException("Marker differs from measured name width plus one space: " + name);
                 }
             }
             if (refreshing && ink == 0) throw new InvalidOperationException("Marker proof is empty");
@@ -442,7 +445,7 @@ try {
                     foreach ($width in @(800, 380)) {
                         Set-FixtureSize $width
                         [WtsRefreshingProbe]::VerifyMarker($script:window, $name, $true, $true)
-                        $proof.marker_placement.Add(@{ name = $name; width = $width; dpi = [WtsRefreshingProbe]::GetDpiForWindow($script:window); physical_pixel_gap = 1 })
+                        $proof.marker_placement.Add(@{ name = $name; width = $width; dpi = [WtsRefreshingProbe]::GetDpiForWindow($script:window); character_space_gap = 1 })
                         Capture-Refreshing "repository-$name-$width"
                     }
                     $repositoryMarkers[$name] = $true
@@ -536,7 +539,7 @@ try {
                     foreach ($width in @(800, 380)) {
                         Set-FixtureSize $width
                         [WtsRefreshingProbe]::VerifyMarker($script:window, 'alpha-main', $false, $true)
-                        $proof.marker_placement.Add(@{ name = 'alpha-main'; width = $width; dpi = [WtsRefreshingProbe]::GetDpiForWindow($script:window); physical_pixel_gap = 1 })
+                        $proof.marker_placement.Add(@{ name = 'alpha-main'; width = $width; dpi = [WtsRefreshingProbe]::GetDpiForWindow($script:window); character_space_gap = 1 })
                         Capture-Refreshing "worktree-$width"
                     }
                 } else { Capture-Refreshing }
