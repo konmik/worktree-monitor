@@ -73,7 +73,8 @@ function Has-FixtureData([string]$Text) {
         @{ Name = 'edge-gateway'; Counts = '\+18\s+-12\b' },
         @{ Name = 'infra-tools'; Counts = '\+8\s+-0\b' }
     )) {
-        if (-not $Text.Contains($expected.Name) -or $Text -notmatch $expected.Counts) { return $false }
+        $row = '(?m)^' + [regex]::Escape($expected.Name) + '\r?\n[^\r\n]+\r?\n' + $expected.Counts
+        if ($Text -notmatch $row) { return $false }
     }
     return $true
 }
@@ -107,7 +108,7 @@ try {
         & $Binary add $repo
         if ($LASTEXITCODE -ne 0) { throw 'Visual fixture registration failed' }
     }
-    $process = Start-Process -FilePath $Binary -ArgumentList '--live' -NoNewWindow -PassThru
+    $process = Start-Process -FilePath $Binary -ArgumentList '--live' -WorkingDirectory $fixtureHome -NoNewWindow -PassThru
     $handle = [IntPtr]::Zero
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
     do {
@@ -118,7 +119,7 @@ try {
         }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
-    if ($handle -eq [IntPtr]::Zero -or -not (Has-FixtureData $text)) { throw 'Dashboard did not show all three real fixture totals' }
+    if ($handle -eq [IntPtr]::Zero -or -not (Has-FixtureData $text)) { throw 'Dashboard did not show all three real fixture counts' }
     [IO.File]::WriteAllText((Join-Path $fixture 'visible-text.txt'), $text)
     $automation = @"
 Add-Type -AssemblyName UIAutomationClient

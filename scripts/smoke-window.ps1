@@ -25,6 +25,8 @@ public static class WtsWindowProbe {
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr handle, out Rect rect);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr handle, out Rect rect);
     [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr handle, int id);
+    [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr handle);
+    [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")] public static extern bool GetScrollInfo(IntPtr handle, int bar, ref ScrollInfo info);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr handle, uint message, IntPtr wparam, IntPtr lparam);
     [DllImport("kernel32.dll")] public static extern uint GetConsoleProcessList(uint[] processIds, uint count);
@@ -58,12 +60,23 @@ public static class WtsWindowProbe {
         }, IntPtr.Zero);
         return all.ToString();
     }
+    public static string[] Captions(IntPtr parent) {
+        var captions = new System.Collections.Generic.List<string>();
+        EnumChildWindows(parent, (handle, data) => {
+            if (GetParent(handle) != parent || !IsWindowVisible(handle)) { return true; }
+            var text = new StringBuilder(65536);
+            GetWindowText(handle, text, text.Capacity);
+            captions.Add(text.ToString());
+            return true;
+        }, IntPtr.Zero);
+        return captions.ToArray();
+    }
     public static IntPtr FirstCard(IntPtr parent) {
         IntPtr found = IntPtr.Zero;
         EnumChildWindows(parent, (handle, data) => {
             var name = new StringBuilder(128);
             GetClassName(handle, name, name.Capacity);
-            if (name.ToString().Equals("STATIC", StringComparison.OrdinalIgnoreCase)) { found = handle; return false; }
+            if (GetParent(handle) == parent && IsWindowVisible(handle) && name.ToString().Equals("STATIC", StringComparison.OrdinalIgnoreCase)) { found = handle; return false; }
             return true;
         }, IntPtr.Zero);
         return found;
@@ -101,13 +114,9 @@ function Run-Git([string[]]$Arguments) {
 }
 
 function Has-Counts([int]$Added, [int]$Deleted) {
-    $text = [WtsWindowProbe]::Text($script:handle)
-    $counts = [regex]::Matches($text, '\+(\d+)\s+-(\d+)')
-    if ($counts.Count -eq 0) { return $false }
-    foreach ($count in $counts) {
-        if ([int]$count.Groups[1].Value -ne $Added -or [int]$count.Groups[2].Value -ne $Deleted) { return $false }
-    }
-    return $text -match 'repo'
+    $viewport = [WtsWindowProbe]::GetDlgItem($script:handle, 1001)
+    $rows = @([WtsWindowProbe]::Captions($viewport) | Where-Object { @($_ -split "`r?`n") -contains 'repo' })
+    return $rows.Count -eq 1 -and $rows[0] -match "\+$Added\s+-$Deleted\b"
 }
 
 $fixture = Join-Path $env:LOCALAPPDATA "Temp/opencode/wts-window-$([Guid]::NewGuid().ToString('N'))"
@@ -117,6 +126,7 @@ New-Item -ItemType Directory -Path $repo, $fixtureHome | Out-Null
 $oldHome = $env:HOME
 $oldProfile = $env:USERPROFILE
 $process = $null
+$previousDpiContext = [WtsWindowProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
 try {
     $env:HOME = Join-Path $fixture 'unix-home'
     $env:USERPROFILE = $fixtureHome
@@ -129,7 +139,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Registration failed' }
     $config = Join-Path $fixtureHome '.config/wts/config.json'
     if (-not (Test-Path -LiteralPath $config)) { throw 'Registry was not written at the required home path' }
-    $process = Start-Process -FilePath $Binary -ArgumentList '--live' -NoNewWindow -PassThru
+    $process = Start-Process -FilePath $Binary -ArgumentList '--live' -WorkingDirectory $fixtureHome -NoNewWindow -PassThru
     $script:handle = [IntPtr]::Zero
     Wait-For { $script:handle = [WtsWindowProbe]::Find([uint32]$process.Id); $script:handle -ne [IntPtr]::Zero } 'visible window'
     if ([WtsWindowProbe]::SharesConsole([uint32]$process.Id)) { throw 'Live window is still attached to the launching terminal' }
@@ -140,6 +150,7 @@ try {
     if ($foregroundOnShow -eq $script:handle) { throw 'Window took foreground focus' }
     Wait-For { Has-Counts 1 0 } 'initial +1 -0 count'
     $initial = [WtsWindowProbe]::Text($script:handle)
+    if ($initial -cmatch 'REPOSITORIES|WORKTREES|LINE CHANGES') { throw 'Dashboard still shows summary totals' }
     if ($initial -notmatch '5s\b') { throw 'Initial polling interval is not 5s' }
     [IO.File]::WriteAllText((Join-Path $fixture 'initial.txt'), $initial)
     $viewport = [WtsWindowProbe]::GetDlgItem($script:handle, 1001)
@@ -216,4 +227,5 @@ try {
     $env:HOME = $oldHome
     $env:USERPROFILE = $oldProfile
     if ($null -ne $process -and -not $process.HasExited) { $process.Kill($true); $process.WaitForExit() }
+    if ($previousDpiContext -ne [IntPtr]::Zero) { [void][WtsWindowProbe]::SetThreadDpiAwarenessContext($previousDpiContext) }
 }
