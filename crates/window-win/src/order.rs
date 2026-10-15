@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use wts_core::Snapshot;
+use wts_core::{ScanTarget, Snapshot};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OrderMove {
@@ -89,6 +89,24 @@ impl Order {
                 trees.sort_by_key(|tree| rank(&section.paths, &tree.path));
             }
         }
+    }
+
+    pub fn apply_targets(&self, targets: &mut [ScanTarget]) {
+        let mut repositories: Vec<_> = targets.iter().filter_map(|target| match target {
+            ScanTarget::Repository { common_dir, .. } => Some(identity(common_dir)),
+            ScanTarget::Worktree { .. } => None,
+        }).collect();
+        repositories.sort_by_key(|repository| rank(&self.repositories, repository));
+        targets.sort_by_key(|target| {
+            let (repository, child, worktree_rank) = match target {
+                ScanTarget::Repository { common_dir, .. } => (common_dir, false, 0),
+                ScanTarget::Worktree { repository, path } => {
+                    let section = self.worktrees.iter().find(|section| section.repository == identity(repository));
+                    (repository, true, section.map_or(usize::MAX, |section| rank(&section.paths, path)))
+                }
+            };
+            (rank(&repositories, repository), child, worktree_rank)
+        });
     }
 
     pub fn moved(&self, snapshot: &Snapshot, movement: &OrderMove) -> io::Result<Option<Self>> {

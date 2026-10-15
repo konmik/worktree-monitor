@@ -864,9 +864,9 @@ unsafe fn refresh_indicators(state: &mut State) {
 
 unsafe fn refresh(window: HWND, state: &mut State) {
     let mut view = if let Some(update) = &state.latest {
-        let mut snapshot = (*update.snapshot).clone();
-        state.order.apply(&mut snapshot);
-        let mut view = DashboardView::from_scan(&snapshot, &update.scan_targets, &state.visibility, show_all_checked(state));
+        let mut targets = update.scan_targets.clone();
+        state.order.apply_targets(&mut targets);
+        let mut view = DashboardView::from_scan(&update.snapshot, &targets, &state.visibility, show_all_checked(state));
         if let Some(error) = &update.launch_error { view.launch_error(error); }
         view
     } else { DashboardView::scanning() };

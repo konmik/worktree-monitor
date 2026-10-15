@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use window_win::dashboard::{DashboardView, ItemKey};
 use window_win::order::{identity, Order, OrderMove};
-use wts_core::{Error, ErrorKind, RepoEntry, Snapshot, WorktreeEntry};
+use wts_core::{Error, ErrorKind, Head, RepoEntry, ScanTarget, Snapshot, WorktreeEntry, WorktreeStats};
 
 struct Fixture {
     directory: TempDir,
@@ -52,6 +52,81 @@ fn repo_paths(snapshot: &Snapshot) -> Vec<PathBuf> {
 fn tree_paths(snapshot: &Snapshot, repository: &Path) -> Vec<PathBuf> {
     snapshot.repos.iter().find(|repo| identity(&repo.common_dir) == identity(repository)).unwrap().worktrees.as_ref().unwrap()
         .iter().map(|tree| identity(&tree.path)).collect()
+}
+
+fn scan_targets(snapshot: &Snapshot) -> Vec<ScanTarget> {
+    snapshot.repos.iter().flat_map(|repo| {
+        std::iter::once(ScanTarget::Repository { common_dir: repo.common_dir.clone(), path: repo.path.clone() })
+            .chain(repo.worktrees.as_ref().unwrap().iter().map(|tree| ScanTarget::Worktree {
+                repository: repo.common_dir.clone(), path: tree.path.clone(),
+            }))
+    }).collect()
+}
+
+#[test]
+fn target_order_is_stable_across_pending_later_completions_and_errors() {
+    let fixture = Fixture::new();
+    let repositories = Order::default().moved(&fixture.snapshot, &fixture.repository_move()).unwrap().unwrap();
+    let worktrees = Order::default().moved(&fixture.snapshot, &fixture.worktree_move(0)).unwrap().unwrap();
+    let saved = repositories.clone()
+        .moved(&fixture.snapshot, &fixture.worktree_move(0)).unwrap().unwrap()
+        .moved(&fixture.snapshot, &fixture.worktree_move(1)).unwrap().unwrap();
+    let mut successful = fixture.snapshot.clone();
+    for repo in &mut successful.repos {
+        for tree in repo.worktrees.as_mut().unwrap() {
+            tree.result = Ok(WorktreeStats { head: Head::Branch("main".into()), counts: Default::default() });
+        }
+    }
+    for order in [Order::default(), repositories, worktrees, saved] {
+        let mut targets = scan_targets(&fixture.snapshot);
+        order.apply_targets(&mut targets);
+        let mut ordered = fixture.snapshot.clone();
+        order.apply(&mut ordered);
+        let expected: Vec<_> = DashboardView::from_snapshot(&ordered).items.into_iter().map(|item| item.key).collect();
+        let mut later_repo = successful.clone();
+        later_repo.repos.remove(0);
+        later_repo.repos[0].worktrees.as_mut().unwrap().remove(0);
+        let mut later_sibling = successful.clone();
+        later_sibling.repos.remove(1);
+        later_sibling.repos[0].worktrees.as_mut().unwrap().remove(0);
+        let mut reversed = successful.clone();
+        reversed.repos.reverse();
+        for repo in &mut reversed.repos { repo.worktrees.as_mut().unwrap().reverse(); }
+        for snapshot in [Snapshot::default(), later_repo, later_sibling, reversed, successful.clone(), fixture.snapshot.clone()] {
+            let view = DashboardView::from_scan(&snapshot, &targets, &Default::default(), false);
+            assert_eq!(view.items.into_iter().map(|item| item.key).collect::<Vec<_>>(), expected);
+        }
+    }
+}
+
+#[test]
+fn target_partial_ranks_keep_unranked_groups_and_siblings_in_discovery_order() {
+    let fixture = Fixture::new();
+    let mut snapshot = fixture.snapshot.clone();
+    snapshot.repos[0].worktrees.as_mut().unwrap().push(WorktreeEntry {
+        path: fixture.directory.path().join("third-tree"), result: Err(Error { kind: ErrorKind::Git, message: "Unavailable".into() }),
+    });
+    let mut gamma = snapshot.repos[0].clone();
+    gamma.common_dir = fixture.directory.path().join("gamma/.git");
+    gamma.path = fixture.directory.path().join("gamma");
+    snapshot.repos.push(gamma);
+    let alpha = &snapshot.repos[0];
+    let trees = alpha.worktrees.as_ref().unwrap();
+    fs::write(fixture.path(), serde_json::to_vec(&serde_json::json!({ "version": 1,
+        "repositories": [snapshot.repos[1].common_dir, fixture.directory.path().join("absent/.git")],
+        "worktrees": [{ "repository": alpha.common_dir, "paths": [trees[1].path] }]
+    })).unwrap()).unwrap();
+    let mut targets = scan_targets(&snapshot);
+    targets.sort_by_key(|target| matches!(target, ScanTarget::Worktree { .. }));
+    for order in [Order::default(), Order::read(&fixture.path()).unwrap()] {
+        let mut actual = targets.clone();
+        order.apply_targets(&mut actual);
+        let mut expected = snapshot.clone();
+        order.apply(&mut expected);
+        assert_eq!(actual, scan_targets(&expected));
+        order.apply_targets(&mut actual);
+        assert_eq!(actual, scan_targets(&expected));
+    }
 }
 
 #[test]

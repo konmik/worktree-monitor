@@ -180,50 +180,53 @@ impl DashboardView {
     }
 
     pub fn from_scan(snapshot: &Snapshot, targets: &[ScanTarget], visibility: &Visibility, show_all: bool) -> Self {
-        let mut view = Self::from_snapshot_with_visibility(snapshot, visibility, show_all);
+        let mut items = Vec::new();
+        let mut errors = snapshot.config_error.is_some();
+        let mut pending = false;
+        if let Some(error) = &snapshot.config_error {
+            items.push(ViewItem { key: ItemKey::Configuration, display: DisplayItem::Notice {
+                title: "Configuration error".into(), message: format!("{:?}: {}", error.kind, error.message), error: true } });
+        }
         for target in targets {
             let ScanTarget::Repository { common_dir, path } = target else { continue; };
-            let key = ItemKey::Repository(identity(common_dir));
-            if !view.items.iter().any(|item| item.key == key) {
-                view.items.push(ViewItem { key, display: DisplayItem::Repository {
-                    name: name(path), worktrees: None, bare: false,
+            let repository = identity(common_dir);
+            let completed = snapshot.repos.iter().find(|repo| identity(&repo.common_dir) == repository);
+            let children: Vec<_> = targets.iter().filter_map(|target| match target {
+                ScanTarget::Worktree { repository: common, path } if identity(common) == repository => Some(path),
+                _ => None,
+            }).collect();
+            let failed = completed.is_some_and(|repo| repo.worktrees.is_err());
+            let count = if failed || (completed.is_none() && children.is_empty()) { None } else { Some(children.len()) };
+            pending |= completed.is_none() && children.is_empty();
+            items.push(ViewItem { key: ItemKey::Repository(repository.clone()), display: DisplayItem::Repository {
+                name: name(completed.map_or(path, |repo| &repo.path)), worktrees: count,
+                bare: completed.is_some_and(|repo| repo.worktrees.as_ref().is_ok_and(|trees| trees.is_empty())) && children.is_empty(),
+            } });
+            if let Some(repo) = completed.filter(|repo| repo.worktrees.is_err()) {
+                let error = repo.worktrees.as_ref().unwrap_err();
+                errors = true;
+                items.push(ViewItem { key: ItemKey::RepositoryError(repository), display: DisplayItem::Notice {
+                    title: "Repository error · counts unavailable".into(),
+                    message: format!("{}\n{:?}: {}", repo.path.display(), error.kind, error.message), error: true } });
+                continue;
+            }
+            for path in children {
+                let tree = completed.and_then(|repo| repo.worktrees.as_ref().ok())
+                    .and_then(|trees| trees.iter().find(|tree| identity(&tree.path) == identity(path)));
+                pending |= tree.is_none();
+                errors |= tree.is_some_and(|tree| tree.result.is_err());
+                if !show_all && visibility.contains(&repository, path) { continue; }
+                items.push(ViewItem { key: ItemKey::Worktree(repository.clone(), identity(path)), display: match tree {
+                    Some(tree) => DisplayItem::Worktree { path: tree.path.clone(), result: tree.result.clone() },
+                    None => DisplayItem::PendingWorktree { path: path.clone() },
                 } });
             }
         }
-        for target in targets {
-            let ScanTarget::Worktree { repository, path } = target else { continue; };
-            let repository = identity(repository);
-            let key = ItemKey::Worktree(repository.clone(), identity(path));
-            if view.items.iter().any(|item| item.key == key)
-                || (!show_all && visibility.contains(&repository, path))
-                || snapshot.repos.iter().any(|repo| identity(&repo.common_dir) == repository && repo.worktrees.is_err()) {
-                continue;
-            }
-            let Some(header) = view.items.iter().position(|item| item.key == ItemKey::Repository(repository.clone())) else { continue; };
-            let end = view.items.iter().enumerate().skip(header + 1)
-                .find(|(_, item)| matches!(item.key, ItemKey::Repository(_))).map_or(view.items.len(), |(index, _)| index);
-            view.items.insert(end, ViewItem { key, display: DisplayItem::PendingWorktree { path: path.clone() } });
+        if !items.iter().any(|item| matches!(item.key, ItemKey::Repository(_))) {
+            items.push(ViewItem { key: ItemKey::Empty, display: DisplayItem::Notice {
+                title: "No registered repositories.".into(), message: String::new(), error: false } });
         }
-        for item in &mut view.items {
-            let ItemKey::Repository(repository) = &item.key else { continue; };
-            if snapshot.repos.iter().any(|repo| identity(&repo.common_dir) == *repository && repo.worktrees.is_err()) { continue; }
-            let discovered = targets.iter().filter(|target| matches!(target,
-                ScanTarget::Worktree { repository: common, .. } if identity(common) == *repository)).count();
-            if discovered > 0 {
-                if let DisplayItem::Repository { worktrees, bare, .. } = &mut item.display {
-                    *worktrees = Some(discovered);
-                    *bare = false;
-                }
-            }
-        }
-        if view.items.iter().any(|item| matches!(item.key, ItemKey::Repository(_))) {
-            view.items.retain(|item| item.key != ItemKey::Empty);
-        }
-        if !snapshot.has_errors() && view.items.iter().any(|item| matches!(item.display,
-            DisplayItem::PendingWorktree { .. } | DisplayItem::Repository { worktrees: None, .. })) {
-            view.health = Health::Scanning;
-        }
-        view
+        Self { health: if errors { Health::Errors } else if pending { Health::Scanning } else { Health::Live }, items }
     }
 
     pub fn launch_error(&mut self, error: &Error) {

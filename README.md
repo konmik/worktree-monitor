@@ -54,6 +54,7 @@ pwsh -NoProfile -File scripts/smoke-resize.ps1
 pwsh -NoProfile -File scripts/smoke-features.ps1
 pwsh -NoProfile -File scripts/smoke-visibility.ps1
 pwsh -NoProfile -File scripts/smoke-refreshing.ps1
+pwsh -NoProfile -File scripts/smoke-refreshing.ps1 -SavedOrder
 ```
 
 The smoke checks use isolated temporary repositories and configuration. The window checks need an interactive Windows desktop. They check the real window, live counts, polling time, registry reload, saved visibility, drag redraws, and closing.
