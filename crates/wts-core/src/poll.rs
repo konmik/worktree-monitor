@@ -8,8 +8,24 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Debug)]
 pub struct MonitorUpdate {
     pub snapshot: Arc<Snapshot>,
+    pub scan_targets: Vec<ScanTarget>,
+    pub scan_activities: Vec<ScanActivity>,
     pub launch_error: Option<Error>,
     pub polling_time_last_minute: Duration,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum ScanTarget {
+    Repository { common_dir: PathBuf, path: PathBuf },
+    Worktree { repository: PathBuf, path: PathBuf },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScanActivity {
+    pub target: ScanTarget,
+    pub generation: u64,
+    pub started_at: Instant,
+    pub finished_at: Option<Instant>,
 }
 
 pub struct Monitor {
@@ -115,6 +131,7 @@ impl PollingTime {
 struct WorktreeState {
     path: PathBuf,
     last: Option<Result<WorktreeStats, Error>>,
+    activity: Option<ScanActivity>,
 }
 
 struct RepoState {
@@ -123,6 +140,7 @@ struct RepoState {
     discovered: Option<Result<git::DiscoveredRepo, Error>>,
     worktrees: Vec<WorktreeKey>,
     sources: Vec<PathBuf>,
+    activity: Option<ScanActivity>,
 }
 
 const PASS_DELAY: Duration = Duration::from_secs(10);
@@ -159,6 +177,9 @@ struct Coordinator {
     watch: watch::WatchBoundary,
     watch_dirty: bool,
     monitors_failed: bool,
+    scan_generation: u64,
+    #[cfg(test)]
+    published: Vec<Arc<MonitorUpdate>>,
 }
 
 impl Coordinator {
@@ -174,6 +195,9 @@ impl Coordinator {
             worktrees: HashMap::new(), passes: ScanPasses::default(),
             polling_time: PollingTime::default(), snapshot: Arc::new(Snapshot::default()),
             watch, watch_dirty: true, monitors_failed: false,
+            scan_generation: 0,
+            #[cfg(test)]
+            published: Vec::new(),
         }
     }
 
@@ -198,6 +222,8 @@ impl Coordinator {
             if let Some(retry) = self.watch.next_retry() { wait = wait.min(retry.saturating_duration_since(now)); }
             self.cancel.wait_since(generation, wait);
         }
+        self.finish_scan();
+        self.publish_update();
     }
 
     fn pending(&self) -> bool {
@@ -277,6 +303,7 @@ impl Coordinator {
                 self.repos.insert(key, RepoState {
                     path: display_path(&common_dir), common_dir,
                     discovered: None, worktrees: Vec::new(), sources: Vec::new(),
+                    activity: None,
                 });
             }
         }
@@ -306,9 +333,12 @@ impl Coordinator {
             if !discoveries.contains(&common) { continue; }
             worked = true;
             let start = Instant::now();
+            self.start_scan(&common, None);
             let result = git::discover(&self.repos[&common].common_dir, &self.cancel);
             self.apply_discovery(&common, result);
             self.polling_time.record(start, Instant::now());
+            self.finish_scan();
+            self.publish();
         }
         self.reconcile_watches();
         self.receive_watch();
@@ -322,9 +352,11 @@ impl Coordinator {
             let path = state.path.clone();
             worked = true;
             let start = Instant::now();
+            self.start_scan(&key.common, Some(&key));
             let result = git::scan_tree(&path, &self.cancel);
             self.polling_time.record(start, Instant::now());
             self.worktrees.get_mut(&key).unwrap().last = Some(result);
+            self.finish_scan();
             self.publish();
             self.receive_watch();
         }
@@ -351,6 +383,7 @@ impl Coordinator {
                 } else {
                     self.worktrees.insert(key.clone(), WorktreeState {
                         path: tree.path.clone(), last: tree.error.clone().map(Err),
+                        activity: None,
                     });
                     if tree.error.is_none() { self.passes.changed.insert(key); }
                 }
@@ -386,11 +419,63 @@ impl Coordinator {
         }).collect();
         let snapshot = Snapshot { repos, config_error: self.registrations.error.clone() };
         if snapshot != *self.snapshot { self.snapshot = Arc::new(snapshot); }
+        self.publish_update();
+    }
+
+    fn start_scan(&mut self, common: &Path, tree: Option<&WorktreeKey>) {
+        self.scan_generation += 1;
+        let repo = self.repos.get_mut(common).unwrap();
+        let started_at = Instant::now();
+        repo.activity = Some(ScanActivity {
+            target: ScanTarget::Repository { common_dir: repo.common_dir.clone(), path: repo.path.clone() },
+            generation: self.scan_generation, started_at, finished_at: None,
+        });
+        if let Some(key) = tree {
+            let state = self.worktrees.get_mut(key).unwrap();
+            state.activity = Some(ScanActivity {
+                target: ScanTarget::Worktree { repository: repo.common_dir.clone(), path: state.path.clone() },
+                generation: self.scan_generation, started_at, finished_at: None,
+            });
+        }
+        self.publish_update();
+    }
+
+    fn finish_scan(&mut self) {
+        let now = Instant::now();
+        for activity in self.repos.values_mut().filter_map(|repo| repo.activity.as_mut())
+            .chain(self.worktrees.values_mut().filter_map(|tree| tree.activity.as_mut())) {
+            if activity.finished_at.is_none() { activity.finished_at = Some(now); }
+        }
+    }
+
+    fn publish_update(&mut self) {
+        let mut scan_targets = Vec::new();
+        let mut scan_activities = Vec::new();
+        for common in &self.repo_order {
+            let repo = &self.repos[common];
+            let target = ScanTarget::Repository { common_dir: repo.common_dir.clone(), path: repo.path.clone() };
+            if let Some(activity) = &repo.activity {
+                scan_activities.push(ScanActivity { target: target.clone(), ..activity.clone() });
+            }
+            scan_targets.push(target);
+            for key in &repo.worktrees {
+                let state = &self.worktrees[key];
+                let target = ScanTarget::Worktree { repository: repo.common_dir.clone(), path: state.path.clone() };
+                if let Some(activity) = &state.activity {
+                    scan_activities.push(ScanActivity { target: target.clone(), ..activity.clone() });
+                }
+                scan_targets.push(target);
+            }
+        }
         let update = MonitorUpdate {
             snapshot: self.snapshot.clone(), launch_error: self.launch_error.clone(),
+            scan_targets, scan_activities,
             polling_time_last_minute: self.polling_time.total(Instant::now()),
         };
-        *self.latest.lock().unwrap_or_else(|error| error.into_inner()) = Some(Arc::new(update));
+        let update = Arc::new(update);
+        #[cfg(test)]
+        self.published.push(update.clone());
+        *self.latest.lock().unwrap_or_else(|error| error.into_inner()) = Some(update);
     }
 }
 
@@ -406,6 +491,130 @@ fn is_not_git(error: &Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scan_fixture(count: usize) -> (tempfile::TempDir, Coordinator) {
+        let directory = tempfile::tempdir().unwrap();
+        let mut repos = Vec::new();
+        for index in 0..count {
+            let path = directory.path().join(format!("repo-{index}"));
+            std::fs::create_dir(&path).unwrap();
+            crate::process::checked(Some(&path), &crate::process::args(&["init", "--quiet"]), &Cancel::new()).unwrap();
+            repos.push(path.join(".git"));
+        }
+        let config = directory.path().join("config.json");
+        let bytes = serde_json::to_vec(&serde_json::json!({ "repos": repos })).unwrap();
+        std::fs::write(&config, &bytes).unwrap();
+        let mut coordinator = Coordinator::new(Service::at(config), None, Cancel::new(), Arc::new(Mutex::new(None)));
+        coordinator.registrations.reload(Ok(bytes));
+        coordinator.refresh_repositories();
+        coordinator.launch_changed = false;
+        (directory, coordinator)
+    }
+
+    #[test]
+    fn actual_scans_publish_starts_results_and_pending_descriptors() {
+        let (_directory, mut coordinator) = scan_fixture(1);
+        let original = coordinator.snapshot.clone();
+        coordinator.scan_pass();
+        let updates = &coordinator.published;
+        assert_eq!(updates.len(), 4);
+        let discovery_start = &updates[0];
+        assert!(Arc::ptr_eq(&original, &discovery_start.snapshot));
+        assert_eq!(discovery_start.scan_targets.len(), 1);
+        assert_eq!(discovery_start.scan_activities.len(), 1);
+        assert!(discovery_start.scan_activities[0].finished_at.is_none());
+        let discovery_end = &updates[1];
+        assert!(discovery_end.snapshot.repos.is_empty());
+        assert_eq!(discovery_end.scan_targets.len(), 2);
+        assert!(discovery_end.scan_activities[0].finished_at.is_some());
+        assert!(!coordinator.repos.values().next().unwrap().sources.is_empty());
+        let tree_start = &updates[2];
+        assert!(Arc::ptr_eq(&discovery_end.snapshot, &tree_start.snapshot));
+        assert_eq!(tree_start.scan_activities.len(), 2);
+        assert!(tree_start.scan_activities.iter().all(|activity| activity.finished_at.is_none()));
+        let tree_end = &updates[3];
+        assert_eq!(tree_end.snapshot.repos[0].worktrees.as_ref().unwrap().len(), 1);
+        assert!(tree_end.scan_activities.iter().all(|activity| activity.finished_at.is_some_and(|end| end >= activity.started_at)));
+        assert_eq!(tree_start.scan_activities, tree_end.scan_activities.iter().map(|activity| ScanActivity {
+            finished_at: None, ..activity.clone()
+        }).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn fast_completed_activity_is_retained_and_unchanged_scans_are_isolated() {
+        let (_directory, mut coordinator) = scan_fixture(2);
+        coordinator.scan_pass();
+        let snapshot = coordinator.snapshot.clone();
+        let common = coordinator.repo_order[0].clone();
+        let key = coordinator.repos[&common].worktrees[0].clone();
+        let other = coordinator.repos[&coordinator.repo_order[1]].activity.clone().unwrap();
+        let previous = coordinator.worktrees[&key].activity.clone().unwrap();
+        coordinator.discoveries.clear();
+        coordinator.passes.changed.clear();
+        coordinator.passes.changed.insert(key.clone());
+        coordinator.scan_pass();
+        assert!(Arc::ptr_eq(&snapshot, &coordinator.snapshot));
+        assert!(coordinator.worktrees[&key].activity.as_ref().unwrap().generation > previous.generation);
+        assert_eq!(coordinator.repos[&coordinator.repo_order[1]].activity.as_ref(), Some(&other));
+        let completed = coordinator.latest.lock().unwrap().clone().unwrap();
+        coordinator.publish();
+        coordinator.publish();
+        let retained = coordinator.latest.lock().unwrap().clone().unwrap();
+        assert_eq!(completed.scan_activities, retained.scan_activities);
+        assert_eq!(retained.scan_targets.len(), 4);
+        assert_eq!(retained.scan_activities.len(), 4);
+        assert!(retained.scan_activities.iter().all(|activity| activity.finished_at.is_some()));
+    }
+
+    #[test]
+    fn queued_work_has_no_activity_and_removing_targets_removes_activity() {
+        let (_directory, mut coordinator) = scan_fixture(1);
+        coordinator.publish();
+        assert!(coordinator.published.last().unwrap().scan_activities.is_empty());
+        coordinator.scan_pass();
+        let key = coordinator.worktrees.keys().next().unwrap().clone();
+        coordinator.enqueue(watch::WatchBatch { worktrees: HashSet::from([key]), ..Default::default() });
+        coordinator.publish();
+        assert!(coordinator.published.last().unwrap().scan_activities.iter().all(|activity| activity.finished_at.is_some()));
+        coordinator.registrations.repos.clear();
+        coordinator.refresh_repositories();
+        coordinator.publish();
+        let update = coordinator.published.last().unwrap();
+        assert!(update.scan_targets.is_empty());
+        assert!(update.scan_activities.is_empty());
+    }
+
+    #[test]
+    fn removing_a_worktree_removes_its_retained_activity() {
+        let (_directory, mut coordinator) = scan_fixture(1);
+        coordinator.scan_pass();
+        let common = coordinator.repo_order[0].clone();
+        let path = coordinator.repos[&common].path.clone();
+        coordinator.apply_discovery(&common, Ok(git::DiscoveredRepo { path, trees: Vec::new() }));
+        coordinator.publish();
+        let update = coordinator.published.last().unwrap();
+        assert_eq!(update.scan_targets.len(), 1);
+        assert_eq!(update.scan_activities.len(), 1);
+        assert!(matches!(update.scan_activities[0].target, ScanTarget::Repository { .. }));
+    }
+
+    #[test]
+    fn cancelled_coordinator_finishes_active_activity_promptly() {
+        let (_directory, mut coordinator) = scan_fixture(1);
+        let common = coordinator.repo_order[0].clone();
+        coordinator.start_scan(&common, None);
+        let latest = coordinator.latest.clone();
+        let active = latest.lock().unwrap().clone().unwrap();
+        assert_eq!(active.scan_activities.len(), 1);
+        assert!(active.scan_activities[0].finished_at.is_none());
+        coordinator.cancel.cancel();
+        let start = Instant::now();
+        coordinator.run();
+        assert!(start.elapsed() < Duration::from_secs(1));
+        let update = latest.lock().unwrap().clone().unwrap();
+        assert_eq!(update.scan_activities.len(), 1);
+        assert!(update.scan_activities.iter().all(|activity| activity.finished_at.is_some()));
+    }
 
     #[test]
     fn passes_wait_ten_seconds_after_completion_without_sliding() {
@@ -451,7 +660,7 @@ mod tests {
         let latest = Arc::new(Mutex::new(None));
         let mut coordinator = Coordinator::new(Service::at("config.json"), None, Cancel::new(), latest);
         let key = WorktreeKey::new(Path::new("repo/.git"), Path::new("repo"));
-        coordinator.worktrees.insert(key, WorktreeState { path: PathBuf::from("repo"), last: None });
+        coordinator.worktrees.insert(key, WorktreeState { path: PathBuf::from("repo"), last: None, activity: None });
         coordinator.enqueue(watch::WatchBatch { full: true, ..Default::default() });
         assert!(coordinator.passes.changed.is_empty());
     }
@@ -467,6 +676,7 @@ mod tests {
         coordinator.repos.insert(common.clone(), RepoState {
             common_dir, path: directory.path().to_path_buf(), discovered: None,
             worktrees: Vec::new(), sources: Vec::new(),
+            activity: None,
         });
         let mut discovered = git::DiscoveredRepo {
             path: directory.path().to_path_buf(),

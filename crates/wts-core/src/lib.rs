@@ -6,7 +6,7 @@ mod process;
 mod watch;
 
 pub use model::{Counts, Error, ErrorKind, Head, LineCounts, RepoEntry, Snapshot, WorktreeEntry, WorktreeStats};
-pub use poll::{Monitor, MonitorUpdate};
+pub use poll::{Monitor, MonitorUpdate, ScanActivity, ScanTarget};
 pub use process::Cancel;
 
 use std::path::{Path, PathBuf};
