@@ -1,7 +1,9 @@
 use crate::dashboard::{ellipsize_start, DashboardView, DisplayItem, Health, ItemKey, RefreshTracker};
 use crate::order::{Order, OrderMove};
 use crate::placement_win;
+use crate::layout::{self, Rect, RowSize};
 use crate::visibility::Visibility;
+use crate::typography::{self, Typography, FONT_SIZE};
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -30,14 +32,12 @@ const WHITE: COLORREF = rgb(232, 239, 235);
 const MUTED: COLORREF = rgb(132, 150, 156);
 const STATIC_OWNERDRAW: u32 = 13;
 const STATIC_NOTIFY: u32 = 256;
-const WORKTREE_SUCCESS_HEIGHT: i32 = 64;
-const WORKTREE_ERROR_HEIGHT: i32 = 76;
-const WORKTREE_ACTION_WIDTH: i32 = 78;
 
 const fn rgb(red: u32, green: u32, blue: u32) -> COLORREF { red | (green << 8) | (blue << 16) }
 
 struct Resources {
     font: HFONT,
+    typography: Typography,
     background: HBRUSH,
     teal: HBRUSH,
     muted: HBRUSH,
@@ -45,12 +45,12 @@ struct Resources {
 
 impl Resources {
     unsafe fn new(dpi: i32) -> Option<Self> {
-        let mut resources = Self { font: null_mut(), background: CreateSolidBrush(BACKGROUND),
+        let mut resources = Self { font: null_mut(), typography: Typography::new(dpi, 1), background: CreateSolidBrush(BACKGROUND),
             teal: CreateSolidBrush(TEAL), muted: CreateSolidBrush(MUTED) };
         let dc = CreateCompatibleDC(null_mut());
         if dc.is_null() { return None; }
         for face in ["Berkeley Mono", "Berkeley Mono Variable", "Consolas", "Cascadia Mono", "Courier New"] {
-            let font = CreateFontW(-(14 * dpi / 96), 0, 0, 0, 400, 0, 0, 0,
+            let font = CreateFontW(-(FONT_SIZE * dpi / 96), 0, 0, 0, 400, 0, 0, 0,
                 DEFAULT_CHARSET as u32, 0, 0, CLEARTYPE_QUALITY as u32, (FIXED_PITCH | FF_MODERN) as u32,
                 wide(face).as_ptr());
             if font.is_null() { continue; }
@@ -63,6 +63,7 @@ impl Resources {
             let actual = String::from_utf16_lossy(&actual[..length.min(actual.len())]);
             if actual.trim_end_matches('\0').eq_ignore_ascii_case(face) && monospaced {
                 resources.font = font;
+                resources.typography = Typography::new(dpi, metrics.tmHeight);
                 break;
             }
             DeleteObject(font);
@@ -94,6 +95,7 @@ struct Card {
     refreshing: bool,
     top: i32,
     height: i32,
+    action_rect: Option<Rect>,
 }
 
 struct State {
@@ -201,7 +203,7 @@ unsafe fn create_card(parent: HWND, id: usize, action_id: Option<usize>, key: Op
         if matches!(display, DisplayItem::PendingWorktree { .. }) { EnableWindow(action, 0); }
         Some(action)
     } else { None };
-    Some(Card { window, action, action_hidden: None, key, display, refreshing: false, top: 0, height: 0 })
+    Some(Card { window, action, action_hidden: None, key, display, refreshing: false, top: 0, height: 0, action_rect: None })
 }
 
 unsafe fn destroy_card(card: Card) {
@@ -263,35 +265,30 @@ unsafe fn fonts(window: HWND, state: &mut State) -> bool {
     true
 }
 
-unsafe fn wrapped_height(dc: HDC, text: &str, width: i32, font: HFONT) -> i32 {
-    let saved = SaveDC(dc);
-    SelectObject(dc, font);
-    let mut rect = RECT { left: 0, top: 0, right: width.max(1), bottom: 0 };
-    let mut text = wide(text);
-    DrawTextW(dc, text.as_mut_ptr(), (text.len() - 1) as i32, &mut rect, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
-    RestoreDC(dc, saved);
-    rect.bottom.max(1)
+unsafe fn wrapped_lines(dc: HDC, text: &str, width: i32, font: HFONT) -> Vec<String> {
+    typography::wrap(text, width, |value| wrapped_width(dc, value, font))
 }
 
 unsafe fn item_height(card: &Card, dc: HDC, width: i32, dpi: i32, resources: &Resources) -> i32 {
     let s = |value| scaled(value, dpi);
-    let indicator_height = if width < s(360) { 20 } else { 0 };
-    match &card.display {
-        DisplayItem::Repository { bare, .. } => s((if *bare { 66 } else { 40 }) + indicator_height),
-        DisplayItem::PendingWorktree { .. } => s(WORKTREE_SUCCESS_HEIGHT + indicator_height),
+    let indicator_lines = usize::from(width < s(360));
+    let lines = match &card.display {
+        DisplayItem::Repository { bare, .. } => 1 + usize::from(*bare) + indicator_lines,
+        DisplayItem::PendingWorktree { .. } => 2 + indicator_lines,
         DisplayItem::Worktree { result, .. } => {
             let text_width = worktree_text_width(width, dpi);
             match result {
-                Ok(_) => s(WORKTREE_SUCCESS_HEIGHT + indicator_height),
-                Err(error) => s(WORKTREE_ERROR_HEIGHT + indicator_height) + wrapped_height(dc, &format!("ERROR ({:?}): {}", error.kind, error.message), text_width, resources.font),
+                Ok(_) => 2 + indicator_lines,
+                Err(error) => 2 + indicator_lines + wrapped_lines(dc, &format!("ERROR ({:?}): {}", error.kind, error.message), text_width, resources.font).len(),
             }
         }
-        DisplayItem::Notice { message, .. } => s(42) + if message.is_empty() { 0 } else {
+        DisplayItem::Notice { message, .. } => 1 + if message.is_empty() { 0 } else {
             let text_width = (width - s(28)).max(1);
-            wrapped_height(dc, message, text_width, resources.font) + s(12)
+            wrapped_lines(dc, message, text_width, resources.font).len()
         },
-        _ => s(80),
-    }
+        _ => 1,
+    };
+    resources.typography.height(lines)
 }
 
 fn anchor(state: &State) -> Option<(ItemKey, i32)> {
@@ -317,21 +314,15 @@ unsafe fn position_cards(state: &State) {
             SetWindowPos(window, null_mut(), rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, flags);
         }
     }
-    for card in &state.cards { position_action(card, state.width, state.dpi); }
+    for card in &state.cards { position_action(card); }
     InvalidateRect(state.viewport, null(), 0);
 }
 
-unsafe fn position_action(card: &Card, width: i32, dpi: i32) {
+unsafe fn position_action(card: &Card) {
     let Some(action) = card.action else { return; };
-    let action_width = scaled(WORKTREE_ACTION_WIDTH, dpi).min(width.max(1));
-    let action_height = scaled(24, dpi).min(card.height.max(1));
-    let action_left = worktree_action_left(width, dpi);
-    SetWindowPos(action, null_mut(), action_left, scaled(7, dpi), action_width, action_height,
+    let Some(rect) = card.action_rect else { return; };
+    SetWindowPos(action, null_mut(), rect.left, rect.top, rect.width, rect.height,
         SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
-}
-
-fn worktree_action_left(width: i32, dpi: i32) -> i32 {
-    (width - scaled(WORKTREE_ACTION_WIDTH, dpi).min(width.max(1)) - scaled(10, dpi)).max(0)
 }
 
 unsafe fn wake_scrollbar(state: &mut State) {
@@ -383,27 +374,13 @@ unsafe fn layout(window: HWND, state: &mut State, restore: Option<(ItemKey, i32)
     let was_overflowing = state.content > state.page;
     let mut client: RECT = std::mem::zeroed();
     if GetClientRect(window, &mut client) == 0 || client.right <= 0 || client.bottom <= 0 { return; }
-    let s = |value| scaled(value, state.dpi);
-    let short = client.bottom < s(290);
-    let tiny = client.bottom < s(150);
-    let margin = s(if tiny { 6 } else if short { 10 } else { 18 });
-    let gap = s(if tiny { 5 } else if short { 8 } else { 12 });
-    let status_height = s(20);
-    let header = status_height;
-    let available = (client.right - margin * 2).max(1);
-    let width = available;
-    let scrollbar_width = scaled(8, state.dpi).min((margin - scaled(2, state.dpi)).max(1));
-    let toggle_width = scaled(112, state.dpi).min(width);
-    let toggle_height = scaled(24, state.dpi).min(status_height);
-    MoveWindow(state.fixed[0].window, margin, margin, (width - toggle_width).max(1), status_height, 0);
-    MoveWindow(state.show_all_button, margin + width - toggle_width, margin + (status_height - toggle_height) / 2,
-        toggle_width, toggle_height, 0);
-    let top = margin + header + gap;
-    let page = (client.bottom - top).max(1);
-    MoveWindow(state.viewport, margin, top, width, page, 0);
-    if !state.scrollbar.is_null() {
-        let left = margin + available + (margin - scrollbar_width).max(0) / 2;
-        MoveWindow(state.scrollbar, left, top, scrollbar_width, page, 0);
+    let dashboard = match layout::dashboard(client.right, client.bottom, state.dpi, state.resources.as_ref().unwrap().typography) {
+        Ok(layout) => layout,
+        Err(error) => { state.failure = Some(error); PostMessageW(window, WM_CLOSE, 0, 0); return; }
+    };
+    for (control, rect) in [(state.fixed[0].window, dashboard.status), (state.show_all_button, dashboard.toggle),
+        (state.viewport, dashboard.viewport), (state.scrollbar, dashboard.scrollbar)] {
+        if !control.is_null() { MoveWindow(control, rect.left, rect.top, rect.width.max(1), rect.height.max(1), 0); }
     }
     let mut viewport: RECT = std::mem::zeroed();
     GetClientRect(state.viewport, &mut viewport);
@@ -411,14 +388,20 @@ unsafe fn layout(window: HWND, state: &mut State, restore: Option<(ItemKey, i32)
     state.page = viewport.bottom.max(1);
     let resources = state.resources.as_ref().unwrap();
     let dc = GetDC(window);
-    let mut y: i32 = 0;
-    for card in &mut state.cards {
-        card.top = y;
-        card.height = item_height(card, dc, state.width, state.dpi, resources);
-        y = y.saturating_add(card.height).saturating_add(s(8));
-    }
+    let sizes: Vec<_> = state.cards.iter().map(|card| RowSize {
+        height: item_height(card, dc, state.width, state.dpi, resources), action: card.action.is_some(),
+    }).collect();
     ReleaseDC(window, dc);
-    state.content = y.saturating_sub(s(8)).max(0);
+    let content = match layout::content(state.width, state.dpi, resources.typography, &sizes) {
+        Ok(layout) => layout,
+        Err(error) => { state.failure = Some(error); PostMessageW(window, WM_CLOSE, 0, 0); return; }
+    };
+    for (card, row) in state.cards.iter_mut().zip(content.rows) {
+        card.top = row.rect.top;
+        card.height = row.rect.height;
+        card.action_rect = row.action;
+    }
+    state.content = content.height;
     if let Some((key, offset)) = &restore {
         if let Some(card) = state.cards.iter().find(|card| card.key.as_ref() == Some(key)) {
             state.scroll = card.top.saturating_add(*offset);
@@ -442,6 +425,13 @@ unsafe fn text(dc: HDC, value: &str, rect: RECT, font: HFONT, color: COLORREF, f
 }
 
 unsafe fn fill(dc: HDC, rect: RECT, brush: HBRUSH) { FillRect(dc, &rect, brush); }
+
+unsafe fn wrapped_text(dc: HDC, value: &str, rect: RECT, resources: &Resources, color: COLORREF) {
+    for (index, line) in wrapped_lines(dc, value, rect.right - rect.left, resources.font).iter().enumerate() {
+        let top = rect.top + index as i32 * resources.typography.advance;
+        text(dc, line, RECT { top, bottom: top + resources.typography.cell, ..rect }, resources.font, color, DT_SINGLELINE);
+    }
+}
 
 unsafe fn paint_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
     let width = draw.rcItem.right - draw.rcItem.left;
@@ -475,8 +465,13 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
     let bounds = |left, top, right, bottom| RECT { left: rect.left + left, top: rect.top + top,
         right: rect.left + right, bottom: rect.top + bottom };
     let inline_indicator = width >= s(360);
+    let typography = resources.typography;
+    let line_bounds = |left, index, right| {
+        let top = typography.top(index);
+        bounds(left, top, right, top + typography.cell)
+    };
     let indicator_right = if matches!(card.display, DisplayItem::Repository { .. }) { width - s(12) }
-        else { worktree_action_left(width, state.dpi) - s(8) };
+        else { card.action_rect.map_or(width - s(12), |rect| rect.left - s(8)) };
     let indicator_left = (indicator_right - s(12)).max(s(14));
     let heading_right = if inline_indicator { indicator_left - s(8) } else { indicator_right };
     let dragging = state.drag.as_ref().is_some_and(|drag| drag.source_handle == card.window);
@@ -484,12 +479,12 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
     match &card.display {
         DisplayItem::Status { health, .. } => {
             let color = match health { Health::Live => GREEN, Health::Errors => RED, Health::Scanning => MUTED };
-            let y = (height - s(15)) / 2;
-            text(dc, &format!("> {caption}"), bounds(0, y, width, y + s(20)), resources.font, color, line);
+            let y = (height - typography.cell) / 2;
+            text(dc, &format!("> {caption}"), bounds(0, y, width, y + typography.cell), resources.font, color, line);
         }
         DisplayItem::Repository { bare, .. } => {
-            text(dc, lines[0], bounds(s(14), s(8), if inline_indicator { heading_right } else { width - s(12) }, s(32)), resources.font, if dragging { GREEN } else { TEAL }, line);
-            if *bare { text(dc, lines[1], bounds(s(14), s(36), width - s(12), height), resources.font, MUTED, line); }
+            text(dc, lines[0], line_bounds(s(14), 0, if inline_indicator { heading_right } else { width - s(12) }), resources.font, if dragging { GREEN } else { TEAL }, line);
+            if *bare { text(dc, lines[1], line_bounds(s(14), 1, width - s(12)), resources.font, MUTED, line); }
         }
         DisplayItem::Worktree { path, result } => {
             let inset = worktree_inset(width, state.dpi);
@@ -499,8 +494,8 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
             let path = path.display().to_string();
             match result {
                 Ok(stats) => {
-                    text(dc, lines[0], bounds(inset, s(12), inset + heading_width, s(32)), resources.font, if dragging { GREEN } else { WHITE }, line);
-                    let y = s(37);
+                    text(dc, lines[0], line_bounds(inset, 0, inset + heading_width), resources.font, if dragging { GREEN } else { WHITE }, line);
+                    let y = typography.top(1);
                     let mut parts = vec![
                         ("S ".to_owned(), MUTED),
                         (format!("+{}", stats.counts.source.additions), GREEN),
@@ -516,16 +511,16 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
                     for (part, color) in parts {
                         let part_width = wrapped_width(dc, &part, resources.font).min(right.saturating_sub(x));
                         if part_width > 0 {
-                            text(dc, &part, bounds(x, y, (x + part_width).min(right), y + s(20)), resources.font, if dragging { GREEN } else { color }, line);
+                            text(dc, &part, bounds(x, y, (x + part_width).min(right), y + typography.cell), resources.font, if dragging { GREEN } else { color }, line);
                         }
                         x = (x + part_width).min(right);
                     }
                 }
-                Err(_) => {
+                Err(error) => {
                     let fitted_path = ellipsize_start(&path, heading_width, |value| wrapped_width(dc, value, resources.font));
-                    text(dc, &fitted_path, bounds(inset, s(12), inset + heading_width, s(32)), resources.font, if dragging { GREEN } else { MUTED }, DT_SINGLELINE);
-                    text(dc, lines[1], bounds(inset, s(36), right, s(57)), resources.font, MUTED, line);
-                    text(dc, &lines[2..].join("\n"), bounds(inset, s(60), right, height - s(if inline_indicator { 8 } else { 28 })), resources.font, RED, DT_WORDBREAK);
+                    text(dc, &fitted_path, line_bounds(inset, 0, inset + heading_width), resources.font, if dragging { GREEN } else { MUTED }, DT_SINGLELINE);
+                    text(dc, lines[1], line_bounds(inset, 1, right), resources.font, MUTED, line);
+                    wrapped_text(dc, &format!("ERROR ({:?}): {}", error.kind, error.message), line_bounds(inset, 2, right), resources, RED);
                 }
             }
         }
@@ -533,17 +528,17 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
             let inset = worktree_inset(width, state.dpi);
             let heading_width = (heading_right - inset).max(0);
             let fitted = ellipsize_start(&path.display().to_string(), heading_width, |value| wrapped_width(dc, value, resources.font));
-            text(dc, &fitted, bounds(inset, s(12), inset + heading_width, s(32)), resources.font, if dragging { GREEN } else { MUTED }, DT_SINGLELINE);
-            text(dc, lines[1], bounds(inset, s(36), width - inset, s(57)), resources.font, MUTED, line);
+            text(dc, &fitted, line_bounds(inset, 0, inset + heading_width), resources.font, if dragging { GREEN } else { MUTED }, DT_SINGLELINE);
+            text(dc, lines[1], line_bounds(inset, 1, width - inset), resources.font, MUTED, line);
         }
         DisplayItem::Notice { title, message, error } => {
-            text(dc, title, bounds(s(14), s(12), width - s(14), s(37)), resources.font, if *error { RED } else { WHITE }, line);
-            text(dc, message, bounds(s(14), s(42), width - s(14), height - s(10)), resources.font, if *error { RED } else { MUTED }, DT_WORDBREAK);
+            text(dc, title, line_bounds(s(14), 0, width - s(14)), resources.font, if *error { RED } else { WHITE }, line);
+            wrapped_text(dc, message, line_bounds(s(14), 1, width - s(14)), resources, if *error { RED } else { MUTED });
         }
     }
     if card.refreshing {
-        let indicator = if inline_indicator { bounds(indicator_left, s(12), indicator_right, s(32)) }
-            else { bounds(s(14), height - s(24), width - s(12), height - s(4)) };
+        let indicator = if inline_indicator { line_bounds(indicator_left, 0, indicator_right) }
+            else { bounds(s(14), height - typography.padding - typography.cell, width - s(12), height - typography.padding) };
         text(dc, "*", indicator, resources.font, TEAL, DT_SINGLELINE);
     }
     if let Some(target) = state.drag.as_ref().and_then(|drag| drag.target.as_ref()) {
@@ -604,8 +599,9 @@ unsafe fn draw_button(draw: &DRAWITEMSTRUCT, state: &State) {
     let checked = draw.itemState & ODS_CHECKED != 0;
     fill(draw.hDC, rect, resources.background);
     let padding = s(8);
-    let text_rect = RECT { left: rect.left + padding, top: rect.top,
-        right: rect.right - padding, bottom: rect.bottom };
+    let text_top = rect.top + (rect.bottom - rect.top - resources.typography.cell).max(0) / 2;
+    let text_rect = RECT { left: rect.left + padding, top: text_top,
+        right: rect.right - padding, bottom: (text_top + resources.typography.cell).min(rect.bottom) };
     let color = if disabled { MUTED } else if checked || pressed { GREEN }
         else if focused || hot { TEAL } else { WHITE };
     text(draw.hDC, &button_caption(draw.hwndItem), text_rect, resources.font, color,

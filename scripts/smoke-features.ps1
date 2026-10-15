@@ -97,7 +97,7 @@ public static class WtsFeatureProbe {
     }
     public static IntPtr TerminalFont(IntPtr window, IntPtr dc) {
         foreach (var face in new[] { "Berkeley Mono", "Berkeley Mono Variable", "Consolas", "Cascadia Mono", "Courier New" }) {
-            var font = CreateFontW(-14 * (int)GetDpiForWindow(window) / 96, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 49, face);
+            var font = CreateFontW(-12 * (int)GetDpiForWindow(window) / 96, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 49, face);
             var old = SelectObject(dc, font);
             var actual = new StringBuilder(64);
             GetTextFaceW(dc, actual.Capacity, actual);
@@ -107,7 +107,7 @@ public static class WtsFeatureProbe {
         }
         throw new InvalidOperationException("Terminal font unavailable");
     }
-    public static string AssertFont(IntPtr root, IntPtr sample, Bitmap image, int left, int top) {
+    public static string AssertFont(IntPtr root, IntPtr sample, Bitmap image, int left, int top, int secondLineOffset = 0) {
         var font = SendMessage(sample, 0x0031, IntPtr.Zero, IntPtr.Zero);
         if (font == IntPtr.Zero) throw new InvalidOperationException("Control font unavailable");
         EnumChildWindows(root, (window, data) => {
@@ -125,34 +125,38 @@ public static class WtsFeatureProbe {
             var face = new StringBuilder(64);
             if (GetTextFaceW(dc, face.Capacity, face) == 0) throw new InvalidOperationException("Actual font unavailable");
             if (Measure(sample, "iiii") != Measure(sample, "WWWW")) throw new InvalidOperationException("Font is not monospace");
-            var label = Text(sample).Split('\n')[0];
-            label = label.Substring(0, Math.Min(8, label.Length));
-            var width = Measure(sample, label);
-            var height = 20 * (int)GetDpiForWindow(sample) / 96;
-            using (var expected = new Bitmap(width, height)) {
-                using (var graphics = Graphics.FromImage(expected)) {
-                    var target = graphics.GetHdc();
-                    var previous = SelectObject(target, localFont);
-                    var background = CreateSolidBrush(11u | (16u << 8) | (18u << 16));
-                    try {
-                        var rect = new Rect { Right = width, Bottom = height };
-                        FillRect(target, ref rect, background);
-                        SetBkMode(target, 1);
-                        SetTextColor(target, 232u | (239u << 8) | (235u << 16));
-                        DrawTextW(target, label, label.Length, ref rect, 0x0820);
-                    } finally { SelectObject(target, previous); DeleteObject(background); graphics.ReleaseHdc(target); }
-                }
-                int ink = 0;
-                for (int x = 0; x < width; x++) {
-                    for (int y = 0; y < height; y++) {
-                        var actual = image.GetPixel(left + x, top + y);
-                        var wanted = expected.GetPixel(x, y);
-                        if (wanted.R != 11 || wanted.G != 16 || wanted.B != 18) ink++;
-                        if (actual.R != wanted.R || actual.G != wanted.G || actual.B != wanted.B)
-                            throw new InvalidOperationException("Rendered application text differs from expected regular terminal font");
+            var heading = Text(sample).Split('\n')[0];
+            int advance = (int)Math.Round(12 * 1.2 * GetDpiForWindow(sample) / 96, MidpointRounding.AwayFromZero);
+            for (int line = 0; line < 2; line++) {
+                var label = line == 0 ? heading : "S ";
+                label = label.Substring(0, Math.Min(8, label.Length));
+                var width = Measure(sample, label);
+                var height = advance;
+                using (var expected = new Bitmap(width, height)) {
+                    using (var graphics = Graphics.FromImage(expected)) {
+                        var target = graphics.GetHdc();
+                        var previous = SelectObject(target, localFont);
+                        var background = CreateSolidBrush(11u | (16u << 8) | (18u << 16));
+                        try {
+                            var rect = new Rect { Right = width, Bottom = height };
+                            FillRect(target, ref rect, background);
+                            SetBkMode(target, 1);
+                            SetTextColor(target, line == 0 ? 232u | (239u << 8) | (235u << 16) : 132u | (150u << 8) | (156u << 16));
+                            DrawTextW(target, label, label.Length, ref rect, 0x0820);
+                        } finally { SelectObject(target, previous); DeleteObject(background); graphics.ReleaseHdc(target); }
                     }
+                    int ink = 0;
+                    for (int x = 0; x < width; x++) {
+                        for (int y = 0; y < height; y++) {
+                            var actual = image.GetPixel(left + x, top + line * advance + (line == 1 ? secondLineOffset : 0) + y);
+                            var wanted = expected.GetPixel(x, y);
+                            if (wanted.R != 11 || wanted.G != 16 || wanted.B != 18) ink++;
+                            if (actual.R != wanted.R || actual.G != wanted.G || actual.B != wanted.B)
+                                throw new InvalidOperationException("Rendered application text differs from expected font or shared line origin on line " + line);
+                        }
+                    }
+                    if (ink == 0) throw new InvalidOperationException("Rendered font sample is empty");
                 }
-                if (ink == 0) throw new InvalidOperationException("Rendered font sample is empty");
             }
             return face.ToString();
         } finally { SelectObject(dc, old); DeleteObject(localFont); ReleaseDC(sample, dc); }
@@ -286,8 +290,8 @@ function Assert-Colors {
     $card = Bounds $script:card
     $dpi = [WtsFeatureProbe]::GetDpiForWindow($script:card)
     $x = $card.Left - $outer.Left + [int][Math]::Floor(14 * $dpi / 96)
-    $top = $card.Top - $outer.Top + [int][Math]::Floor(37 * $dpi / 96)
-    $bottom = $card.Top - $outer.Top + [int][Math]::Floor(57 * $dpi / 96)
+    $top = $card.Top - $outer.Top + [int][Math]::Floor(8 * $dpi / 96) + [int][Math]::Round(12 * 1.2 * $dpi / 96)
+    $bottom = $card.Bottom - $outer.Top - [int][Math]::Floor(8 * $dpi / 96)
     $image = [Drawing.Bitmap]::new($outer.Right - $outer.Left, $outer.Bottom - $outer.Top)
     $graphics = [Drawing.Graphics]::FromImage($image)
     try {
@@ -300,8 +304,16 @@ function Assert-Colors {
         $buttonBounds = Bounds $button
         $corner = $image.GetPixel($buttonBounds.Left - $outer.Left, $buttonBounds.Top - $outer.Top)
         if ($corner.R -ne 11 -or $corner.G -ne 16 -or $corner.B -ne 18) { throw "Hide corner differs from terminal background" }
-        $headingTop = $card.Top - $outer.Top + [int][Math]::Floor(12 * $dpi / 96)
+        $headingTop = $card.Top - $outer.Top + [int][Math]::Floor(8 * $dpi / 96)
         $proof.rendered_font = [WtsFeatureProbe]::AssertFont($script:window, $script:card, $image, $x, $headingTop)
+        $rejectedShift = $false
+        try { [void][WtsFeatureProbe]::AssertFont($script:window, $script:card, $image, $x, $headingTop, 1) }
+        catch {
+            if ($_.Exception.Message -notmatch 'shared line origin on line 1') { throw }
+            $rejectedShift = $true
+        }
+        if (-not $rejectedShift) { throw 'Text position proof accepted a one-pixel second-line shift' }
+        $proof.line_origin_shift_rejected = $true
         [WtsFeatureProbe]::ButtonStates($button, $Output)
         $proof.button_corners_match_card = $true
         $proof.button_states = @('normal', 'hover', 'pressed', 'disabled')

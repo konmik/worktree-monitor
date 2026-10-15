@@ -40,6 +40,14 @@ public static class WtsResizeProbe {
     [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr CreateFontW(int height, int width, int escapement, int orientation, int weight, uint italic, uint underline, uint strikeout, uint charset, uint outputPrecision, uint clipPrecision, uint quality, uint pitchAndFamily, string face);
     [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern int GetTextFaceW(IntPtr dc, int count, StringBuilder face);
     [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr handle);
+    [DllImport("gdi32.dll")] public static extern int SetBkMode(IntPtr dc, int mode);
+    [DllImport("gdi32.dll")] public static extern uint SetTextColor(IntPtr dc, uint color);
+    [DllImport("gdi32.dll")] public static extern IntPtr CreateCompatibleDC(IntPtr dc);
+    [DllImport("gdi32.dll")] public static extern IntPtr CreateCompatibleBitmap(IntPtr dc, int width, int height);
+    [DllImport("gdi32.dll")] public static extern bool DeleteDC(IntPtr dc);
+    [DllImport("gdi32.dll")] public static extern IntPtr CreateSolidBrush(uint color);
+    [DllImport("user32.dll")] public static extern int FillRect(IntPtr dc, ref Rect rect, IntPtr brush);
+    [DllImport("gdi32.dll")] public static extern bool BitBlt(IntPtr destination, int x, int y, int width, int height, IntPtr source, int sourceX, int sourceY, uint mode);
     [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll", EntryPoint="SystemParametersInfoW")] public static extern bool SystemParametersInfo(uint action, uint parameter, out Rect rect, uint flags);
     [DllImport("dwmapi.dll")] public static extern int DwmFlush();
@@ -76,7 +84,32 @@ public static class WtsResizeProbe {
         using (var graphics = Graphics.FromImage(bitmap)) { graphics.CopyFromScreen(origin.X, origin.Y, 0, 0, bitmap.Size); }
         return bitmap;
     }
-    public static int ErrorHeight(IntPtr parent) {
+    public static List<string> Wrap(IntPtr dc, string text, int width) {
+        var result = new List<string>();
+        foreach (var paragraph in text.Split('\n')) {
+            var remaining = paragraph.TrimEnd('\r');
+            if (remaining.Length == 0) result.Add("");
+            while (remaining.Length > 0) {
+                int count = 0;
+                foreach (var element in System.Globalization.StringInfo.ParseCombiningCharacters(remaining)) {
+                    int next = element + System.Globalization.StringInfo.GetNextTextElement(remaining, element).Length;
+                    var bounds = new Rect();
+                    DrawText(dc, remaining.Substring(0, next), next, ref bounds, 0x0c20);
+                    if (count > 0 && bounds.Right > width) break;
+                    count = next;
+                }
+                if (count == remaining.Length) { result.Add(remaining); break; }
+                int end = count;
+                for (int index = count - 1; index > 0; index--) {
+                    if (char.IsWhiteSpace(remaining[index])) { end = index; break; }
+                }
+                result.Add(remaining.Substring(0, end).TrimEnd());
+                remaining = remaining.Substring(end).TrimStart();
+            }
+        }
+        return result;
+    }
+    public static int ErrorHeight(IntPtr parent, bool verifyPixels = false) {
         int height = 0;
         EnumChildWindows(parent, (handle, data) => {
             var caption = Text(handle);
@@ -90,7 +123,7 @@ public static class WtsResizeProbe {
             var dc = GetDC(handle);
             var font = IntPtr.Zero;
             foreach (var face in new[] { "Berkeley Mono", "Berkeley Mono Variable", "Consolas", "Cascadia Mono", "Courier New" }) {
-                font = CreateFontW(-14 * dpi / 96, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 49, face);
+                font = CreateFontW(-12 * dpi / 96, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 49, face);
                 var previous = SelectObject(dc, font);
                 var actual = new StringBuilder(64);
                 GetTextFaceW(dc, actual.Capacity, actual);
@@ -103,9 +136,57 @@ public static class WtsResizeProbe {
             var old = SelectObject(dc, font);
             try {
                 var error = caption.Substring(start).Replace("\nRefreshing", "");
-                DrawText(dc, error, error.Length, ref measured, 0x0c10);
-                int baseHeight = card.Right < 360 * dpi / 96 ? 96 : 76;
-                if (card.Bottom != baseHeight * dpi / 96 + measured.Bottom) throw new InvalidOperationException("Wrapped error height " + card.Bottom + " disagrees with measured height " + measured.Bottom + " at DPI " + dpi + " and width " + card.Right);
+                var lines = Wrap(dc, error, measured.Right);
+                var cell = new Rect();
+                DrawText(dc, "Mg", 2, ref cell, 0x0c20);
+                int advance = (int)Math.Round(12 * 1.2 * dpi / 96, MidpointRounding.AwayFromZero);
+                int lineCount = 2 + lines.Count + (card.Right < 360 * dpi / 96 ? 1 : 0);
+                int expected = 2 * (8 * dpi / 96) + (lineCount - 1) * advance + cell.Bottom;
+                if (card.Bottom != expected) throw new InvalidOperationException("Wrapped error height " + card.Bottom + " disagrees with independently measured height " + expected + " at DPI " + dpi + " and width " + card.Right);
+                if (verifyPixels) {
+                    int textHeight = (lines.Count - 1) * advance + cell.Bottom;
+                    using (var wanted = new Bitmap(measured.Right, textHeight)) {
+                        using (var graphics = Graphics.FromImage(wanted)) {
+                            var target = CreateCompatibleDC(dc);
+                            var bitmap = CreateCompatibleBitmap(dc, measured.Right, textHeight);
+                            var oldBitmap = SelectObject(target, bitmap);
+                            var brush = CreateSolidBrush(11u | (16u << 8) | (18u << 16));
+                            var background = new Rect { Right = measured.Right, Bottom = textHeight };
+                            FillRect(target, ref background, brush);
+                            var previous = SelectObject(target, font);
+                            try {
+                                SetBkMode(target, 1);
+                                SetTextColor(target, 255u | (131u << 8) | (137u << 16));
+                                for (int index = 0; index < lines.Count; index++) {
+                                    var lineRect = new Rect { Top = index * advance, Right = measured.Right, Bottom = index * advance + cell.Bottom };
+                                    DrawText(target, lines[index], lines[index].Length, ref lineRect, 0x0820);
+                                }
+                                var destination = graphics.GetHdc();
+                                try { BitBlt(destination, 0, 0, measured.Right, textHeight, target, 0, 0, 0x00cc0020); }
+                                finally { graphics.ReleaseHdc(destination); }
+                            } finally {
+                                SelectObject(target, previous);
+                                SelectObject(target, oldBitmap);
+                                DeleteObject(bitmap);
+                                DeleteObject(brush);
+                                DeleteDC(target);
+                            }
+                        }
+                        using (var actual = Capture(handle)) {
+                            int top = 8 * dpi / 96 + 2 * advance;
+                            int ink = 0;
+                            for (int y = 0; y < textHeight; y++) {
+                                for (int x = 0; x < measured.Right; x++) {
+                                    var expectedPixel = wanted.GetPixel(x, y);
+                                    if (expectedPixel.R != 11 || expectedPixel.G != 16 || expectedPixel.B != 18) ink++;
+                                    if (actual.GetPixel(inset + x, top + y) != expectedPixel)
+                                        throw new InvalidOperationException("Wrapped error pixels differ from expected font and line origins at " + x + "," + y + ", actual " + actual.GetPixel(inset + x, top + y) + ", expected " + expectedPixel + ", text " + string.Join(" | ", lines));
+                                }
+                            }
+                            if (ink == 0) throw new InvalidOperationException("Wrapped error pixel sample is empty");
+                        }
+                    }
+                }
                 height = card.Bottom;
             } finally { SelectObject(dc, old); DeleteObject(font); ReleaseDC(handle, dc); }
             return true;
@@ -222,6 +303,7 @@ try {
         if ($width -eq 180) { $narrowHeight = $height }
         if ($width -eq 800 -and $height -ge $narrowHeight) { throw 'Narrow error did not wrap to a greater height' }
         Compare-Repaint "error-$width"
+        if ($width -eq 800) { [void][WtsResizeProbe]::ErrorHeight($viewport, $true) }
     }
     $failed = @($results | Where-Object { $_.changed_pixels -ne 0 -or -not $_.geometry_unchanged })
     [ordered]@{ binary = $Binary; sha256 = (Get-FileHash $Binary).Hash; results = $results.ToArray(); result = $(if ($failed.Count) { 'FAIL' } else { 'PASS' }) } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $Output 'proof.json')

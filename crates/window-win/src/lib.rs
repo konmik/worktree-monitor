@@ -3,6 +3,12 @@ pub mod order;
 pub mod placement;
 pub mod visibility;
 
+#[cfg(any(windows, test))]
+mod layout;
+
+#[cfg(any(windows, test))]
+mod typography;
+
 #[cfg(windows)]
 mod placement_win;
 

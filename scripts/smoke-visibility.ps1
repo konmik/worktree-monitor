@@ -972,7 +972,8 @@ function Is-BroadCardUpdate($Update, $Client, [int]$Scale) {
 function Start-Drag($Card) {
     $scale = [Math]::Max(96, [int][WtsVisibilityNativeProbe]::GetDpiForWindow($Card.Handle))
     $x = [Math]::Max(2, [int](12 * $scale / 96))
-    $y = [Math]::Max(2, [int](30 * $scale / 96))
+    $bounds = [WtsVisibilityNativeProbe]::ClientBounds($Card.Handle)
+    $y = [int][Math]::Floor(($bounds.Bottom - $bounds.Top) / 2)
     [void][WtsVisibilityNativeProbe]::Send($Card.Handle, 0x0201, [IntPtr]1, [WtsVisibilityNativeProbe]::Position($x, $y))
     Wait-For { [WtsVisibilityNativeProbe]::Capture($script:handle) -eq $script:viewport } 'drag capture' 5
 }
