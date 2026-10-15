@@ -30,7 +30,7 @@ pub(crate) struct DashboardLayout {
 
 pub(crate) struct RowSize {
     pub height: i32,
-    pub action: bool,
+    pub action: Option<i32>,
     pub spacing: RowSpacing,
 }
 
@@ -79,7 +79,7 @@ unsafe fn rect(node: YGNodeRef) -> Rect {
     }
 }
 
-pub(crate) fn dashboard(width: i32, height: i32, dpi: i32, typography: Typography) -> io::Result<DashboardLayout> {
+pub(crate) fn dashboard(width: i32, height: i32, dpi: i32, typography: Typography, toggle_width: i32) -> io::Result<DashboardLayout> {
     let s = |value: i32| (value * dpi / 96).max(1);
     let width = width.max(1);
     let height = height.max(1);
@@ -104,7 +104,7 @@ pub(crate) fn dashboard(width: i32, height: i32, dpi: i32, typography: Typograph
         YGNodeStyleSetMinWidth(status, 1.0);
         YGNodeStyleSetFlexShrink(status, 1.0);
         let toggle = tree.child(header)?;
-        YGNodeStyleSetWidth(toggle, s(112) as f32);
+        YGNodeStyleSetWidth(toggle, toggle_width.max(0) as f32);
         YGNodeStyleSetFlexShrink(toggle, 1.0);
         let body = tree.child(tree.root)?;
         YGNodeStyleSetFlexDirection(body, YGFlexDirectionRow);
@@ -146,9 +146,9 @@ pub(crate) fn content(width: i32, dpi: i32, typography: Typography, sizes: &[Row
             YGNodeStyleSetHeight(row, height as f32);
             YGNodeStyleSetFlexShrink(row, 0.0);
             if index + 1 < sizes.len() { YGNodeStyleSetMargin(row, YGEdgeBottom, size.spacing.gap_after as f32); }
-            let action = if size.action {
+            let action = if let Some(action_width) = size.action {
                 let action = tree.child(row)?;
-                let action_width = s(78).min(width);
+                let action_width = action_width.max(1).min(width);
                 let action_height = typography.cell.max(typography.advance).min(height);
                 YGNodeStyleSetPositionType(action, YGPositionTypeAbsolute);
                 YGNodeStyleSetPosition(action, YGEdgeRight, s(10).min(width - action_width) as f32);
@@ -175,7 +175,7 @@ mod tests {
     fn dashboard_fits_at_multiple_sizes_and_dpis() {
         for dpi in [96, 120, 144, 192] {
             for (width, height) in [(900, 700), (420, 250), (180, 110), (20, 20)] {
-                let layout = dashboard(width, height, dpi, Typography::new(dpi, 15 * dpi / 96)).unwrap();
+                let layout = dashboard(width, height, dpi, Typography::new(dpi, 15 * dpi / 96), 112 * dpi / 96).unwrap();
                 for rect in [layout.status, layout.toggle, layout.viewport, layout.scrollbar] {
                     assert!(rect.left >= 0 && rect.top >= 0, "{rect:?}");
                     assert!(rect.left + rect.width <= width, "{rect:?}");
@@ -193,7 +193,7 @@ mod tests {
         for dpi in [96, 120, 144, 192] {
             for width in [1, 20, 120, 800] {
                 let spacing = RowSpacing::new(Typography::new(dpi, 15 * dpi / 96), false, false);
-                let sizes = [RowSize { height: 40, action: false, spacing }, RowSize { height: 64, action: true, spacing }, RowSize { height: 220, action: true, spacing }];
+                let sizes = [RowSize { height: 40, action: None, spacing }, RowSize { height: 64, action: Some(78), spacing }, RowSize { height: 220, action: Some(78), spacing }];
                 let layout = content(width, dpi, Typography::new(dpi, 15 * dpi / 96), &sizes).unwrap();
                 let mut bottom = 0;
                 for (index, row) in layout.rows.iter().enumerate() {
@@ -222,10 +222,10 @@ mod tests {
             let separate = RowSpacing::new(typography, false, false);
             for heading_lines in [1, 2, 3] {
                 let sizes = [
-                    RowSize { height: heading.height(typography, heading_lines), action: false, spacing: heading },
-                    RowSize { height: branch.height(typography, 3), action: true, spacing: branch },
-                    RowSize { height: separate.height(typography, 2), action: true, spacing: separate },
-                    RowSize { height: separate.height(typography, 1), action: false, spacing: separate },
+                    RowSize { height: heading.height(typography, heading_lines), action: None, spacing: heading },
+                    RowSize { height: branch.height(typography, 3), action: Some(78), spacing: branch },
+                    RowSize { height: separate.height(typography, 2), action: Some(78), spacing: separate },
+                    RowSize { height: separate.height(typography, 1), action: None, spacing: separate },
                 ];
                 let layout = content(800, dpi, typography, &sizes).unwrap();
                 let rows = &layout.rows;
@@ -252,8 +252,8 @@ mod tests {
             for lines in [1, 2, 7] {
                 for width in [180, 380, 800] {
                     let sizes = [
-                        RowSize { height: attached.height(typography, lines), action: true, spacing: attached },
-                        RowSize { height: last.height(typography, 2), action: true, spacing: last },
+                        RowSize { height: attached.height(typography, lines), action: Some(78), spacing: attached },
+                        RowSize { height: last.height(typography, 2), action: Some(78), spacing: last },
                     ];
                     let layout = content(width, dpi, typography, &sizes).unwrap();
                     let previous = &layout.rows[0];
@@ -264,6 +264,29 @@ mod tests {
                     assert_eq!(next.action.unwrap().top, 0);
                     assert_eq!(next.rect.height, typography.advance + cell + typography.padding);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn hidden_controls_release_width_without_changing_vertical_geometry() {
+        for dpi in [96, 120, 144, 192] {
+            for width in [180, 380, 800] {
+                let typography = Typography::new(dpi, 15 * dpi / 96);
+                let hidden = dashboard(width, 540, dpi, typography, 0).unwrap();
+                let visible = dashboard(width, 540, dpi, typography, 100).unwrap();
+                assert_eq!(hidden.status.left, visible.status.left);
+                assert!(hidden.status.width > visible.status.width);
+                assert_eq!(hidden.toggle.width, 0);
+                assert_eq!(hidden.viewport, visible.viewport);
+                assert_eq!(hidden.status.top, visible.status.top);
+                assert_eq!(hidden.status.height, visible.status.height);
+                let spacing = RowSpacing::new(typography, true, true);
+                let hidden = content(width, dpi, typography, &[RowSize { height: 60, action: None, spacing }]).unwrap();
+                let visible = content(width, dpi, typography, &[RowSize { height: 60, action: Some(60), spacing }]).unwrap();
+                assert_eq!(hidden.rows[0].rect, visible.rows[0].rect);
+                assert!(hidden.rows[0].action.is_none());
+                assert_eq!(visible.rows[0].action.unwrap().width, 60);
             }
         }
     }

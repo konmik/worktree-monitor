@@ -499,7 +499,11 @@ unsafe fn layout(window: HWND, state: &mut State, restore: Option<(ItemKey, i32)
     let was_overflowing = state.content > state.page;
     let mut client: RECT = std::mem::zeroed();
     if GetClientRect(window, &mut client) == 0 || client.right <= 0 || client.bottom <= 0 { return; }
-    let dashboard = match layout::dashboard(client.right, client.bottom, state.dpi, state.resources.as_ref().unwrap().typography) {
+    let resources = state.resources.as_ref().unwrap();
+    let dc = GetDC(window);
+    let toggle_width = if state.controls_visible { wrapped_width(dc, "[ ] Show all", resources.font) } else { 0 };
+    ReleaseDC(window, dc);
+    let dashboard = match layout::dashboard(client.right, client.bottom, state.dpi, resources.typography, toggle_width) {
         Ok(layout) => layout,
         Err(error) => { state.failure = Some(error); PostMessageW(window, WM_CLOSE, 0, 0); return; }
     };
@@ -519,7 +523,9 @@ unsafe fn layout(window: HWND, state: &mut State, restore: Option<(ItemKey, i32)
     }
     let dc = GetDC(window);
     let sizes: Vec<_> = state.cards.iter().map(|card| RowSize {
-        height: item_height(card, dc, state.width, state.dpi, resources), action: card.action.is_some(), spacing: card.spacing,
+        height: item_height(card, dc, state.width, state.dpi, resources),
+        action: card.action.filter(|_| state.controls_visible).map(|action| wrapped_width(dc, &button_caption(action), resources.font) + scaled(16, state.dpi)),
+        spacing: card.spacing,
     }).collect();
     ReleaseDC(window, dc);
     let content = match layout::content(state.width, state.dpi, resources.typography, &sizes) {
@@ -684,7 +690,7 @@ unsafe fn wrapped_width(dc: HDC, value: &str, font: HFONT) -> i32 {
 
 unsafe fn draw_name(dc: HDC, value: &str, rect: RECT, font: HFONT, color: COLORREF, suffix: bool, refreshing: bool) {
     let marker_width = wrapped_width(dc, "*", font);
-    let available = (rect.right - rect.left - marker_width - 1).max(0);
+    let available = (rect.right - rect.left - if refreshing { marker_width + 1 } else { 0 }).max(0);
     let measure = |value: &str| wrapped_width(dc, value, font);
     let fitted = if suffix { ellipsize_start(value, available, measure) }
         else if measure(value) <= available { value.to_owned() }
@@ -957,6 +963,7 @@ unsafe fn update_control_visibility(window: HWND, state: &mut State) {
     for card in &state.cards {
         if let Some(action) = card.action { ShowWindow(action, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE }); }
     }
+    layout(window, state, None, false);
 }
 
 unsafe fn track_controls(window: HWND, message: u32) {

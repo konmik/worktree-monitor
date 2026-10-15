@@ -113,6 +113,62 @@ public static class WtsFeatureProbe {
         }
         throw new InvalidOperationException("Terminal font unavailable");
     }
+    public static void AssertNameWidth(IntPtr root, IntPtr row, bool controlsVisible) {
+        Rect bounds;
+        GetWindowRect(row, out bounds);
+        int dpi = (int)GetDpiForWindow(row);
+        int left = 14 * dpi / 96;
+        int right = bounds.Right - bounds.Left - left;
+        if (controlsVisible) {
+            Rect button;
+            GetWindowRect(FindCount(row, "Hide"), out button);
+            right = button.Left - bounds.Left - 8 * dpi / 96;
+        }
+        string heading = Text(row).Split('\n')[0];
+        int available = Math.Max(0, right - left);
+        string fitted = heading;
+        if (Measure(row, heading) > available) {
+            fitted = "…";
+            foreach (char character in heading) {
+                string candidate = fitted.Substring(0, fitted.Length - 1) + character + "…";
+                if (Measure(row, candidate) > available) break;
+                fitted = candidate;
+            }
+        }
+        int height = (int)Math.Ceiling(24.0 * dpi / 96);
+        var dc = GetDC(row);
+        var font = TerminalFont(row, dc);
+        ReleaseDC(row, dc);
+        try {
+            RedrawWindow(root, IntPtr.Zero, IntPtr.Zero, 0x0181);
+            DwmFlush();
+            using (var expected = new Bitmap(available, height))
+            using (var actual = new Bitmap(available, height)) {
+                using (var graphics = Graphics.FromImage(expected)) {
+                    var target = graphics.GetHdc();
+                    var old = SelectObject(target, font);
+                    var brush = CreateSolidBrush(11u | (16u << 8) | (18u << 16));
+                    try {
+                        var rect = new Rect { Right = available, Bottom = height };
+                        FillRect(target, ref rect, brush);
+                        SetBkMode(target, 1);
+                        SetTextColor(target, 232u | (239u << 8) | (235u << 16));
+                        DrawTextW(target, fitted, fitted.Length, ref rect, 0x0820);
+                    } finally { SelectObject(target, old); DeleteObject(brush); graphics.ReleaseHdc(target); }
+                }
+                using (var graphics = Graphics.FromImage(actual)) {
+                    graphics.CopyFromScreen(bounds.Left + left, bounds.Top, 0, 0, actual.Size);
+                }
+                int advance = (int)Math.Round(12 * 1.2 * dpi / 96, MidpointRounding.AwayFromZero);
+                for (int y = 0; y < advance; y++) {
+                    for (int x = 0; x < available; x++) {
+                        if (actual.GetPixel(x, y) != expected.GetPixel(x, y))
+                            throw new InvalidOperationException("Name does not use available width with controls " + (controlsVisible ? "visible" : "hidden"));
+                    }
+                }
+            }
+        } finally { DeleteObject(font); }
+    }
     public static string AssertFont(IntPtr root, IntPtr sample, Bitmap image, int left, int top, int secondLineOffset = 0) {
         var font = SendMessage(sample, 0x0031, IntPtr.Zero, IntPtr.Zero);
         if (font == IntPtr.Zero) throw new InvalidOperationException("Control font unavailable");
@@ -307,18 +363,22 @@ function Assert-Hover {
     [void][WtsFeatureProbe]::GetCursorPos([ref]$cursor)
     $toggle = [WtsFeatureProbe]::GetDlgItem($script:window, 1004)
     try {
-        foreach ($width in @(760, 380)) {
+        foreach ($width in @(380, 760)) {
             [void][WtsFeatureProbe]::SetWindowPos($script:window, [IntPtr]::Zero, $target.Left, $target.Top, $width, 540, 20)
             $button = [WtsFeatureProbe]::FindCount($script:window, 'Hide')
             $cardBounds = Bounds $script:card
-            $toggleBounds = Bounds $toggle
-            $buttonBounds = Bounds $button
             Move-Pointer ($target.Left - 20) ($target.Top - 20)
             Wait-For { -not [WtsFeatureProbe]::IsWindowVisible($toggle) -and -not [WtsFeatureProbe]::IsWindowVisible($button) } 'controls hidden outside window'
+            $status = [WtsFeatureProbe]::GetDlgItem($script:window, 1002)
+            $outsideStatus = Bounds $status
+            [WtsFeatureProbe]::AssertNameWidth($script:window, $script:card, $false)
             Move-Pointer ($target.Left + 20) ($target.Top + 400)
             Wait-For { [WtsFeatureProbe]::IsWindowVisible($toggle) -and [WtsFeatureProbe]::IsWindowVisible($button) } 'controls visible inside window'
-            if (-not (Same-Bounds $cardBounds (Bounds $script:card)) -or -not (Same-Bounds $toggleBounds (Bounds $toggle)) -or
-                -not (Same-Bounds $buttonBounds (Bounds $button))) { throw 'Hover changed layout' }
+            $insideStatus = Bounds $status
+            if (-not (Same-Bounds $cardBounds (Bounds $script:card)) -or $outsideStatus.Top -ne $insideStatus.Top -or
+                $outsideStatus.Bottom -ne $insideStatus.Bottom) { throw 'Hover changed vertical layout' }
+            if ($outsideStatus.Right -le $insideStatus.Right) { throw 'Hidden Show all still reserves header width' }
+            [WtsFeatureProbe]::AssertNameWidth($script:window, $script:card, $true)
             foreach ($control in @($script:card, $toggle, $button, [WtsFeatureProbe]::GetDlgItem($script:window, 1002))) {
                 $rect = Bounds $control
                 Move-Pointer ([int](($rect.Left + $rect.Right) / 2)) ([int](($rect.Top + $rect.Bottom) / 2))
