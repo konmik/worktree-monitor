@@ -430,7 +430,7 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
     let inline_indicator = width >= s(360);
     let indicator_right = if matches!(card.display, DisplayItem::Repository { .. }) { width - s(12) }
         else { worktree_action_left(width, state.dpi) - s(8) };
-    let indicator_left = (indicator_right - wrapped_width(dc, "Refreshing", resources.fonts[0])).max(s(14));
+    let indicator_left = (indicator_right - s(12)).max(s(14));
     let heading_right = if inline_indicator { indicator_left - s(8) } else { indicator_right };
     fill(dc, rect, resources.background);
     match &card.display {
@@ -515,7 +515,16 @@ unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
     if card.refreshing {
         let indicator = if inline_indicator { bounds(indicator_left, s(12), indicator_right, s(32)) }
             else { bounds(s(14), height - s(24), width - s(12), height - s(4)) };
-        text(dc, "Refreshing", indicator, resources.fonts[0], TEAL, line);
+        let x = indicator.left;
+        let y = indicator.top;
+        SelectObject(dc, resources.accent);
+        SetArcDirection(dc, AD_CLOCKWISE);
+        Arc(dc, x + s(2), y + s(6), x + s(10), y + s(14),
+            x + s(10), y + s(10), x + s(6), y + s(6));
+        SelectObject(dc, resources.teal);
+        let arrow = [POINT { x: x + s(8), y: y + s(6) },
+            POINT { x: x + s(5), y: y + s(4) }, POINT { x: x + s(5), y: y + s(8) }];
+        Polygon(dc, arrow.as_ptr(), arrow.len() as i32);
     }
     if let Some(target) = state.drag.as_ref().and_then(|drag| drag.target.as_ref()) {
         let y = if target.marker == card.top { Some(0) }

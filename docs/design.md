@@ -43,7 +43,7 @@ The visual design uses charcoal surfaces, monospace typography, acid-green addit
 
 Drag movement redraws only the source card and changed drop-marker strips. Edge scrolling batches child-window moves and buffers each card before display. Polling-time updates redraw the fixed status row without rebuilding the list. Native Hide and Unhide buttons support keyboard activation, and Show all temporarily overrides the visibility filter.
 
-Monitor updates carry scan targets and retained scan activities separately from completed snapshots. Activity starts before discovery or worktree scanning and finishes with the result. Repository activity includes scans of its worktrees. The dashboard holds each Refreshing indicator for at least one second without delaying the scanner or clearing prior counts.
+Monitor updates carry scan targets and retained scan activities separately from completed snapshots. Activity starts before discovery or worktree scanning and finishes with the result. Repository activity includes scans of its worktrees. The dashboard holds each refresh icon for at least one second without delaying the scanner or clearing prior counts.
 
 | Dashboard alternative | Choice |
 | --- | --- |

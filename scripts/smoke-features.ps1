@@ -260,7 +260,7 @@ try {
     $env:GIT_CONFIG_NOSYSTEM = '1'
     foreach ($name in @('GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE')) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
     New-Item -ItemType Directory -Path (Join-Path $repo 'tests'), (Join-Path $repo 'scripts') | Out-Null
-    Run-Git @('init', '--quiet', '--initial-branch=branch')
+    Run-Git @('init', '--quiet', '--initial-branch=km/wna-2067-document-the-agreement-and-usage')
     foreach ($path in @('source.txt', 'tests/unit.test.js', 'scripts/tool.ps1')) { Write-Lines $path @('keep', 'old') }
     Run-Git @('add', '.')
     Run-Git @('-c', 'user.name=Wts Test', '-c', 'user.email=wts@example.invalid', 'commit', '--quiet', '-m', 'Fixture')
@@ -272,7 +272,7 @@ try {
     Write-Lines 'scripts/new.ps1' @('new1', 'new2', 'new3', 'new4')
     & $CliBinary add $repo
     if ($LASTEXITCODE -ne 0) { throw 'Fixture registration failed' }
-    $expectedCaption = "branch`nS +4/-1 · T +5/-1 · X +6/-1"
+    $expectedCaption = "km/wna-2067-document-the-agreement-and-usage`nS +4/-1 · T +5/-1 · X +6/-1"
     $placementPath = Join-Path $fixtureHome '.config/wts/config.placement.json'
     $area = [WtsFeatureProbe+Rect]::new()
     if (-not [WtsFeatureProbe]::SystemParametersInfo(0x0030, 0, [ref]$area, 0)) { throw 'Work area unavailable' }
