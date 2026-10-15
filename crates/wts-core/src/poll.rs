@@ -1,4 +1,4 @@
-use crate::{config, git, Cancel, Error, ErrorKind, Service, Snapshot, WorktreeStats};
+use crate::{config, git, watch, Cancel, Error, ErrorKind, Service, Snapshot, WorktreeStats};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
@@ -66,13 +66,13 @@ impl Registrations {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct WorktreeKey {
     pub common: PathBuf,
     pub path: PathBuf,
 }
 
-fn normalize(path: &Path) -> PathBuf {
+pub(crate) fn normalize(path: &Path) -> PathBuf {
     #[cfg(windows)]
     {
         let text = path.to_string_lossy().replace('\\', "/").to_lowercase();
@@ -88,7 +88,7 @@ fn normalize(path: &Path) -> PathBuf {
 }
 
 impl WorktreeKey {
-    fn new(common: &Path, path: &Path) -> Self {
+    pub(crate) fn new(common: &Path, path: &Path) -> Self {
         Self { common: normalize(common), path: normalize(path) }
     }
 }
@@ -152,6 +152,7 @@ struct WorktreeState {
     backoff: WorktreeBackoff,
     due: Instant,
     in_flight: Option<u64>,
+    revision: u64,
     generation: u64,
 }
 
@@ -161,6 +162,7 @@ struct RepoState {
     generation: u64,
     next_discovery: Instant,
     discovery_job: Option<u64>,
+    revision: u64,
     discovery: DiscoveryState,
     worktrees: Vec<WorktreeKey>,
 }
@@ -180,7 +182,10 @@ struct Job {
 const MAX_JOBS: usize = 4;
 const MAX_SCAN_JOBS: usize = MAX_JOBS - 1;
 const MAX_DISCOVERY_JOBS: usize = 2;
-const DISCOVERY_INTERVAL: Duration = Duration::from_secs(5);
+const RECOVERY_INTERVAL: Duration = Duration::from_secs(5);
+const SAFETY_RECONCILE: Duration = Duration::from_secs(300);
+const DEBOUNCE: Duration = Duration::from_millis(150);
+const DEBOUNCE_HARD: Duration = Duration::from_secs(1);
 
 fn mark_job_started(timing: &Arc<Mutex<JobTiming>>) {
     let mut timing = timing.lock().unwrap_or_else(|error| error.into_inner());
@@ -193,15 +198,17 @@ fn mark_job_ended(timing: &Arc<Mutex<JobTiming>>) {
 }
 
 enum CompletionKind {
-    Launch(Result<PathBuf, Error>),
+    Launch { revision: u64, result: Result<PathBuf, Error> },
     Discovery {
         common: PathBuf,
         generation: u64,
+        revision: u64,
         result: Result<git::DiscoveredRepo, Error>,
     },
     Scan {
         key: WorktreeKey,
         generation: u64,
+        revision: u64,
         result: Result<WorktreeStats, Error>,
     },
 }
@@ -209,6 +216,17 @@ enum CompletionKind {
 struct Completion {
     id: u64,
     kind: CompletionKind,
+}
+
+#[derive(Default)]
+struct PendingInvalidations {
+    config: bool,
+    launch: bool,
+    discoveries: HashSet<PathBuf>,
+    worktrees: HashSet<WorktreeKey>,
+    full: bool,
+    first: Option<Instant>,
+    due: Option<Instant>,
 }
 
 struct Coordinator {
@@ -236,6 +254,11 @@ struct Coordinator {
     last_update: Option<Arc<MonitorUpdate>>,
     last_published: Option<Instant>,
     next_config_read: Instant,
+    next_reconcile: Instant,
+    watch: watch::WatchBoundary,
+    watch_dirty: bool,
+    pending: PendingInvalidations,
+    launch_revision: u64,
     dirty: bool,
 }
 
@@ -244,6 +267,7 @@ impl Coordinator {
         latest: Arc<Mutex<Option<Arc<MonitorUpdate>>>>) -> Self {
         let (sender, receiver) = mpsc::channel();
         let now = Instant::now();
+        let watch = watch::WatchBoundary::new(cancel.clone());
         Self {
             service,
             launch_directory,
@@ -269,31 +293,203 @@ impl Coordinator {
             last_update: None,
             last_published: None,
             next_config_read: now,
+            next_reconcile: now + SAFETY_RECONCILE,
+            watch,
+            watch_dirty: true,
+            pending: PendingInvalidations::default(),
+            launch_revision: 0,
             dirty: true,
         }
     }
 
     fn run(mut self) {
         loop {
+            let wake_generation = self.cancel.generation();
             if self.cancel.is_cancelled() { break; }
             let now = Instant::now();
-            self.reload(now);
+            self.reconcile_watches(now);
+            self.receive_watch(now);
             self.receive();
+            self.receive_watch(now);
+            self.apply_pending(now);
+            self.reload(now);
+            self.reconcile_watches(now);
+            self.reconcile(now);
             self.schedule(now);
             self.publish();
             if self.cancel.is_cancelled() { break; }
-            self.cancel.wait(self.next_wait(Instant::now()));
+            self.cancel.wait_since(wake_generation, self.next_wait(Instant::now()));
         }
         self.shutdown();
     }
 
     fn reload(&mut self, now: Instant) {
         if now < self.next_config_read { return; }
-        self.next_config_read = now + Duration::from_secs(1);
+        self.next_config_read = now + self.recovery_or_safety();
         if self.registrations.reload(config::read(&self.service.config_path)) {
             self.launch_due = now;
             self.refresh_repositories(now);
             self.dirty = true;
+        }
+        if self.registrations.error.is_some() { self.next_config_read = now + RECOVERY_INTERVAL; }
+    }
+
+    fn recovery_or_safety(&self) -> Duration {
+        if self.watch.degraded() { RECOVERY_INTERVAL } else { SAFETY_RECONCILE }
+    }
+
+    fn watch_targets(&self) -> watch::WatchTargets {
+        let repositories = self.repo_order.iter().filter_map(|key| {
+            self.repos.get(key).map(|repo| repo.common_dir.clone())
+        }).collect();
+        let mut worktrees = Vec::new();
+        let mut seen = HashSet::new();
+        for common in &self.repo_order {
+            let Some(repo) = self.repos.get(common) else { continue; };
+            for key in &repo.worktrees {
+                if !seen.insert(key.clone()) { continue; }
+                if let Some(state) = self.worktrees.get(key) {
+                    worktrees.push((key.clone(), state.path.clone()));
+                }
+            }
+        }
+        watch::WatchTargets {
+            config: self.service.config_path.clone(),
+            launch: self.launch_directory.clone(),
+            repositories,
+            worktrees,
+        }
+    }
+
+    fn reconcile_watches(&mut self, now: Instant) {
+        let retry = self.watch.next_retry();
+        if !self.watch_dirty && !retry.is_some_and(|due| now >= due) { return; }
+        let status = self.watch.reconcile(&self.watch_targets(), now);
+        self.watch_dirty = false;
+        if status.full { self.enqueue_full(now); }
+        if status.degraded {
+            self.next_config_read = self.next_config_read.min(now + RECOVERY_INTERVAL);
+        }
+    }
+
+    fn receive_watch(&mut self, now: Instant) {
+        let batch = self.watch.drain(now);
+        if !batch.is_empty() { self.enqueue_watch(batch, now); }
+    }
+
+    fn enqueue_full(&mut self, now: Instant) {
+        let batch = watch::WatchBatch { full: true, ..watch::WatchBatch::default() };
+        self.enqueue_watch(batch, now);
+        self.watch_dirty = false;
+    }
+
+    fn enqueue_watch(&mut self, batch: watch::WatchBatch, now: Instant) {
+        let mut repositories = batch.repositories;
+        let mut discoveries = batch.discoveries;
+        let mut worktrees = batch.worktrees;
+        let direct_worktrees = worktrees.clone();
+        if batch.full {
+            repositories.extend(self.repos.keys().cloned());
+            discoveries.extend(self.repos.keys().cloned());
+            worktrees.extend(self.worktrees.keys().cloned());
+            self.pending.full = true;
+            self.pending.config = true;
+            self.pending.launch = self.launch_directory.is_some();
+            self.launch_revision = self.launch_revision.wrapping_add(1);
+            self.watch_dirty = true;
+        }
+        if batch.config { self.pending.config = true; }
+        if batch.launch && self.launch_directory.is_some() {
+            self.pending.launch = true;
+            self.launch_revision = self.launch_revision.wrapping_add(1);
+        }
+        for common in discoveries {
+            let common = normalize(&common);
+            self.pending.discoveries.insert(common.clone());
+            repositories.insert(common);
+        }
+        for common in repositories {
+            let common = normalize(&common);
+            let keys = self.repos.get(&common).map(|repo| repo.worktrees.clone()).unwrap_or_default();
+            if let Some(repo) = self.repos.get_mut(&common) { repo.revision = repo.revision.wrapping_add(1); }
+            for key in keys {
+                worktrees.insert(key);
+            }
+        }
+        for key in worktrees {
+            if let Some(state) = self.worktrees.get_mut(&key) {
+                if direct_worktrees.contains(&key) { state.discovery_error = false; }
+                state.revision = state.revision.wrapping_add(1);
+                self.pending.worktrees.insert(key);
+            }
+        }
+        if batch.topology { self.watch_dirty = true; }
+        if self.pending.first.is_none() { self.pending.first = Some(now); }
+        let hard = self.pending.first.unwrap() + DEBOUNCE_HARD;
+        self.pending.due = Some((now + DEBOUNCE).min(hard));
+        let due = self.pending.due.unwrap();
+        if self.pending.config { self.next_config_read = self.next_config_read.max(due); }
+        if self.pending.launch { self.launch_due = self.launch_due.max(due); }
+        for common in &self.pending.discoveries {
+            if let Some(repo) = self.repos.get_mut(common) { repo.next_discovery = repo.next_discovery.max(due); }
+        }
+        for key in &self.pending.worktrees {
+            if let Some(state) = self.worktrees.get_mut(key) { state.due = state.due.max(due); }
+        }
+    }
+
+    fn apply_pending(&mut self, now: Instant) {
+        let Some(due) = self.pending.due else { return; };
+        if now < due { return; }
+        let pending = std::mem::take(&mut self.pending);
+        if pending.config { self.next_config_read = now; }
+        if pending.launch { self.launch_due = now; }
+        for common in pending.discoveries {
+            if let Some(repo) = self.repos.get_mut(&common) { repo.next_discovery = now; }
+        }
+        for key in pending.worktrees {
+            if let Some(state) = self.worktrees.get_mut(&key) { state.due = now; }
+        }
+        if pending.full {
+            self.next_config_read = now;
+            self.launch_due = now;
+            for repo in self.repos.values_mut() { repo.next_discovery = now; }
+            for state in self.worktrees.values_mut() { state.due = now; }
+        }
+    }
+
+    fn reconcile(&mut self, now: Instant) {
+        if now < self.next_reconcile { return; }
+        self.next_reconcile = now + SAFETY_RECONCILE;
+        self.next_config_read = now;
+        if self.launch_directory.is_some() { self.launch_due = now; }
+        for repo in self.repos.values_mut() { repo.next_discovery = now; }
+        for state in self.worktrees.values_mut() {
+            if !state.discovery_error { state.due = now; }
+        }
+    }
+
+    fn pending_due(&self, now: Instant, launch: bool) -> Instant {
+        if launch && self.pending.launch {
+            self.pending.due.unwrap_or(now).max(now)
+        } else {
+            now
+        }
+    }
+
+    fn pending_due_for_worktree(&self, key: &WorktreeKey, now: Instant) -> Instant {
+        if self.pending.worktrees.contains(key) {
+            self.pending.due.unwrap_or(now).max(now)
+        } else {
+            now
+        }
+    }
+
+    fn pending_due_for_discovery(&self, common: &Path, now: Instant) -> Instant {
+        if self.pending.discoveries.contains(common) {
+            self.pending.due.unwrap_or(now).max(now)
+        } else {
+            now
         }
     }
 
@@ -315,6 +511,8 @@ impl Coordinator {
         let desired = self.desired_repositories();
         let desired_keys: HashSet<_> = desired.iter().map(|(key, _)| key.clone()).collect();
         let removed: Vec<_> = self.repos.keys().filter(|key| !desired_keys.contains(*key)).cloned().collect();
+        let changed = !removed.is_empty() || desired.len() != self.repos.len()
+            || self.repo_order != desired.iter().map(|(key, _)| key.clone()).collect::<Vec<_>>();
         for key in removed {
             self.cancel_jobs_for_common(&key);
             self.repos.remove(&key);
@@ -332,11 +530,13 @@ impl Coordinator {
                     generation,
                     next_discovery: now,
                     discovery_job: None,
+                    revision: 0,
                     discovery: DiscoveryState::Pending,
                     worktrees: Vec::new(),
                 });
             }
         }
+        if changed { self.watch_dirty = true; }
     }
 
     fn cancel_job(&self, id: Option<u64>) {
@@ -390,10 +590,14 @@ impl Coordinator {
 
     fn complete(&mut self, completion: Completion, now: Instant) {
         match completion.kind {
-            CompletionKind::Launch(result) => {
+            CompletionKind::Launch { revision, result } => {
                 if self.launch_job != Some(completion.id) { return; }
                 self.launch_job = None;
-                self.launch_due = now + DISCOVERY_INTERVAL;
+                if revision != self.launch_revision {
+                    self.launch_due = self.pending_due(now, true);
+                    return;
+                }
+                self.launch_due = now + self.recovery_or_safety();
                 match result {
                     Ok(common) => {
                         self.launch_error = None;
@@ -406,29 +610,47 @@ impl Coordinator {
                     }
                     Err(error) if error.kind == ErrorKind::Cancelled && self.cancel.is_cancelled() => {}
                     Err(error) if is_not_git(&error) => { self.launch_error = None; }
-                    Err(error) => { self.launch_error = Some(error); }
+                    Err(error) => {
+                        self.launch_error = Some(error);
+                        self.launch_due = now + RECOVERY_INTERVAL;
+                    }
                 }
             }
-            CompletionKind::Discovery { common, generation, result } => {
+            CompletionKind::Discovery { common, generation, revision, result } => {
                 if self.discovery_jobs.get(&common) == Some(&completion.id) {
                     self.discovery_jobs.remove(&common);
                 }
                 let valid = self.repos.get(&common)
                     .is_some_and(|repo| repo.generation == generation && repo.discovery_job == Some(completion.id));
                 if !valid { return; }
+                let recovery_or_safety = self.recovery_or_safety();
+                let pending_due = self.pending_due_for_discovery(&common, now);
                 if let Some(repo) = self.repos.get_mut(&common) {
                     repo.discovery_job = None;
-                    repo.next_discovery = now + DISCOVERY_INTERVAL;
+                    repo.next_discovery = now + recovery_or_safety;
+                    if revision != repo.revision {
+                        repo.next_discovery = pending_due;
+                    } else if result.is_err() {
+                        repo.next_discovery = now + RECOVERY_INTERVAL;
+                    }
                 }
+                if self.repos.get(&common).is_some_and(|repo| revision != repo.revision) { return; }
                 self.apply_discovery(&common, generation, result, now);
             }
-            CompletionKind::Scan { key, generation, result } => {
+            CompletionKind::Scan { key, generation, revision, result } => {
                 if self.scan_jobs.get(&key) == Some(&completion.id) { self.scan_jobs.remove(&key); }
+                let pending_due = self.pending_due_for_worktree(&key, now);
+                let recovery_or_safety = self.recovery_or_safety();
                 let Some(state) = self.worktrees.get_mut(&key) else { return; };
                 if state.generation != generation || state.in_flight != Some(completion.id) { return; }
                 state.in_flight = None;
                 if state.discovery_error { return; }
+                if state.revision != revision {
+                    state.due = pending_due;
+                    return;
+                }
                 let delay = state.backoff.observe(&result);
+                let delay = if result.is_ok() { recovery_or_safety } else { delay };
                 state.last = Some(result);
                 state.due = now + delay;
             }
@@ -453,6 +675,7 @@ impl Coordinator {
         let new_keys: Vec<_> = discovered.trees.iter()
             .map(|tree| WorktreeKey::new(&self.repos[common].common_dir, &tree.path)).collect();
         let new_set: HashSet<_> = new_keys.iter().cloned().collect();
+        let topology_changed = old_keys != new_keys;
         for key in old_keys {
             if !new_set.contains(&key) {
                 self.cancel_scan(&key);
@@ -468,6 +691,7 @@ impl Coordinator {
             repo.worktrees = new_keys;
             repo.discovery = DiscoveryState::Ready(discovered);
         }
+        if topology_changed { self.watch_dirty = true; }
     }
 
     fn apply_tree(&mut self, key: &WorktreeKey, tree: &git::DiscoveredTree, now: Instant) {
@@ -487,6 +711,7 @@ impl Coordinator {
                 backoff: WorktreeBackoff::default(),
                 due: now + Duration::from_secs(1),
                 in_flight: None,
+                revision: 0,
                 generation,
             });
             return;
@@ -505,6 +730,7 @@ impl Coordinator {
             backoff: WorktreeBackoff::default(),
             due: now,
             in_flight: None,
+            revision: 0,
             generation,
         });
     }
@@ -516,10 +742,12 @@ impl Coordinator {
         let mut repo_targets: Vec<_> = self.repo_order.iter().filter_map(|key| {
             self.repos.get(key).and_then(|repo| (repo.discovery_job.is_none()
                 && !self.discovery_jobs.contains_key(key) && now >= repo.next_discovery)
-                .then(|| (key.clone(), repo.common_dir.clone(), repo.generation, repo.next_discovery)))
+                .then(|| (key.clone(), repo.common_dir.clone(), repo.generation, repo.revision, repo.next_discovery)))
         }).collect();
-        repo_targets.sort_by_key(|(_, _, _, due)| *due);
-        for (key, common, generation, _) in repo_targets { self.start_discovery(key, common, generation, now); }
+        repo_targets.sort_by_key(|(_, _, _, _, due)| *due);
+        for (key, common, generation, revision, _) in repo_targets {
+            self.start_discovery(key, common, generation, revision, now);
+        }
 
         let mut scan_targets = Vec::new();
         let mut scheduled = HashSet::new();
@@ -531,12 +759,15 @@ impl Coordinator {
                 let Some(state) = self.worktrees.get(key) else { continue; };
                 if state.in_flight.is_none() && !self.scan_jobs.contains_key(key)
                     && !state.discovery_error && now >= state.due {
-                    scan_targets.push((key.clone(), state.path.clone(), state.generation, state.due));
+                    scan_targets.push((key.clone(), state.path.clone(), state.generation,
+                        state.revision, state.due));
                 }
             }
         }
-        scan_targets.sort_by_key(|(_, _, _, due)| *due);
-        for (key, path, generation, _) in scan_targets { self.start_scan(key, path, generation, now); }
+        scan_targets.sort_by_key(|(_, _, _, _, due)| *due);
+        for (key, path, generation, revision, _) in scan_targets {
+            self.start_scan(key, path, generation, revision, now);
+        }
     }
 
     fn start_launch(&mut self, now: Instant) {
@@ -546,33 +777,38 @@ impl Coordinator {
         let sender = self.sender.clone();
         let cancel = Cancel::new();
         let worker_cancel = cancel.clone();
+        let wake = self.cancel.clone();
+        let revision = self.launch_revision;
         let timing = Arc::new(Mutex::new(JobTiming::default()));
         let worker_timing = timing.clone();
         let spawn = thread::Builder::new().name("wts-launch-discovery".into()).spawn(move || {
             mark_job_started(&worker_timing);
             let result = config::resolve(&directory, &worker_cancel);
             mark_job_ended(&worker_timing);
-            let _ = sender.send(Completion { id, kind: CompletionKind::Launch(result) });
+            let _ = sender.send(Completion { id, kind: CompletionKind::Launch { revision, result } });
+            wake.wake();
         });
         match spawn {
             Ok(handle) => {
                 self.jobs.insert(id, Job { handle, cancel, timing });
                 self.launch_job = Some(id);
-                self.launch_due = now + DISCOVERY_INTERVAL;
+                self.launch_due = now + self.recovery_or_safety();
             }
             Err(error) => {
                 self.launch_error = Some(Error::io("Cannot start launch discovery", error));
-                self.launch_due = now + DISCOVERY_INTERVAL;
+                self.launch_due = now + RECOVERY_INTERVAL;
             }
         }
     }
 
-    fn start_discovery(&mut self, common_key: PathBuf, common: PathBuf, generation: u64, now: Instant) {
+    fn start_discovery(&mut self, common_key: PathBuf, common: PathBuf, generation: u64,
+        revision: u64, now: Instant) {
         if self.jobs.len() >= MAX_JOBS || self.discovery_jobs.len() >= MAX_DISCOVERY_JOBS { return; }
         let id = self.fresh_job();
         let sender = self.sender.clone();
         let cancel = Cancel::new();
         let worker_cancel = cancel.clone();
+        let wake = self.cancel.clone();
         let timing = Arc::new(Mutex::new(JobTiming::default()));
         let worker_timing = timing.clone();
         let thread_common = common.clone();
@@ -581,30 +817,35 @@ impl Coordinator {
             let result = git::discover(&thread_common, &worker_cancel);
             mark_job_ended(&worker_timing);
             let _ = sender.send(Completion { id, kind: CompletionKind::Discovery {
-                common: common_key, generation, result,
+                common: common_key, generation, revision, result,
             }});
+            wake.wake();
         });
         match spawn {
             Ok(handle) => {
                 self.jobs.insert(id, Job { handle, cancel, timing });
                 self.discovery_jobs.insert(normalize(&common), id);
-                if let Some(repo) = self.repos.get_mut(&normalize(&common)) { repo.discovery_job = Some(id); }
+                if let Some(repo) = self.repos.get_mut(&normalize(&common)) {
+                    repo.discovery_job = Some(id);
+                }
             }
             Err(error) => {
                 if let Some(repo) = self.repos.get_mut(&normalize(&common)) {
                     repo.discovery = DiscoveryState::Failed(Error::io("Cannot start repository discovery", error));
-                    repo.next_discovery = now + DISCOVERY_INTERVAL;
+                    repo.next_discovery = now + RECOVERY_INTERVAL;
                 }
             }
         }
     }
 
-    fn start_scan(&mut self, key: WorktreeKey, path: PathBuf, generation: u64, now: Instant) {
+    fn start_scan(&mut self, key: WorktreeKey, path: PathBuf, generation: u64,
+        revision: u64, now: Instant) {
         if self.jobs.len() >= MAX_JOBS || self.active_scan_jobs() >= MAX_SCAN_JOBS { return; }
         let id = self.fresh_job();
         let sender = self.sender.clone();
         let cancel = Cancel::new();
         let worker_cancel = cancel.clone();
+        let wake = self.cancel.clone();
         let timing = Arc::new(Mutex::new(JobTiming::default()));
         let worker_timing = timing.clone();
         let completion_key = key.clone();
@@ -613,14 +854,17 @@ impl Coordinator {
             let result = git::scan_tree(&path, &worker_cancel);
             mark_job_ended(&worker_timing);
             let _ = sender.send(Completion { id, kind: CompletionKind::Scan {
-                key: completion_key, generation, result,
+                key: completion_key, generation, revision, result,
             } });
+            wake.wake();
         });
         match spawn {
             Ok(handle) => {
                 self.jobs.insert(id, Job { handle, cancel, timing });
                 self.scan_jobs.insert(key.clone(), id);
-                if let Some(state) = self.worktrees.get_mut(&key) { state.in_flight = Some(id); }
+                if let Some(state) = self.worktrees.get_mut(&key) {
+                    state.in_flight = Some(id);
+                }
             }
             Err(error) => {
                 if let Some(state) = self.worktrees.get_mut(&key) {
@@ -714,11 +958,36 @@ impl Coordinator {
     }
 
     fn next_wait(&self, now: Instant) -> Duration {
-        let mut wait = Duration::from_millis(50);
+        let mut wait = Duration::from_secs(1);
+        let mut deadline = |value: Instant| {
+            wait = wait.min(value.saturating_duration_since(now));
+        };
         if let Some(last) = self.last_published {
-            wait = wait.min(Duration::from_secs(1).saturating_sub(now.duration_since(last)));
+            deadline(last + Duration::from_secs(1));
         }
-        wait.min(self.next_config_read.saturating_duration_since(now))
+        deadline(self.next_config_read);
+        deadline(self.next_reconcile);
+        if let Some(due) = self.pending.due { deadline(due); }
+        if let Some(due) = self.watch.next_retry() { deadline(due); }
+        if self.jobs.len() < MAX_JOBS {
+            if self.launch_directory.is_some() && self.launch_job.is_none() { deadline(self.launch_due); }
+            if self.discovery_jobs.len() < MAX_DISCOVERY_JOBS {
+                for (common, repo) in &self.repos {
+                    if repo.discovery_job.is_none() && !self.discovery_jobs.contains_key(common) {
+                        deadline(repo.next_discovery);
+                    }
+                }
+            }
+            if self.active_scan_jobs() < MAX_SCAN_JOBS {
+                for (key, state) in &self.worktrees {
+                    if state.in_flight.is_none() && !state.discovery_error && !self.scan_jobs.contains_key(key)
+                        && self.repos.get(&key.common).is_some_and(|repo| matches!(repo.discovery, DiscoveryState::Ready(_))) {
+                        deadline(state.due);
+                    }
+                }
+            }
+        }
+        wait
     }
 
     fn shutdown(&mut self) {
@@ -830,6 +1099,7 @@ mod tests {
             generation: 1,
             next_discovery: now + Duration::from_secs(1),
             discovery_job: None,
+            revision: 0,
             discovery: DiscoveryState::Ready(git::DiscoveredRepo {
                 path: PathBuf::from("repo"),
                 trees: vec![
@@ -846,6 +1116,7 @@ mod tests {
             backoff: WorktreeBackoff::default(),
             due: now + Duration::from_secs(1),
             in_flight: None,
+            revision: 0,
             generation: 2,
         });
         coordinator.worktrees.insert(slow_key, WorktreeState {
@@ -855,6 +1126,7 @@ mod tests {
             backoff: WorktreeBackoff::default(),
             due: now,
             in_flight: Some(slow_job),
+            revision: 0,
             generation: 3,
         });
 
@@ -896,14 +1168,135 @@ mod tests {
             backoff: WorktreeBackoff::default(),
             due: Instant::now(),
             in_flight: Some(2),
+            revision: 0,
             generation: 2,
         });
         coordinator.complete(Completion { id: 1, kind: CompletionKind::Scan {
-            key: key.clone(), generation: 1, result: stats(1),
+            key: key.clone(), generation: 1, revision: 0, result: stats(1),
         } }, Instant::now());
         let state = coordinator.worktrees.get(&key).unwrap();
         assert!(state.last.is_none());
         assert_eq!(state.in_flight, Some(2));
+    }
+
+    #[test]
+    fn pending_worktree_invalidation_survives_an_in_flight_completion() {
+        let latest = Arc::new(Mutex::new(None));
+        let mut coordinator = Coordinator::new(Service::at("config.json"), None, Cancel::new(), latest);
+        let now = Instant::now();
+        let key = WorktreeKey::new(Path::new("repo/.git"), Path::new("repo"));
+        coordinator.worktrees.insert(key.clone(), WorktreeState {
+            path: PathBuf::from("repo"),
+            last: None,
+            discovery_error: false,
+            backoff: WorktreeBackoff::default(),
+            due: now,
+            in_flight: Some(2),
+            revision: 0,
+            generation: 1,
+        });
+        let mut batch = watch::WatchBatch::default();
+        batch.worktrees.insert(key.clone());
+        coordinator.enqueue_watch(batch, now);
+        coordinator.complete(Completion { id: 2, kind: CompletionKind::Scan {
+            key: key.clone(), generation: 1, revision: 0, result: stats(1),
+        } }, now + Duration::from_millis(1));
+        let state = coordinator.worktrees.get(&key).unwrap();
+        assert!(state.last.is_none());
+        assert!(state.due >= now + DEBOUNCE);
+        assert_eq!(state.in_flight, None);
+    }
+
+    #[test]
+    fn pending_discovery_invalidation_survives_an_in_flight_completion() {
+        let latest = Arc::new(Mutex::new(None));
+        let mut coordinator = Coordinator::new(Service::at("config.json"), None, Cancel::new(), latest);
+        let now = Instant::now();
+        let common = PathBuf::from("repo/.git");
+        let common_key = normalize(&common);
+        coordinator.repo_order.push(common_key.clone());
+        coordinator.repos.insert(common_key.clone(), RepoState {
+            common_dir: common.clone(),
+            path: PathBuf::from("repo"),
+            generation: 1,
+            next_discovery: now,
+            discovery_job: Some(2),
+            revision: 0,
+            discovery: DiscoveryState::Pending,
+            worktrees: Vec::new(),
+        });
+        coordinator.discovery_jobs.insert(common_key.clone(), 2);
+        let mut batch = watch::WatchBatch::default();
+        batch.discoveries.insert(common_key.clone());
+        coordinator.enqueue_watch(batch, now);
+        coordinator.complete(Completion { id: 2, kind: CompletionKind::Discovery {
+            common: common_key.clone(), generation: 1, revision: 0,
+            result: Ok(git::DiscoveredRepo { path: PathBuf::from("repo"), trees: Vec::new() }),
+        } }, now + Duration::from_millis(1));
+        let repo = coordinator.repos.get(&common_key).unwrap();
+        assert!(matches!(repo.discovery, DiscoveryState::Pending));
+        assert!(repo.next_discovery >= now + DEBOUNCE);
+        assert_eq!(repo.discovery_job, None);
+    }
+
+    #[test]
+    fn safety_reconcile_makes_discovery_and_scan_due_without_losing_revisions() {
+        let latest = Arc::new(Mutex::new(None));
+        let mut coordinator = Coordinator::new(Service::at("config.json"), None, Cancel::new(), latest);
+        let now = Instant::now();
+        let common = PathBuf::from("repo/.git");
+        let common_key = normalize(&common);
+        let path = PathBuf::from("repo");
+        let key = WorktreeKey::new(&common, &path);
+        coordinator.repo_order.push(common_key.clone());
+        coordinator.repos.insert(common_key.clone(), RepoState {
+            common_dir: common,
+            path: path.clone(),
+            generation: 1,
+            next_discovery: now + Duration::from_secs(30),
+            discovery_job: None,
+            revision: 7,
+            discovery: DiscoveryState::Ready(git::DiscoveredRepo {
+                path: path.clone(),
+                trees: vec![git::DiscoveredTree { path: path.clone(), error: None }],
+            }),
+            worktrees: vec![key.clone()],
+        });
+        coordinator.worktrees.insert(key.clone(), WorktreeState {
+            path,
+            last: Some(stats(1)),
+            discovery_error: false,
+            backoff: WorktreeBackoff::default(),
+            due: now + Duration::from_secs(30),
+            in_flight: None,
+            revision: 11,
+            generation: 2,
+        });
+        coordinator.pending.discoveries.insert(common_key.clone());
+        coordinator.pending.worktrees.insert(key.clone());
+        coordinator.next_reconcile = now;
+        coordinator.reconcile(now);
+        assert_eq!(coordinator.repos[&common_key].next_discovery, now);
+        assert_eq!(coordinator.worktrees[&key].due, now);
+        assert_eq!(coordinator.repos[&common_key].revision, 7);
+        assert_eq!(coordinator.worktrees[&key].revision, 11);
+        assert!(coordinator.pending.discoveries.contains(&common_key));
+        assert!(coordinator.pending.worktrees.contains(&key));
+    }
+
+    #[test]
+    fn failed_full_watch_reconcile_honors_a_retry_deadline() {
+        let latest = Arc::new(Mutex::new(None));
+        let mut coordinator = Coordinator::new(Service::at("config.json"), None, Cancel::new(), latest);
+        coordinator.watch.fail_reconcile_for_test();
+        let now = Instant::now();
+        coordinator.reconcile_watches(now);
+        let retry = coordinator.watch.next_retry().unwrap();
+        assert!(!coordinator.watch_dirty);
+        coordinator.reconcile_watches(now + Duration::from_secs(1));
+        assert_eq!(coordinator.watch.next_retry(), Some(retry));
+        coordinator.reconcile_watches(retry);
+        assert!(coordinator.watch.next_retry().unwrap() > retry);
     }
 
     #[test]
@@ -927,6 +1320,7 @@ mod tests {
             backoff: WorktreeBackoff::default(),
             due,
             in_flight: None,
+            revision: 0,
             generation: 9,
         });
         assert!(coordinator.registrations.reload(Ok(second_bytes)));
@@ -934,6 +1328,49 @@ mod tests {
         let state = coordinator.worktrees.values().next().unwrap();
         assert_eq!(state.due, due);
         assert_eq!(state.generation, 9);
+    }
+
+    #[test]
+    fn blocked_overdue_jobs_do_not_spin_the_coordinator() {
+        let latest = Arc::new(Mutex::new(None));
+        let mut coordinator = Coordinator::new(Service::at("config.json"), None, Cancel::new(), latest);
+        let now = Instant::now();
+        coordinator.next_config_read = now + Duration::from_secs(5);
+        coordinator.next_reconcile = now + Duration::from_secs(300);
+        coordinator.last_published = Some(now);
+        let common = PathBuf::from("repo/.git");
+        let key = WorktreeKey::new(&common, Path::new("repo"));
+        coordinator.repos.insert(key.common.clone(), RepoState {
+            common_dir: common,
+            path: PathBuf::from("repo"),
+            generation: 1,
+            next_discovery: now + Duration::from_secs(5),
+            discovery_job: None,
+            revision: 0,
+            discovery: DiscoveryState::Failed(Error::new(ErrorKind::Io, "Missing repository")),
+            worktrees: vec![key.clone()],
+        });
+        coordinator.worktrees.insert(key.clone(), WorktreeState {
+            path: PathBuf::from("repo"),
+            last: Some(stats(1)),
+            discovery_error: false,
+            backoff: WorktreeBackoff::default(),
+            due: now,
+            in_flight: None,
+            revision: 0,
+            generation: 2,
+        });
+        assert_eq!(coordinator.next_wait(now), Duration::from_secs(1));
+        let repo = coordinator.repos.get_mut(&key.common).unwrap();
+        repo.discovery = DiscoveryState::Ready(git::DiscoveredRepo {
+            path: PathBuf::from("repo"),
+            trees: vec![git::DiscoveredTree { path: PathBuf::from("repo"), error: None }],
+        });
+        coordinator.scan_jobs.insert(key.clone(), 9);
+        assert_eq!(coordinator.next_wait(now), Duration::from_secs(1));
+        coordinator.repos.get_mut(&key.common).unwrap().next_discovery = now;
+        coordinator.discovery_jobs.insert(key.common.clone(), 10);
+        assert_eq!(coordinator.next_wait(now), Duration::from_secs(1));
     }
 
     #[test]
@@ -952,6 +1389,7 @@ mod tests {
             generation: 1,
             next_discovery: now - Duration::from_secs(2),
             discovery_job: None,
+            revision: 0,
             discovery: DiscoveryState::Ready(git::DiscoveredRepo { path: PathBuf::from("repo"), trees }),
             worktrees: keys.clone(),
         });
@@ -963,6 +1401,7 @@ mod tests {
                 backoff: WorktreeBackoff::default(),
                 due: now - Duration::from_secs(index as u64 + 1),
                 in_flight: None,
+                revision: 0,
                 generation: index as u64 + 2,
             });
         }
@@ -976,6 +1415,7 @@ mod tests {
                 generation: 10,
                 next_discovery: now - Duration::from_secs(age),
                 discovery_job: None,
+                revision: 0,
                 discovery: DiscoveryState::Ready(git::DiscoveredRepo { path: PathBuf::from(name), trees: Vec::new() }),
                 worktrees: Vec::new(),
             });

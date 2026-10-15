@@ -27,7 +27,7 @@ Each worktree shows its branch and `S +n/-n · T +n/-n · X +n/-n`. `S` counts s
 
 Git's ignore rules and binary attributes apply. Binary files have a separate count, not an invented line count. Ignored untracked files and submodule contents are not counted. Missing or unreadable worktrees show errors rather than zero changes.
 
-Each worktree scans immediately, then waits 5 seconds on its own schedule. Unchanged results increase that worktree's wait to 10, 20, then 30 seconds. A changed result resets its wait to 5 seconds without changing other worktrees' schedules. The window shows time spent polling during the last minute, not the wait between scans, and reloads registrations while running.
+Each worktree scans at startup. Native filesystem notifications trigger later scans after file changes. WTS combines bursts of changes and retains changes that arrive during a scan. It watches shared Git metadata to detect branch changes and added or removed worktrees. Registration changes reload while the window is running. Periodic safety scans cover missed notifications, and polling recovers from watcher failures. The window shows time spent scanning and discovering repositories during the last minute, not CPU time or time waiting between scans.
 
 ## Configuration
 
@@ -58,3 +58,9 @@ The smoke checks use isolated temporary repositories and configuration. The wind
 `pwsh -NoProfile -File scripts/capture-window.ps1 -Client` creates three real Git fixtures, verifies native accessibility, and captures the actual dashboard without surrounding desktop content. It leaves the image and fixture evidence under the OpenCode temporary directory and closes its own window.
 
 To check discovery against an existing repository with multiple worktrees, run `pwsh -NoProfile -File scripts/smoke-worktrees.ps1 -Repository C:\src\project`. This check uses an isolated registry and does not create or modify worktrees.
+
+## Measure monitoring work
+
+Build the release measurement example with `cargo build --release -p wts-core --example measure-monitor --locked`. Run `target/release/examples/measure-monitor.exe 5 60` from the launch directory. The first argument selects five one-minute samples. The second argument selects a 60-second warmup. Each JSON record includes the rolling polling duration and the observed repository snapshot. Set `WTS_BENCH_CONFIG` to use an isolated registration file.
+
+To compare revisions, preserve the example executable from the older revision. Build the new revision, then run `pwsh -NoProfile -File scripts/benchmark-monitor.ps1 -Baseline C:\path\to\baseline-monitor.exe`. The script runs both release monitors together against the same registrations. It samples each monitor's published rolling-minute metric every 60 seconds after warmup. Five samples cover normal idle operation and the five-minute safety scan. The comparison rejects errors or changed snapshots. Saved JSON includes executable hashes and every sample. Polling time adds concurrent jobs separately and excludes filesystem-watcher overhead.

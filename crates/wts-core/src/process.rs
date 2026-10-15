@@ -9,7 +9,13 @@ use std::time::{Duration, Instant};
 
 #[derive(Clone, Default)]
 pub struct Cancel {
-    state: Arc<(Mutex<bool>, Condvar)>,
+    state: Arc<(Mutex<CancelState>, Condvar)>,
+}
+
+#[derive(Default)]
+struct CancelState {
+    cancelled: bool,
+    generation: u64,
 }
 
 impl Cancel {
@@ -17,18 +23,36 @@ impl Cancel {
 
     pub fn cancel(&self) {
         let (lock, wake) = &*self.state;
-        *lock.lock().unwrap_or_else(|error| error.into_inner()) = true;
+        let mut state = lock.lock().unwrap_or_else(|error| error.into_inner());
+        state.cancelled = true;
+        state.generation = state.generation.wrapping_add(1);
         wake.notify_all();
     }
 
     pub fn is_cancelled(&self) -> bool {
-        *self.state.0.lock().unwrap_or_else(|error| error.into_inner())
+        self.state.0.lock().unwrap_or_else(|error| error.into_inner()).cancelled
     }
 
     pub(crate) fn wait(&self, duration: Duration) {
+        let generation = self.generation();
+        self.wait_since(generation, duration);
+    }
+
+    pub(crate) fn wait_since(&self, generation: u64, duration: Duration) {
         let (lock, wake) = &*self.state;
-        let guard = lock.lock().unwrap_or_else(|error| error.into_inner());
-        let _ = wake.wait_timeout_while(guard, duration, |cancelled| !*cancelled);
+        let state = lock.lock().unwrap_or_else(|error| error.into_inner());
+        let _ = wake.wait_timeout_while(state, duration,
+            |state| !state.cancelled && state.generation == generation);
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.state.0.lock().unwrap_or_else(|error| error.into_inner()).generation
+    }
+
+    pub(crate) fn wake(&self) {
+        let mut state = self.state.0.lock().unwrap_or_else(|error| error.into_inner());
+        state.generation = state.generation.wrapping_add(1);
+        self.state.1.notify_all();
     }
 }
 
@@ -77,17 +101,36 @@ pub(crate) fn run(directory: Option<&Path>, args: &[OsString], cancel: &Cancel) 
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut buffers: [Option<Vec<u8>>; 2] = [None, None];
     let result = (|| {
+        let mut readers_remaining = readers.len();
+        let mut disconnected = false;
         loop {
             if cancel.is_cancelled() { return Err(Error::new(ErrorKind::Cancelled, "Git scan cancelled")); }
             if Instant::now() >= deadline { return Err(Error::new(ErrorKind::Timeout, "Git command timed out after 10 seconds")); }
-            while let Ok((index, bytes)) = receiver.try_recv() { buffers[index] = Some(bytes?); }
+            let wait = deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(20));
+            if readers_remaining > 0 && !disconnected {
+                match receiver.recv_timeout(wait) {
+                    Ok((index, bytes)) => {
+                        buffers[index] = Some(bytes?);
+                        readers_remaining -= 1;
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => { disconnected = true; }
+                }
+            } else {
+                cancel.wait(wait);
+            }
+            while let Ok((index, bytes)) = receiver.try_recv() {
+                if buffers[index].is_none() {
+                    buffers[index] = Some(bytes?);
+                    readers_remaining = readers_remaining.saturating_sub(1);
+                }
+            }
             if let Some(status) = child.try_wait().map_err(|error| Error::io("Could not wait for Git", error))? {
                 if buffers.iter().all(Option::is_some) {
                     return Ok(Output { code: status.code().unwrap_or(-1),
                         stdout: buffers[0].take().unwrap(), stderr: buffers[1].take().unwrap() });
                 }
             }
-            cancel.wait(Duration::from_millis(20));
         }
     })();
     if result.is_err() {

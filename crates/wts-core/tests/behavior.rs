@@ -397,6 +397,224 @@ fn wait_for(monitor: &wts_core::Monitor, condition: impl Fn(&wts_core::MonitorUp
     }
 }
 
+fn wait_for_within(monitor: &wts_core::Monitor,
+    condition: impl Fn(&wts_core::MonitorUpdate) -> bool, limit: Duration) -> Duration {
+    let start = Instant::now();
+    let deadline = start + limit;
+    loop {
+        if monitor.latest().is_some_and(|update| condition(&update)) { return start.elapsed(); }
+        assert!(Instant::now() < deadline, "Timed out waiting for monitor update");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn worktree_edits_recompute_without_recovery_polling() {
+    let fixture = Fixture::new("sha1");
+    fixture.write("tracked.txt", "before\n");
+    fixture.commit();
+    fixture.service().add(&fixture.repo).unwrap();
+    let mut monitor = fixture.service().monitor().unwrap();
+    wait_for(&monitor, |update| update.snapshot.repos.len() == 1
+        && update.snapshot.repos[0].worktrees.as_ref().is_ok_and(|trees|
+            trees[0].result.as_ref().is_ok_and(|stats| stats.counts == Counts::default())));
+    fixture.write("tracked.txt", "before\nafter\n");
+    let elapsed = wait_for_within(&monitor, |update| update.snapshot.repos[0]
+        .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
+        == source_counts(1, 0, 0), Duration::from_secs(2));
+    assert!(elapsed < Duration::from_secs(2), "edit took {elapsed:?}");
+    monitor.stop().unwrap();
+}
+
+#[test]
+fn untracked_directory_and_atomic_rename_changes_are_observed() {
+    let fixture = Fixture::new("sha1");
+    fixture.write("tracked.txt", "before\n");
+    fixture.commit();
+    fixture.service().add(&fixture.repo).unwrap();
+    let mut monitor = fixture.service().monitor().unwrap();
+    wait_for(&monitor, |update| update.snapshot.repos.len() == 1
+        && update.snapshot.repos[0].worktrees.as_ref().is_ok_and(|trees| trees.len() == 1));
+    let directory = fixture.repo.join("newdir");
+    fs::create_dir(&directory).unwrap();
+    fs::write(directory.join("new.txt"), "one\ntwo\n").unwrap();
+    wait_for_within(&monitor, |update| update.snapshot.repos[0]
+        .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
+        == source_counts(2, 0, 0), Duration::from_secs(2));
+    fs::rename(directory.join("new.txt"), directory.join("renamed.txt")).unwrap();
+    fs::remove_file(directory.join("renamed.txt")).unwrap();
+    let elapsed = wait_for_within(&monitor, |update| update.snapshot.repos[0]
+        .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
+        == Counts::default(), Duration::from_secs(2));
+    assert!(elapsed < Duration::from_secs(2), "removal took {elapsed:?}");
+    monitor.stop().unwrap();
+}
+
+#[test]
+fn metadata_changes_and_worktree_topology_are_observed() {
+    let fixture = Fixture::new("sha1");
+    fixture.write("tracked.txt", "before\n");
+    fixture.commit();
+    fixture.service().add(&fixture.repo).unwrap();
+    let linked = fixture._directory.path().join("linked");
+    git(&fixture.repo, &["worktree", "add", "--quiet", "--detach", linked.to_str().unwrap()]);
+    let mut monitor = fixture.service().monitor().unwrap();
+    wait_for(&monitor, |update| update.snapshot.repos.len() == 1
+        && update.snapshot.repos[0].worktrees.as_ref().is_ok_and(|trees| trees.len() == 2));
+    fs::write(linked.join("linked.txt"), "linked\n").unwrap();
+    git(&linked, &["add", "linked.txt"]);
+    git(&linked, &["-c", "user.name=Wts Test", "-c", "user.email=wts@example.invalid",
+        "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "Linked"]);
+    let linked_head = String::from_utf8(git(&linked, &["rev-parse", "HEAD"])).unwrap().trim().to_owned();
+    let elapsed = wait_for_within(&monitor, |update| update.snapshot.repos[0]
+        .worktrees.as_ref().unwrap().iter().any(|tree|
+            tree.result.as_ref().is_ok_and(|stats| stats.head == Head::Detached(linked_head.clone()))),
+        Duration::from_secs(2));
+    assert!(elapsed < Duration::from_secs(2), "linked HEAD took {elapsed:?}");
+    let added = fixture._directory.path().join("added");
+    git(&fixture.repo, &["worktree", "add", "--quiet", "--detach", added.to_str().unwrap()]);
+    wait_for_within(&monitor, |update| update.snapshot.repos[0]
+        .worktrees.as_ref().unwrap().len() == 3, Duration::from_secs(2));
+    git(&fixture.repo, &["worktree", "remove", "--force", added.to_str().unwrap()]);
+    wait_for_within(&monitor, |update| update.snapshot.repos[0]
+        .worktrees.as_ref().unwrap().len() == 2, Duration::from_secs(2));
+    fixture.write("tracked.txt", "before\nmain\n");
+    wait_for_within(&monitor, |update| update.snapshot.repos[0]
+        .worktrees.as_ref().unwrap().iter().any(|tree|
+            tree.result.as_ref().is_ok_and(|stats| stats.counts == source_counts(1, 0, 0))),
+        Duration::from_secs(2));
+    git(&fixture.repo, &["add", "tracked.txt"]);
+    git(&fixture.repo, &["-c", "user.name=Wts Test", "-c", "user.email=wts@example.invalid",
+        "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "Main"]);
+    wait_for_within(&monitor, |update| update.snapshot.repos[0]
+        .worktrees.as_ref().unwrap().iter().all(|tree|
+            tree.result.as_ref().is_ok_and(|stats| stats.counts == Counts::default())),
+        Duration::from_secs(2));
+    monitor.stop().unwrap();
+}
+
+#[test]
+fn replaced_refs_watch_observes_a_ref_only_head_and_count_change() {
+    let fixture = Fixture::new("sha1");
+    fixture.write("tracked.txt", "before\n");
+    fixture.commit();
+    git(&fixture.repo, &["switch", "--quiet", "-c", "alternate"]);
+    fixture.write("tracked.txt", "alternate\n");
+    fixture.commit();
+    let alternate = String::from_utf8(git(&fixture.repo, &["rev-parse", "alternate"]))
+        .unwrap().trim().to_owned();
+    git(&fixture.repo, &["switch", "--quiet", "main"]);
+    fixture.service().add(&fixture.repo).unwrap();
+    let mut monitor = fixture.service().monitor().unwrap();
+    wait_for(&monitor, |update| update.snapshot.repos.len() == 1
+        && update.snapshot.repos[0].worktrees.as_ref().is_ok_and(|trees| {
+            trees[0].result.as_ref().is_ok_and(|stats| {
+                stats.head == Head::Branch("main".into()) && stats.counts == Counts::default()
+            })
+        }));
+    let refs = fixture.repo.join(".git/refs");
+    let moved = fixture.repo.join(".git/refs-away");
+    fs::rename(&refs, &moved).unwrap();
+    fs::rename(&moved, &refs).unwrap();
+    git(&fixture.repo, &["update-ref", "refs/heads/main", &alternate]);
+    let common = dunce::canonicalize(fixture.repo.join(".git")).unwrap();
+    wait_for_within(&monitor, |update| {
+        let Some(repo) = update.snapshot.repos.first() else { return false; };
+        let Some(trees) = repo.worktrees.as_ref().ok() else { return false; };
+        repo.common_dir == common && trees.len() == 1
+            && trees[0].result.as_ref().is_ok_and(|stats| {
+                stats.head == Head::Branch("main".into())
+                    && stats.counts == source_counts(1, 1, 0)
+            })
+    }, Duration::from_secs(2));
+    monitor.stop().unwrap();
+}
+
+#[test]
+fn replaced_info_directory_reconnects_exclude_watch() {
+    let fixture = Fixture::new("sha1");
+    fixture.write("tracked.txt", "before\n");
+    fixture.commit();
+    fixture.write("ignored.txt", "untracked\n");
+    fixture.service().add(&fixture.repo).unwrap();
+    let mut monitor = fixture.service().monitor().unwrap();
+    wait_for(&monitor, |update| update.snapshot.repos.len() == 1
+        && update.snapshot.repos[0].worktrees.as_ref().is_ok_and(|trees| {
+            trees[0].result.as_ref().is_ok_and(|stats| stats.counts == source_counts(1, 0, 0))
+        }));
+    let info = fixture.repo.join(".git/info");
+    let moved = fixture.repo.join(".git/info-away");
+    fs::rename(&info, &moved).unwrap();
+    fs::create_dir(&info).unwrap();
+    fs::write(info.join("exclude"), b"ignored.txt\n").unwrap();
+    wait_for_within(&monitor, |update| update.snapshot.repos[0]
+        .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts == Counts::default(),
+        Duration::from_secs(2));
+    fs::write(info.join("exclude"), b"").unwrap();
+    wait_for_within(&monitor, |update| update.snapshot.repos[0]
+        .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
+        == source_counts(1, 0, 0), Duration::from_secs(2));
+    monitor.stop().unwrap();
+    fs::remove_dir_all(moved).unwrap();
+}
+
+#[test]
+fn idle_monitor_does_not_add_polling_work() {
+    let fixture = Fixture::new("sha1");
+    fixture.write("tracked.txt", "before\n");
+    fixture.commit();
+    fixture.service().add(&fixture.repo).unwrap();
+    let mut monitor = fixture.service().monitor().unwrap();
+    wait_for(&monitor, |update| update.snapshot.repos.len() == 1
+        && update.snapshot.repos[0].worktrees.as_ref().is_ok_and(|trees|
+            trees[0].result.as_ref().is_ok_and(|stats| stats.counts == Counts::default()))
+        && update.polling_time_last_minute > Duration::ZERO);
+    thread::sleep(Duration::from_secs(1));
+    let settled = monitor.latest().unwrap();
+    let counts = settled.snapshot.repos[0].worktrees.as_ref().unwrap()[0]
+        .result.as_ref().unwrap().counts;
+    let polling_time = settled.polling_time_last_minute;
+    thread::sleep(Duration::from_secs(6));
+    let idle = monitor.latest().unwrap();
+    assert_eq!(idle.snapshot.as_ref(), settled.snapshot.as_ref());
+    assert_eq!(idle.snapshot.repos[0].worktrees.as_ref().unwrap()[0]
+        .result.as_ref().unwrap().counts, counts);
+    assert_eq!(idle.polling_time_last_minute, polling_time);
+    monitor.stop().unwrap();
+}
+
+#[test]
+fn absent_configuration_is_recovered_when_created() {
+    let fixture = Fixture::new("sha1");
+    fixture.write("tracked.txt", "before\n");
+    fixture.commit();
+    let mut monitor = fixture.service().monitor().unwrap();
+    wait_for(&monitor, |update| update.snapshot.repos.is_empty());
+    fixture.service().add(&fixture.repo).unwrap();
+    let elapsed = wait_for_within(&monitor, |update| update.snapshot.repos.len() == 1,
+        Duration::from_secs(6));
+    assert!(elapsed < Duration::from_secs(5), "configuration creation took {elapsed:?}");
+    monitor.stop().unwrap();
+}
+
+#[test]
+fn removed_registered_root_recovers_after_recreation() {
+    let fixture = Fixture::new("sha1");
+    fixture.write("tracked.txt", "before\n");
+    fixture.commit();
+    fixture.service().add(&fixture.repo).unwrap();
+    let mut monitor = fixture.service().monitor().unwrap();
+    wait_for(&monitor, |update| update.snapshot.repos.len() == 1
+        && !update.snapshot.has_errors());
+    let moved = fixture.repo.with_file_name("moved");
+    fs::rename(&fixture.repo, &moved).unwrap();
+    wait_for(&monitor, |update| update.snapshot.repos.len() == 1 && update.snapshot.has_errors());
+    fs::rename(&moved, &fixture.repo).unwrap();
+    wait_for_within(&monitor, |update| update.snapshot.repos.len() == 1
+        && !update.snapshot.has_errors(), Duration::from_secs(6));
+    monitor.stop().unwrap();
+}
+
 #[test]
 fn monitor_reloads_preserves_last_good_recovers_and_stops_promptly() {
     let fixture = Fixture::new("sha1");
@@ -512,6 +730,28 @@ fn launch_outside_git_adds_nothing_and_bare_launch_does_not_fabricate_a_worktree
     assert!(!snapshot.has_errors());
     monitor.stop().unwrap();
     assert!(!fixture.config.exists());
+}
+
+#[test]
+fn existing_non_git_launch_discovers_a_later_git_init() {
+    let fixture = Fixture::new("sha1");
+    let launch = fixture._directory.path().join("launch");
+    fs::create_dir(&launch).unwrap();
+    let mut monitor = fixture.service().monitor_from(launch.clone()).unwrap();
+    wait_for(&monitor, |update| update.snapshot.repos.is_empty() && update.launch_error.is_none());
+    thread::sleep(Duration::from_millis(100));
+    git(&launch, &["init", "--quiet", "--initial-branch=main"]);
+    let common = dunce::canonicalize(launch.join(".git")).unwrap();
+    let elapsed = wait_for_within(&monitor, |update| {
+        let Some(repo) = update.snapshot.repos.first() else { return false; };
+        let Some(trees) = repo.worktrees.as_ref().ok() else { return false; };
+        trees.len() == 1 && repo.common_dir == common
+            && trees[0].result.as_ref().is_ok_and(|stats| {
+                stats.head == Head::Unborn("main".into()) && stats.counts == Counts::default()
+            })
+    }, Duration::from_secs(4));
+    assert!(elapsed < Duration::from_secs(4), "git init took {elapsed:?}");
+    monitor.stop().unwrap();
 }
 
 #[test]

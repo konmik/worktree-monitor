@@ -193,6 +193,7 @@ try {
     $beforeScroll = [WtsWindowProbe]::ScrollPosition($viewport)
     $cardScrolled = [WtsWindowProbe]::Top($card) - [WtsWindowProbe]::Top($viewport)
     if ($beforeScroll -le 0 -or $cardScrolled -ge $cardBefore) { throw 'Viewport scroll did not move the real cards' }
+    $script:nextMetricChange = [DateTime]::MinValue
     Wait-For {
         $text = [WtsWindowProbe]::Text($script:handle)
         $line = [WtsWindowProbe]::ScrollPosition($viewport)
@@ -200,8 +201,13 @@ try {
         $focus = [WtsWindowProbe]::GetForegroundWindow().ToInt64()
         [IO.File]::AppendAllText((Join-Path $fixture 'scroll-trace.txt'), "$line`t$height`t$focus`t$($text.Replace("`r", '').Replace("`n", '\n'))`n")
         $polling = [regex]::Match($text, 'Polling ([0-9]+\.[0-9]+)s in last minute')
-        $polling.Success -and [double]::Parse($polling.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) -gt $initialPollingSeconds
-    } 'rolling polling time to include another scan' 20
+        if ($polling.Success -and [double]::Parse($polling.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) -gt $initialPollingSeconds) { return $true }
+        if ([DateTime]::UtcNow -ge $script:nextMetricChange) {
+            [IO.File]::WriteAllText((Join-Path $repo 'lines.txt'), "before`nadded`n")
+            $script:nextMetricChange = [DateTime]::UtcNow.AddMilliseconds(600)
+        }
+        return $false
+    } 'rolling polling time to include file-triggered scans' 20
     $afterScroll = [WtsWindowProbe]::ScrollPosition($viewport)
     [IO.File]::WriteAllText((Join-Path $fixture 'scroll.txt'), "before=$beforeScroll`nafter=$afterScroll`n")
     if ($afterScroll -ne $beforeScroll) { throw "Unchanged refresh reset the scroll position from $beforeScroll to $afterScroll" }

@@ -22,6 +22,8 @@ try {
         $start.UseShellExecute = $false
         $start.RedirectStandardOutput = $true
         $start.RedirectStandardError = $true
+        $start.StandardOutputEncoding = [Text.Encoding]::UTF8
+        $start.StandardErrorEncoding = [Text.Encoding]::UTF8
         $process = [Diagnostics.Process]::Start($start)
         $entry = [pscustomobject]@{ Name = $name; Binary = $binary; Process = $process; Output = $null; Errors = $null }
         $processes += $entry

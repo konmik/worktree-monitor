@@ -10,7 +10,7 @@ The workspace contains a reusable `wts-core` library, the `wts` command, and the
 
 A snapshot contains repositories and their worktrees. Each worktree has a path and either successful branch and count data or an error. A failed scan cannot claim zero changed lines. The configuration representation stays private to the core.
 
-One coordinator owns a registry of worktree polling schedules. Each worktree has its own adaptive delay and scan state. Scan jobs run outside the coordinator so a slow worktree does not block another worktree's update. The window reads immutable updates and never runs Git on its message thread. Configuration commands share one locked read-modify-replace operation. Monitoring does not write the registry.
+One coordinator owns worktree scan schedules and pending filesystem changes. Native watchers report file changes through `notify`, which selects the platform backend. The coordinator combines bursts of changes and keeps changes that arrive during active jobs. Successful scans wait for another change or the periodic safety scan. Watcher failures and scan errors retain recovery polling. Scan jobs run outside the coordinator so a slow worktree does not block another worktree's update. The window reads immutable updates and never runs Git on its message thread. Configuration commands share one locked read-modify-replace operation. Monitoring does not write the registry.
 
 At most four jobs run at once. Discovery and scans retain capacity for each other, and overdue jobs run in deadline order. A worktree never overlaps its own scan. Removed jobs are canceled and joined. Ready worktrees appear without waiting for slower initial scans.
 
@@ -27,9 +27,11 @@ Two designs were compared. An independent reviewer agreed with the native Window
 
 The selected shape uses a normal captioned, resizable window. Herald's nonactivating show and topmost positioning prevent initial display and refresh from taking focus. Clicking the window may focus it for scrolling. Its animation, layered popup, and full-monitor canvas are not copied.
 
-The competing design contributed the successful worktree object, immediate first publication, and last-good configuration behavior. A sortable table, custom process launcher, file watcher, and interchangeable Git engines were rejected as unnecessary scope.
+The competing design contributed the successful worktree object, immediate first publication, and last-good configuration behavior. A sortable table, custom process launcher, and interchangeable Git engines were rejected as unnecessary scope.
 
 Codex's worktree and Git utilities supplied a second local precedent for subprocesses, NUL-delimited worktree records, inherited-environment isolation, and disabling filesystem-monitor helpers. WTS keeps ordinary ignore rules and binary attributes while disabling fsmonitor during polling.
+
+The coordinator owns scan scheduling. A private watcher boundary owns native watch registration and reports invalidations. Configuration watches follow parent directories so atomic file replacement does not detach them. Shared Git metadata watches cover linked worktrees even when the main worktree's files do not change. A five-minute safety pass covers lost events. Short recovery polling remains available when native watches fail.
 
 ## Dashboard
 
@@ -68,4 +70,4 @@ The initial release provides a Windows live window. Other platforms can use the 
 
 ## Verification
 
-Core tests exercise real temporary Git repositories and literal expected counts. Scheduler tests check independent worktree backoff and the rolling polling duration. CLI smoke checks exercise the executable with an isolated registry. The Windows smoke check reads the actual visible controls, verifies topmost behavior, changes a file, checks the polling-time label, reloads the registry, and closes the real window. A separate read-only check compares discovered paths against existing Git worktrees.
+Core tests exercise real temporary Git repositories and literal expected counts. Scheduler tests check scan lifecycle, recovery backoff, pending changes, and the rolling polling duration. CLI smoke checks exercise the executable with an isolated registry. The Windows smoke check reads the actual visible controls, verifies topmost behavior, changes a file, checks the polling-time label, reloads the registry, and closes the real window. A separate read-only check compares discovered paths against existing Git worktrees. The release measurement example and benchmark script compare published rolling-minute durations across unchanged repository snapshots.

@@ -1105,9 +1105,13 @@ function Get-StatusText {
     [string]$status[0].Text
 }
 
-function Invoke-MetricPaintTest([array]$Cards) {
+function Invoke-MetricPaintTest([array]$Cards, [string]$Path) {
     Clear-Paint $Cards
     $statusBefore = Get-StatusText
+    $initialMetric = [regex]::Match($statusBefore, 'Polling ([0-9]+\.[0-9]+)s in last minute')
+    if (-not $initialMetric.Success) { throw 'Initial polling duration is missing' }
+    $initialSeconds = [double]::Parse($initialMetric.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture)
+    $metricAdvanced = $false
     $lastStatus = $statusBefore
     $statusChanges = 0
     $samples = 0
@@ -1115,7 +1119,14 @@ function Invoke-MetricPaintTest([array]$Cards) {
     $badCards = 0
     $minimumDeadline = [DateTime]::UtcNow.AddMilliseconds(1400)
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
-    while ([DateTime]::UtcNow -lt $deadline -and ($statusChanges -eq 0 -or [DateTime]::UtcNow -lt $minimumDeadline)) {
+    $contents = [IO.File]::ReadAllBytes($Path)
+    $nextChange = [DateTime]::UtcNow
+    while ([DateTime]::UtcNow -lt $deadline -and (-not $metricAdvanced -or [DateTime]::UtcNow -lt $minimumDeadline)) {
+        if (-not $metricAdvanced -and [DateTime]::UtcNow -ge $nextChange) {
+            [IO.File]::WriteAllBytes($Path, $contents)
+            $nextChange = [DateTime]::UtcNow.AddMilliseconds(600)
+            $minimumDeadline = [DateTime]::UtcNow.AddMilliseconds(1400)
+        }
         $scale = [Math]::Max(96, [int][WtsVisibilityNativeProbe]::GetDpiForWindow($script:handle))
         $viewportUpdate = [WtsVisibilityNativeProbe]::Update($script:viewport)
         $viewportClient = [WtsVisibilityNativeProbe]::ClientBounds($script:viewport)
@@ -1128,6 +1139,8 @@ function Invoke-MetricPaintTest([array]$Cards) {
             if ($update.Pending) { [void][WtsVisibilityNativeProbe]::UpdateWindow($Card.Handle) }
         }
         $status = Get-StatusText
+        $metric = [regex]::Match($status, 'Polling ([0-9]+\.[0-9]+)s in last minute')
+        if ($metric.Success -and $status.StartsWith('LIVE') -and [double]::Parse($metric.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) -gt $initialSeconds) { $metricAdvanced = $true }
         if ($status -cne $lastStatus) { $statusChanges++ }
         $lastStatus = $status
         $samples++
@@ -1135,7 +1148,7 @@ function Invoke-MetricPaintTest([array]$Cards) {
     }
     Clear-Paint $Cards
     if ($badViewport -gt 0 -or $badCards -gt 0) { throw "Metric-only updates produced broad paint invalidation (viewport=$badViewport cards=$badCards)" }
-    if ($statusChanges -eq 0) { throw 'No polling-time update was observed during the paint check' }
+    if (-not $metricAdvanced) { throw 'No increase in polling time was observed during the paint check' }
     [ordered]@{
         result = 'PASS'
         maximum_window_ms = 15000
@@ -1431,7 +1444,7 @@ try {
             $_.unrelated_broad_invalidated_count -gt 0 -or $_.unrelated_broad_painted_count -gt 0 -or $_.viewport.broad -or $_.all_cards_broad_invalidated
         })
         if ($badPaint.Count -ne 0) { throw "Regression paint check found broad unrelated or whole-list invalidation in $($badPaint.Count) drag probes" }
-        $metric = Invoke-MetricPaintTest $cards
+        $metric = Invoke-MetricPaintTest $cards (Join-Path $repositories[0].Repository 'lines.txt')
         $edgeScroll = Invoke-EdgeScrollTest
         $proof.paint = [ordered]@{
             result = 'PASS'

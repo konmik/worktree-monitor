@@ -3,6 +3,7 @@ mod git;
 mod model;
 mod poll;
 mod process;
+mod watch;
 
 pub use model::{Counts, Error, ErrorKind, Head, LineCounts, RepoEntry, Snapshot, WorktreeEntry, WorktreeStats};
 pub use poll::{Monitor, MonitorUpdate};
