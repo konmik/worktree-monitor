@@ -133,6 +133,7 @@ try {
     $script:handle = [IntPtr]::Zero
     Wait-For { $script:handle = [WtsWindowProbe]::Find([uint32]$process.Id); $script:handle -ne [IntPtr]::Zero } 'visible window'
     if ([WtsWindowProbe]::SharesConsole([uint32]$process.Id)) { throw 'Live window is still attached to the launching terminal' }
+    Write-Host 'PASS. Live window is detached from the launching terminal.'
     $initialStyle = [WtsWindowProbe]::GetWindowLongPtr($script:handle, -20).ToInt64()
     $foregroundOnShow = [WtsWindowProbe]::GetForegroundWindow()
     if (($initialStyle -band 8) -eq 0) { throw 'Window is not always on top' }
@@ -202,6 +203,7 @@ try {
         topmost = ($initialStyle -band 8) -ne 0
         activated_on_show = $foregroundOnShow -eq $script:handle
         activated_on_refresh = $foregroundOnRefresh -eq $script:handle
+        console_detached = $true
         registry_empty = [IO.File]::ReadAllText((Join-Path $fixture 'empty.txt')) -match '(?i)no (registered )?repo'
         window_destroyed = -not [WtsWindowProbe]::IsWindow($script:handle)
         scroll_before = $beforeScroll
@@ -209,7 +211,7 @@ try {
         exit_code = $process.ExitCode
         result = 'PASS'
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $fixture 'proof.json') -Encoding utf8NoBOM
-    Write-Host "PASS. Always on top, live counts, scroll preservation, polling backoff/reset, config error/recovery, registry reload, and clean close. Evidence at $fixture"
+    Write-Host "PASS. Terminal detached, always on top, live counts, scroll preservation, polling backoff/reset, config error/recovery, registry reload, and clean close. Evidence at $fixture"
 } finally {
     $env:HOME = $oldHome
     $env:USERPROFILE = $oldProfile
