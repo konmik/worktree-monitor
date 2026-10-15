@@ -148,6 +148,9 @@ enum DiscoveryState {
 struct WorktreeState {
     path: PathBuf,
     last: Option<Result<WorktreeStats, Error>>,
+    ignored: Option<git::IgnoredPaths>,
+    ignored_sources: Vec<PathBuf>,
+    ignored_revision: u64,
     discovery_error: bool,
     backoff: WorktreeBackoff,
     due: Instant,
@@ -209,7 +212,8 @@ enum CompletionKind {
         key: WorktreeKey,
         generation: u64,
         revision: u64,
-        result: Result<WorktreeStats, Error>,
+        ignored_revision: u64,
+        result: Result<git::ScanResult, Error>,
     },
 }
 
@@ -310,6 +314,7 @@ impl Coordinator {
             self.reconcile_watches(now);
             self.receive_watch(now);
             self.receive();
+            self.reconcile_watches(now);
             self.receive_watch(now);
             self.apply_pending(now);
             self.reload(now);
@@ -344,12 +349,18 @@ impl Coordinator {
         }).collect();
         let mut worktrees = Vec::new();
         let mut seen = HashSet::new();
+        let mut global_excludes = git::global_source_candidates();
+        let mut global_seen: HashSet<_> = global_excludes.iter().map(|source| normalize(source)).collect();
         for common in &self.repo_order {
             let Some(repo) = self.repos.get(common) else { continue; };
             for key in &repo.worktrees {
                 if !seen.insert(key.clone()) { continue; }
                 if let Some(state) = self.worktrees.get(key) {
-                    worktrees.push((key.clone(), state.path.clone()));
+                    for source in &state.ignored_sources {
+                        let normalized = normalize(source);
+                        if global_seen.insert(normalized) { global_excludes.push(source.clone()); }
+                    }
+                    worktrees.push((key.clone(), state.path.clone(), state.ignored.clone()));
                 }
             }
         }
@@ -358,6 +369,7 @@ impl Coordinator {
             launch: self.launch_directory.clone(),
             repositories,
             worktrees,
+            global_excludes,
         }
     }
 
@@ -384,9 +396,13 @@ impl Coordinator {
     }
 
     fn enqueue_watch(&mut self, batch: watch::WatchBatch, now: Instant) {
+        let cache_invalidated = batch.full || !batch.repositories.is_empty()
+            || !batch.discoveries.is_empty() || !batch.cache_invalidations.is_empty()
+            || batch.global_excludes;
         let mut repositories = batch.repositories;
         let mut discoveries = batch.discoveries;
         let mut worktrees = batch.worktrees;
+        let cache_invalidations = batch.cache_invalidations;
         let direct_worktrees = worktrees.clone();
         if batch.full {
             repositories.extend(self.repos.keys().cloned());
@@ -413,9 +429,36 @@ impl Coordinator {
             let keys = self.repos.get(&common).map(|repo| repo.worktrees.clone()).unwrap_or_default();
             if let Some(repo) = self.repos.get_mut(&common) { repo.revision = repo.revision.wrapping_add(1); }
             for key in keys {
-                worktrees.insert(key);
+                worktrees.insert(key.clone());
+                if let Some(state) = self.worktrees.get_mut(&key) {
+                    state.ignored = None;
+                    state.ignored_revision = state.ignored_revision.wrapping_add(1);
+                }
             }
         }
+        if batch.global_excludes {
+            let keys: Vec<_> = self.worktrees.keys().cloned().collect();
+            for key in keys {
+                worktrees.insert(key.clone());
+                if let Some(state) = self.worktrees.get_mut(&key) {
+                    state.ignored = None;
+                    state.ignored_revision = state.ignored_revision.wrapping_add(1);
+                }
+            }
+        }
+        for key in cache_invalidations {
+            if let Some(state) = self.worktrees.get_mut(&key) {
+                state.ignored = None;
+                state.ignored_revision = state.ignored_revision.wrapping_add(1);
+            }
+        }
+        if batch.full {
+            for state in self.worktrees.values_mut() {
+                state.ignored = None;
+                state.ignored_revision = state.ignored_revision.wrapping_add(1);
+            }
+        }
+        if cache_invalidated { self.watch_dirty = true; }
         for key in worktrees {
             if let Some(state) = self.worktrees.get_mut(&key) {
                 if direct_worktrees.contains(&key) { state.discovery_error = false; }
@@ -637,7 +680,7 @@ impl Coordinator {
                 if self.repos.get(&common).is_some_and(|repo| revision != repo.revision) { return; }
                 self.apply_discovery(&common, generation, result, now);
             }
-            CompletionKind::Scan { key, generation, revision, result } => {
+            CompletionKind::Scan { key, generation, revision, ignored_revision, result } => {
                 if self.scan_jobs.get(&key) == Some(&completion.id) { self.scan_jobs.remove(&key); }
                 let pending_due = self.pending_due_for_worktree(&key, now);
                 let recovery_or_safety = self.recovery_or_safety();
@@ -645,13 +688,36 @@ impl Coordinator {
                 if state.generation != generation || state.in_flight != Some(completion.id) { return; }
                 state.in_flight = None;
                 if state.discovery_error { return; }
+                let stats = result.as_ref().map(|scan| scan.stats.clone()).map_err(Clone::clone);
+                let cache_valid = state.ignored_revision == ignored_revision;
+                let ignored = if cache_valid {
+                    result.as_ref().ok().and_then(|scan| scan.ignored.clone())
+                } else { None };
+                let new_sources = ignored.as_ref().is_some_and(|ignored| {
+                    let sources = ignored.sources();
+                    let global_sources = git::global_source_candidates();
+                    let new_source = sources.iter().any(|source| {
+                        !state.ignored_sources.iter().chain(global_sources.iter())
+                            .any(|old| normalize(old) == normalize(source))
+                    });
+                    if state.ignored_sources != sources { state.ignored_sources = sources.to_vec(); }
+                    new_source
+                });
+                self.watch_dirty = true;
+                if new_sources {
+                    state.ignored = None;
+                    state.due = if state.revision != revision { pending_due } else { now };
+                    return;
+                }
                 if state.revision != revision {
+                    state.ignored = ignored;
                     state.due = pending_due;
                     return;
                 }
-                let delay = state.backoff.observe(&result);
+                let delay = state.backoff.observe(&stats);
                 let delay = if result.is_ok() { recovery_or_safety } else { delay };
-                state.last = Some(result);
+                state.ignored = ignored;
+                state.last = Some(stats);
                 state.due = now + delay;
             }
         }
@@ -707,6 +773,9 @@ impl Coordinator {
             self.worktrees.insert(key.clone(), WorktreeState {
                 path: tree.path.clone(),
                 last: Some(Err(error.clone())),
+                ignored: None,
+                ignored_sources: git::global_source_candidates(),
+                ignored_revision: 0,
                 discovery_error: true,
                 backoff: WorktreeBackoff::default(),
                 due: now + Duration::from_secs(1),
@@ -726,6 +795,9 @@ impl Coordinator {
         self.worktrees.insert(key.clone(), WorktreeState {
             path: tree.path.clone(),
             last: None,
+            ignored: None,
+            ignored_sources: git::global_source_candidates(),
+            ignored_revision: 0,
             discovery_error: false,
             backoff: WorktreeBackoff::default(),
             due: now,
@@ -760,13 +832,13 @@ impl Coordinator {
                 if state.in_flight.is_none() && !self.scan_jobs.contains_key(key)
                     && !state.discovery_error && now >= state.due {
                     scan_targets.push((key.clone(), state.path.clone(), state.generation,
-                        state.revision, state.due));
+                        state.revision, state.ignored_revision, state.due));
                 }
             }
         }
-        scan_targets.sort_by_key(|(_, _, _, _, due)| *due);
-        for (key, path, generation, revision, _) in scan_targets {
-            self.start_scan(key, path, generation, revision, now);
+        scan_targets.sort_by_key(|(_, _, _, _, _, due)| *due);
+        for (key, path, generation, revision, ignored_revision, _) in scan_targets {
+            self.start_scan(key, path, generation, revision, ignored_revision, now);
         }
     }
 
@@ -839,7 +911,7 @@ impl Coordinator {
     }
 
     fn start_scan(&mut self, key: WorktreeKey, path: PathBuf, generation: u64,
-        revision: u64, now: Instant) {
+        revision: u64, ignored_revision: u64, now: Instant) {
         if self.jobs.len() >= MAX_JOBS || self.active_scan_jobs() >= MAX_SCAN_JOBS { return; }
         let id = self.fresh_job();
         let sender = self.sender.clone();
@@ -849,12 +921,13 @@ impl Coordinator {
         let timing = Arc::new(Mutex::new(JobTiming::default()));
         let worker_timing = timing.clone();
         let completion_key = key.clone();
+        let previous_ignored = self.worktrees.get(&key).and_then(|state| state.ignored.clone());
         let spawn = thread::Builder::new().name("wts-worktree-scan".into()).spawn(move || {
             mark_job_started(&worker_timing);
-            let result = git::scan_tree(&path, &worker_cancel);
+            let result = git::scan_tree_with_ignored(&path, &worker_cancel, previous_ignored.as_ref());
             mark_job_ended(&worker_timing);
             let _ = sender.send(Completion { id, kind: CompletionKind::Scan {
-                key: completion_key, generation, revision, result,
+                key: completion_key, generation, revision, ignored_revision, result,
             } });
             wake.wake();
         });
@@ -870,6 +943,8 @@ impl Coordinator {
                 if let Some(state) = self.worktrees.get_mut(&key) {
                     let result = Err(Error::io("Cannot start worktree scan", error));
                     let delay = state.backoff.observe(&result);
+                    state.ignored = None;
+                    self.watch_dirty = true;
                     state.last = Some(result);
                     state.due = now + delay;
                 }
@@ -1024,6 +1099,14 @@ mod tests {
         } })
     }
 
+    fn scan(value: u64) -> Result<git::ScanResult, Error> {
+        stats(value).map(|stats| git::ScanResult { stats, ignored: None })
+    }
+
+    fn scan_with_cache(value: u64) -> Result<git::ScanResult, Error> {
+        stats(value).map(|stats| git::ScanResult { stats, ignored: Some(git::IgnoredPaths::default()) })
+    }
+
     #[test]
     fn worktree_backoffs_are_independent_and_reset_only_on_change() {
         let mut first = WorktreeBackoff::default();
@@ -1112,6 +1195,9 @@ mod tests {
         coordinator.worktrees.insert(fast_key, WorktreeState {
             path: fast,
             last: Some(stats(1)),
+            ignored: None,
+            ignored_sources: Vec::new(),
+            ignored_revision: 0,
             discovery_error: false,
             backoff: WorktreeBackoff::default(),
             due: now + Duration::from_secs(1),
@@ -1122,6 +1208,9 @@ mod tests {
         coordinator.worktrees.insert(slow_key, WorktreeState {
             path: slow,
             last: None,
+            ignored: None,
+            ignored_sources: Vec::new(),
+            ignored_revision: 0,
             discovery_error: false,
             backoff: WorktreeBackoff::default(),
             due: now,
@@ -1164,6 +1253,9 @@ mod tests {
         coordinator.worktrees.insert(key.clone(), WorktreeState {
             path: PathBuf::from("repo"),
             last: None,
+            ignored: None,
+            ignored_sources: Vec::new(),
+            ignored_revision: 0,
             discovery_error: false,
             backoff: WorktreeBackoff::default(),
             due: Instant::now(),
@@ -1172,7 +1264,7 @@ mod tests {
             generation: 2,
         });
         coordinator.complete(Completion { id: 1, kind: CompletionKind::Scan {
-            key: key.clone(), generation: 1, revision: 0, result: stats(1),
+            key: key.clone(), generation: 1, revision: 0, ignored_revision: 0, result: scan(1),
         } }, Instant::now());
         let state = coordinator.worktrees.get(&key).unwrap();
         assert!(state.last.is_none());
@@ -1188,6 +1280,9 @@ mod tests {
         coordinator.worktrees.insert(key.clone(), WorktreeState {
             path: PathBuf::from("repo"),
             last: None,
+            ignored: None,
+            ignored_sources: Vec::new(),
+            ignored_revision: 0,
             discovery_error: false,
             backoff: WorktreeBackoff::default(),
             due: now,
@@ -1199,12 +1294,141 @@ mod tests {
         batch.worktrees.insert(key.clone());
         coordinator.enqueue_watch(batch, now);
         coordinator.complete(Completion { id: 2, kind: CompletionKind::Scan {
-            key: key.clone(), generation: 1, revision: 0, result: stats(1),
+            key: key.clone(), generation: 1, revision: 0, ignored_revision: 0, result: scan_with_cache(1),
         } }, now + Duration::from_millis(1));
         let state = coordinator.worktrees.get(&key).unwrap();
         assert!(state.last.is_none());
+        assert!(state.ignored.is_some());
         assert!(state.due >= now + DEBOUNCE);
         assert_eq!(state.in_flight, None);
+    }
+
+    #[test]
+    fn invalidating_worktree_event_rejects_a_stale_ignored_cache() {
+        let latest = Arc::new(Mutex::new(None));
+        let mut coordinator = Coordinator::new(Service::at("config.json"), None, Cancel::new(), latest);
+        let now = Instant::now();
+        let key = WorktreeKey::new(Path::new("repo/.git"), Path::new("repo"));
+        coordinator.worktrees.insert(key.clone(), WorktreeState {
+            path: PathBuf::from("repo"),
+            last: None,
+            ignored: None,
+            ignored_sources: Vec::new(),
+            ignored_revision: 0,
+            discovery_error: false,
+            backoff: WorktreeBackoff::default(),
+            due: now,
+            in_flight: Some(2),
+            revision: 0,
+            generation: 1,
+        });
+        let mut batch = watch::WatchBatch::default();
+        batch.worktrees.insert(key.clone());
+        batch.cache_invalidations.insert(key.clone());
+        coordinator.enqueue_watch(batch, now);
+        coordinator.complete(Completion { id: 2, kind: CompletionKind::Scan {
+            key: key.clone(), generation: 1, revision: 0, ignored_revision: 0, result: scan_with_cache(1),
+        } }, now + Duration::from_millis(1));
+        let state = coordinator.worktrees.get(&key).unwrap();
+        assert!(state.ignored.is_none());
+        assert_eq!(state.ignored_revision, 1);
+    }
+
+    #[test]
+    fn ignored_source_watches_survive_cache_invalidation() {
+        let latest = Arc::new(Mutex::new(None));
+        let mut coordinator = Coordinator::new(Service::at("config.json"), None, Cancel::new(), latest);
+        let now = Instant::now();
+        let common = PathBuf::from("repo/.git");
+        let common_key = normalize(&common);
+        let path = PathBuf::from("repo");
+        let key = WorktreeKey::new(&common, &path);
+        let source = PathBuf::from("repo/.git/info/exclude");
+        coordinator.repo_order.push(common_key.clone());
+        coordinator.repos.insert(common_key.clone(), RepoState {
+            common_dir: common,
+            path: path.clone(),
+            generation: 1,
+            next_discovery: now,
+            discovery_job: None,
+            revision: 0,
+            discovery: DiscoveryState::Ready(git::DiscoveredRepo {
+                path: path.clone(),
+                trees: vec![git::DiscoveredTree { path: path.clone(), error: None }],
+            }),
+            worktrees: vec![key.clone()],
+        });
+        coordinator.worktrees.insert(key.clone(), WorktreeState {
+            path,
+            last: Some(stats(1)),
+            ignored: Some(git::IgnoredPaths::default()),
+            ignored_sources: vec![source.clone()],
+            ignored_revision: 0,
+            discovery_error: false,
+            backoff: WorktreeBackoff::default(),
+            due: now,
+            in_flight: None,
+            revision: 0,
+            generation: 1,
+        });
+        assert!(coordinator.watch_targets().global_excludes.contains(&source));
+        let mut batch = watch::WatchBatch::default();
+        batch.cache_invalidations.insert(key);
+        coordinator.enqueue_watch(batch, now);
+        let state = coordinator.worktrees.values().next().unwrap();
+        assert!(state.ignored.is_none());
+        assert_eq!(state.ignored_sources, vec![source.clone()]);
+        assert!(coordinator.watch_targets().global_excludes.contains(&source));
+    }
+
+    #[test]
+    fn newly_discovered_ignore_sources_schedule_one_followup_scan() {
+        let directory = tempfile::Builder::new().prefix("wts-poll-ignore-source-").tempdir().unwrap();
+        let tree = directory.path();
+        let cancel = Cancel::new();
+        crate::process::checked(Some(tree), &crate::process::args(&["init", "--quiet"]), &cancel).unwrap();
+        let included = tree.join(".git/included config");
+        std::fs::write(&included, b"").unwrap();
+        let mut command = crate::process::args(&["config", "include.path"]);
+        command.push("included config".into());
+        crate::process::checked(Some(tree), &command, &cancel).unwrap();
+        let first = git::scan_tree_with_ignored(tree, &cancel, None).unwrap();
+        assert!(first.ignored.as_ref().unwrap().sources().iter()
+            .any(|source| normalize(source) == normalize(&included)));
+
+        let latest = Arc::new(Mutex::new(None));
+        let mut coordinator = Coordinator::new(Service::at("config.json"), None, Cancel::new(), latest);
+        let now = Instant::now();
+        let key = WorktreeKey::new(&tree.join(".git"), tree);
+        coordinator.worktrees.insert(key.clone(), WorktreeState {
+            path: tree.to_path_buf(),
+            last: None,
+            ignored: None,
+            ignored_sources: git::global_source_candidates(),
+            ignored_revision: 0,
+            discovery_error: false,
+            backoff: WorktreeBackoff::default(),
+            due: now,
+            in_flight: Some(1),
+            revision: 0,
+            generation: 1,
+        });
+        coordinator.complete(Completion { id: 1, kind: CompletionKind::Scan {
+            key: key.clone(), generation: 1, revision: 0, ignored_revision: 0, result: Ok(first),
+        } }, now);
+        assert_eq!(coordinator.worktrees[&key].due, now);
+        assert!(coordinator.worktrees[&key].ignored.is_none());
+        assert!(coordinator.worktrees[&key].last.is_none());
+
+        let previous = coordinator.worktrees[&key].ignored.clone();
+        let second = git::scan_tree_with_ignored(tree, &cancel, previous.as_ref()).unwrap();
+        coordinator.worktrees.get_mut(&key).unwrap().in_flight = Some(2);
+        let second_now = now + Duration::from_millis(1);
+        coordinator.complete(Completion { id: 2, kind: CompletionKind::Scan {
+            key: key.clone(), generation: 1, revision: 0, ignored_revision: 0, result: Ok(second),
+        } }, second_now);
+        assert!(coordinator.worktrees[&key].due > second_now);
+        assert!(coordinator.worktrees[&key].ignored.is_some());
     }
 
     #[test]
@@ -1265,6 +1489,9 @@ mod tests {
         coordinator.worktrees.insert(key.clone(), WorktreeState {
             path,
             last: Some(stats(1)),
+            ignored: None,
+            ignored_sources: Vec::new(),
+            ignored_revision: 0,
             discovery_error: false,
             backoff: WorktreeBackoff::default(),
             due: now + Duration::from_secs(30),
@@ -1316,6 +1543,9 @@ mod tests {
         coordinator.worktrees.insert(key, WorktreeState {
             path: root.join("fixture-a"),
             last: Some(stats(1)),
+            ignored: None,
+            ignored_sources: Vec::new(),
+            ignored_revision: 0,
             discovery_error: false,
             backoff: WorktreeBackoff::default(),
             due,
@@ -1353,6 +1583,9 @@ mod tests {
         coordinator.worktrees.insert(key.clone(), WorktreeState {
             path: PathBuf::from("repo"),
             last: Some(stats(1)),
+            ignored: None,
+            ignored_sources: Vec::new(),
+            ignored_revision: 0,
             discovery_error: false,
             backoff: WorktreeBackoff::default(),
             due: now,
@@ -1397,6 +1630,9 @@ mod tests {
             coordinator.worktrees.insert(key.clone(), WorktreeState {
                 path: path.clone(),
                 last: Some(stats(index as u64)),
+                ignored: None,
+                ignored_sources: Vec::new(),
+                ignored_revision: 0,
                 discovery_error: false,
                 backoff: WorktreeBackoff::default(),
                 due: now - Duration::from_secs(index as u64 + 1),

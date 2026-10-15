@@ -1,3 +1,4 @@
+use crate::git::{self, IgnoredPathKind};
 use crate::poll::{normalize, WorktreeKey};
 use crate::Cancel;
 use notify::event::ModifyKind;
@@ -16,6 +17,7 @@ pub(crate) const WATCH_RETRY: Duration = Duration::from_secs(5);
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 enum Target {
     Config(PathBuf),
+    GlobalExclude(PathBuf),
     Launch(PathBuf),
     Repository(PathBuf),
     Worktree(WorktreeKey),
@@ -36,12 +38,15 @@ pub(crate) struct WatchBatch {
     pub(crate) worktrees: HashSet<WorktreeKey>,
     pub(crate) topology: bool,
     pub(crate) full: bool,
+    pub(crate) cache_invalidations: HashSet<WorktreeKey>,
+    pub(crate) global_excludes: bool,
 }
 
 impl WatchBatch {
     pub(crate) fn is_empty(&self) -> bool {
         !self.config && !self.launch && self.repositories.is_empty() && self.discoveries.is_empty()
             && self.worktrees.is_empty() && !self.topology && !self.full
+            && self.cache_invalidations.is_empty() && !self.global_excludes
     }
 }
 
@@ -49,7 +54,8 @@ pub(crate) struct WatchTargets {
     pub(crate) config: PathBuf,
     pub(crate) launch: Option<PathBuf>,
     pub(crate) repositories: Vec<PathBuf>,
-    pub(crate) worktrees: Vec<(WorktreeKey, PathBuf)>,
+    pub(crate) worktrees: Vec<(WorktreeKey, PathBuf, Option<git::IgnoredPaths>)>,
+    pub(crate) global_excludes: Vec<PathBuf>,
 }
 
 pub(crate) struct WatchStatus {
@@ -64,6 +70,7 @@ pub(crate) struct WatchBoundary {
     overflow: Arc<AtomicBool>,
     cancel: Cancel,
     roots: HashMap<PathBuf, Registration>,
+    ignored: HashMap<WorktreeKey, git::IgnoredPaths>,
     retry_due: Option<Instant>,
     force_rebuild: bool,
     degraded: bool,
@@ -82,6 +89,7 @@ impl WatchBoundary {
             overflow,
             cancel,
             roots: HashMap::new(),
+            ignored: HashMap::new(),
             retry_due: None,
             force_rebuild: false,
             degraded: false,
@@ -94,9 +102,13 @@ impl WatchBoundary {
     }
 
     pub(crate) fn reconcile(&mut self, targets: &WatchTargets, now: Instant) -> WatchStatus {
+        self.ignored = targets.worktrees.iter().filter_map(|(key, _, ignored)| {
+            ignored.clone().map(|ignored| (key.clone(), ignored))
+        }).collect();
         let desired = registrations(targets);
         #[cfg(test)]
         if self.fail_reconcile {
+            self.ignored.clear();
             self.force_rebuild = true;
             self.degraded = true;
             self.retry_due = Some(now + WATCH_RETRY);
@@ -138,6 +150,7 @@ impl WatchBoundary {
             }
         }
         if failed { full = true; }
+        if full { self.ignored.clear(); }
         self.force_rebuild = failed;
         self.degraded = failed || self.watcher.is_none() || self.roots != desired;
         if self.degraded {
@@ -257,16 +270,26 @@ impl WatchBoundary {
                     }
                 }
             }
+            let protected = self.roots.values().any(|registration| registration.targets.iter().any(|target| match target {
+                Target::Config(config) => config_event(&path, config, &event.kind),
+                Target::GlobalExclude(exclude) => global_exclude_event(&path, exclude, &event.kind),
+                Target::Launch(launch) => launch_event(&path, launch, &event.kind),
+                Target::Repository(_) | Target::Worktree(_) => false,
+            }));
             for registration in self.roots.values() {
                 for target in &registration.targets {
                     match target {
                         Target::Config(config) => {
-                            let path = normalize(&path);
-                            let config = normalize(config);
-                            if path == config {
+                            if config_event(&path, config, &event.kind) {
                                 batch.config = true;
-                            } else if config.starts_with(&path) && topology_event(&event.kind) {
-                                batch.config = true;
+                                if normalize(config).starts_with(&path) && topology_event(&event.kind) {
+                                    batch.topology = true;
+                                }
+                            }
+                        }
+                        Target::GlobalExclude(exclude) if global_exclude_event(&path, exclude, &event.kind) => {
+                            batch.global_excludes = true;
+                            if normalize(exclude).starts_with(&path) && topology_event(&event.kind) {
                                 batch.topology = true;
                             }
                         }
@@ -279,16 +302,25 @@ impl WatchBoundary {
                             if intersects(&path, tree_path)
                                 && !repositories.iter().any(|common| intersects(&path, common))
                             {
-                                batch.worktrees.insert(key.clone());
-                                let path = normalize(&path);
+                                let worktree_topology = topology_event(&event.kind);
+                                let ignored_rule = ignore_rule_event(&path, tree_path);
+                                let attributes = attributes_event(&path, tree_path);
                                 let tree_path = normalize(tree_path);
-                                if (path == tree_path || tree_path.starts_with(&path))
-                                    && topology_event(&event.kind) {
+                                let root_topology = worktree_topology
+                                    && (path == tree_path || tree_path.starts_with(&path));
+                                if ignored_rule || root_topology {
+                                    batch.cache_invalidations.insert(key.clone());
+                                }
+                                let ignored = !self.degraded && !protected && !ignored_rule && !attributes
+                                    && self.ignored.get(key).is_some_and(|cache|
+                                        ignored_worktree_event(cache, &tree_path, &path, &event.kind));
+                                if !ignored { batch.worktrees.insert(key.clone()); }
+                                if root_topology {
                                     batch.topology = true;
                                 }
                             }
                         }
-                        Target::Repository(_) | Target::Launch(_) => {}
+                        Target::Repository(_) | Target::Launch(_) | Target::GlobalExclude(_) => {}
                     }
                 }
             }
@@ -309,11 +341,26 @@ impl WatchBoundary {
 fn registrations(targets: &WatchTargets) -> HashMap<PathBuf, Registration> {
     let mut result = HashMap::new();
     let worktree_paths: Vec<_> = targets.worktrees.iter()
-        .map(|(key, path)| (key.common.clone(), absolute(path)))
+        .map(|(key, path, _)| (key.common.clone(), absolute(path)))
         .filter(|(_, path)| path.is_dir()).collect();
     let (config_root, config_mode) = recovery_root(&targets.config);
     add_target(&mut result, config_root, config_mode, Target::Config(absolute(&targets.config)));
     add_ancestor(&mut result, &targets.config, Target::Config(absolute(&targets.config)));
+    for exclude in &targets.global_excludes {
+        let exclude = absolute(exclude);
+        let target = Target::GlobalExclude(exclude.clone());
+        if cfg!(windows) {
+            if let Some((_, root)) = worktree_paths.iter()
+                .filter(|(_, root)| normalize(&exclude).starts_with(normalize(root)))
+                .max_by_key(|(_, root)| root.components().count()) {
+                add_target(&mut result, root.clone(), RecursiveMode::Recursive, target);
+                continue;
+            }
+        }
+        let (root, mode) = recovery_root(&exclude);
+        add_target(&mut result, root, mode, target.clone());
+        add_ancestor(&mut result, &exclude, target);
+    }
     if let Some(launch) = &targets.launch {
         let launch = absolute(launch);
         let target = Target::Launch(launch.clone());
@@ -342,7 +389,7 @@ fn registrations(targets: &WatchTargets) -> HashMap<PathBuf, Registration> {
             }
         }
     }
-    for (key, path) in &targets.worktrees {
+    for (key, path, _) in &targets.worktrees {
         let path = absolute(path);
         let (parent, parent_mode) = recovery_root(&path);
         add_target(&mut result, parent, parent_mode, Target::Worktree(key.clone()));
@@ -397,6 +444,59 @@ fn add_ancestor(result: &mut HashMap<PathBuf, Registration>, path: &Path, target
     if parent == path { return; }
     let (root, mode) = recovery_root(parent);
     add_target(result, root, mode, target);
+}
+
+fn config_event(path: &Path, config: &Path, kind: &EventKind) -> bool {
+    let path = normalize(&absolute(path));
+    let config = normalize(&absolute(config));
+    path == config || config.starts_with(&path) && topology_event(kind)
+}
+
+fn global_exclude_event(path: &Path, exclude: &Path, kind: &EventKind) -> bool {
+    config_event(path, exclude, kind)
+}
+
+fn ignore_rule_event(path: &Path, tree: &Path) -> bool {
+    let path = normalize(&absolute(path));
+    let tree = normalize(&absolute(tree));
+    let Ok(relative) = path.strip_prefix(&tree) else { return false; };
+    let relative = normalize(relative);
+    relative.file_name().is_some_and(|name| name == ".gitignore")
+        || relative == Path::new(".git")
+        || relative == Path::new(".git/info/exclude")
+}
+
+fn attributes_event(path: &Path, tree: &Path) -> bool {
+    let path = normalize(&absolute(path));
+    let tree = normalize(&absolute(tree));
+    let Ok(relative) = path.strip_prefix(&tree) else { return false; };
+    let relative = normalize(relative);
+    relative.file_name().is_some_and(|name| name == ".gitattributes")
+        || relative == Path::new(".git/info/attributes")
+}
+
+fn ignored_worktree_event(cache: &git::IgnoredPaths, tree: &Path, path: &Path, event_kind: &EventKind) -> bool {
+    let tree = normalize(&absolute(tree));
+    let path = normalize(&absolute(path));
+    let Ok(relative) = path.strip_prefix(&tree) else { return false; };
+    let Some((ignored_kind, exact)) = cache.matching(&normalize(relative)) else { return false; };
+    match ignored_kind {
+        IgnoredPathKind::File => {
+            matches!(event_kind, EventKind::Modify(ModifyKind::Data(_) | ModifyKind::Any))
+                && std::fs::symlink_metadata(path)
+                    .is_ok_and(|metadata| metadata.is_file() || metadata.file_type().is_symlink())
+        }
+        IgnoredPathKind::Directory => match event_kind {
+            EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_))
+                if !exact => path.parent().is_some_and(Path::is_dir),
+            EventKind::Modify(ModifyKind::Data(_) | ModifyKind::Any) => if exact {
+                path.is_dir()
+            } else {
+                path.parent().is_some_and(Path::is_dir)
+            },
+            _ => false,
+        },
+    }
 }
 
 fn recovery_root(path: &Path) -> (PathBuf, RecursiveMode) {
@@ -502,6 +602,19 @@ mod tests {
     }
 
     #[test]
+    fn linked_worktree_root_replacement_invalidates_ignored_rules() {
+        let root = absolute(Path::new("watch-root/linked"));
+        let common = absolute(Path::new("watch-root/common.git"));
+        let key = WorktreeKey::new(&common, &root);
+        let mut boundary = boundary_with(root.clone(), vec![Target::Worktree(key.clone())]);
+        let mut batch = WatchBatch::default();
+        boundary.classify(Event::new(EventKind::Remove(RemoveKind::Folder)).add_path(root), &mut batch);
+        assert!(batch.worktrees.contains(&key));
+        assert!(batch.cache_invalidations.contains(&key));
+        assert!(batch.topology);
+    }
+
+    #[test]
     fn worktree_admin_create_requests_discovery_but_ref_edit_does_not() {
         let common = absolute(Path::new("watch-root/.git"));
         let key = WorktreeKey::new(&common, Path::new("watch-root"));
@@ -588,6 +701,7 @@ mod tests {
             launch: None,
             repositories: Vec::new(),
             worktrees: Vec::new(),
+            global_excludes: Vec::new(),
         }, now);
         assert!(status.full);
         assert!(!status.degraded);
@@ -622,10 +736,13 @@ mod tests {
             config: directory.path().join("config.json"),
             launch: None,
             repositories: vec![common.clone()],
-            worktrees: vec![(key, repo.clone())],
+            worktrees: vec![(key, repo.clone(), None)],
+            global_excludes: vec![common.join("config")],
         });
         assert_eq!(roots[&normalize(&repo)].mode, RecursiveMode::Recursive);
         assert_eq!(roots[&normalize(directory.path())].mode, RecursiveMode::NonRecursive);
+        #[cfg(windows)]
+        assert!(!roots.contains_key(&normalize(&common)));
         #[cfg(not(windows))]
         assert_eq!(roots[&normalize(&common)].mode, RecursiveMode::NonRecursive);
         #[cfg(not(windows))]
@@ -644,6 +761,7 @@ mod tests {
             launch: Some(launch.clone()),
             repositories: Vec::new(),
             worktrees: Vec::new(),
+            global_excludes: Vec::new(),
         });
         let registration = &roots[&normalize(&launch)];
         assert_eq!(registration.mode, RecursiveMode::NonRecursive);
@@ -667,7 +785,8 @@ mod tests {
             config: directory.path().join("config.json"),
             launch: None,
             repositories: vec![common.clone()],
-            worktrees: vec![(key, repo.clone())],
+            worktrees: vec![(key, repo.clone(), None)],
+            global_excludes: Vec::new(),
         }, Instant::now());
         assert!(!status.degraded);
         assert_eq!(boundary.roots[&normalize(&repo)].mode, RecursiveMode::Recursive);
@@ -695,7 +814,8 @@ mod tests {
             config: directory.path().join("config.json"),
             launch: None,
             repositories: vec![common],
-            worktrees: vec![(key, repo.clone())],
+            worktrees: vec![(key, repo.clone(), None)],
+            global_excludes: Vec::new(),
         }, Instant::now());
         assert!(!status.degraded);
         let moved = directory.path().join("moved");
