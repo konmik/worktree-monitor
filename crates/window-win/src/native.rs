@@ -277,7 +277,7 @@ unsafe fn item_height(card: &Card, dc: HDC, width: i32, dpi: i32, resources: &Re
     let s = |value| scaled(value, dpi);
     let lines = match &card.display {
         DisplayItem::Repository { bare, .. } => 1 + usize::from(*bare),
-        DisplayItem::PendingWorktree { .. } => 1,
+        DisplayItem::PendingWorktree { .. } => 2,
         DisplayItem::Worktree { result, .. } => {
             let text_width = worktree_text_width(width, dpi);
             match result {
@@ -381,7 +381,7 @@ mod row_tests {
                         spacing: RowSpacing::new(resources.typography, attached_before, false) };
                     let height = unsafe { item_height(&card, dc, scaled(800, dpi), dpi, &resources) };
                     if matches!(display, DisplayItem::PendingWorktree { .. }) {
-                        assert_eq!(height, card.spacing.height(resources.typography, 1));
+                        assert_eq!(height, card.spacing.height(resources.typography, 2));
                     }
                     for width in [359, 360, 361] {
                         assert_eq!(unsafe { item_height(&card, dc, scaled(width, dpi), dpi, &resources) }, height);

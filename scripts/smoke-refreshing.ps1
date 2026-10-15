@@ -119,6 +119,18 @@ public static class WtsRefreshingProbe {
         GetWindowText(window, text, text.Capacity);
         return text.ToString();
     }
+    public static int RowHeight(IntPtr root, string firstLine) {
+        int height = 0;
+        EnumChildWindows(root, (window, data) => {
+            if (Text(window).Split('\n')[0] == firstLine) {
+                Rect rect;
+                if (GetWindowRect(window, out rect)) height = rect.Bottom - rect.Top;
+            }
+            return true;
+        }, IntPtr.Zero);
+        if (height == 0) throw new InvalidOperationException("Row height unavailable: " + firstLine);
+        return height;
+    }
     public static IntPtr Find(uint pid) {
         var found = IntPtr.Zero;
         EnumWindows((window, data) => {
@@ -368,6 +380,7 @@ try {
     $proof.initial = $initial
     $keys = @($expected | ForEach-Object { $_.key })
     $pendingSeen = @{}
+    $pendingHeights = @{}
     $initialActiveSeen = @{}
     $repositoryMarkers = @{}
     $deadline = $clock.Elapsed.TotalSeconds + 55
@@ -400,6 +413,7 @@ try {
                 if ($content.Contains("`n")) { throw "Startup worktree contains an extra line: $content" }
                 if ($caption -match '\bS\s+\+0/-0\b') { throw "Initial pending $($row.key) fabricated zero source counts." }
                 if ((Counts $caption) -ne '') { throw "Initial pending $($row.key) published counts before its first delayed Git scan completed." }
+                $pendingHeights[$row.key] = [WtsRefreshingProbe]::RowHeight($script:window, ($caption -split '\r?\n')[0])
                 $pendingSeen[$row.key] = $true
             }
         }
@@ -438,6 +452,8 @@ try {
     foreach ($row in $expected | Where-Object { $_.gate }) {
         if (-not $pendingSeen.ContainsKey($row.key)) { throw "No initial pending observation for $($row.key). Native integration must expose pending rows before the delayed first scan completes; integration may be pending." }
         if (-not $initialActiveSeen.ContainsKey($row.key)) { throw "No initial active-scan observation for $($row.key)." }
+        $loadedHeight = [WtsRefreshingProbe]::RowHeight($script:window, ($sample.rows[$row.key] -split '\r?\n')[0])
+        if ($loadedHeight -ne $pendingHeights[$row.key]) { throw "Count arrival changed the height of $($row.key) from $($pendingHeights[$row.key]) to $loadedHeight" }
     }
     Assert-Holds $initial $keys
     if ($MainOnly -and $repositoryMarkers.Count -ne 2) { throw 'Repository discovery markers were not verified' }
