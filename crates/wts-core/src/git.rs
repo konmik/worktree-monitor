@@ -294,15 +294,51 @@ fn head(tree: &Path, cancel: &Cancel) -> Result<(Head, String), Error> {
     Err(invalid("Cannot resolve HEAD"))
 }
 
+#[derive(PartialEq, Eq)]
+struct ScanIdentity {
+    head: Head,
+    commit: String,
+    base_ref: Option<(&'static str, String)>,
+}
+
+fn scan_identity(tree: &Path, cancel: &Cancel) -> Result<ScanIdentity, Error> {
+    let (head, commit) = head(tree, cancel)?;
+    let mut base_ref = None;
+    for reference in ["refs/heads/main", "refs/heads/master"] {
+        let output = process::run(Some(tree), &args(&["show-ref", "--verify", "--quiet", reference]), cancel)?;
+        let code = output.code;
+        process::success(output, &[0, 1])?;
+        if code == 0 {
+            let oid = process::checked(Some(tree), &args(&["rev-parse", "--verify", &format!("{reference}^{{commit}}")]), cancel)?;
+            base_ref = Some((reference, text(&oid)?));
+            break;
+        }
+    }
+    Ok(ScanIdentity { head, commit, base_ref })
+}
+
+fn comparison_base(tree: &Path, identity: &ScanIdentity, cancel: &Cancel) -> Result<String, Error> {
+    if !matches!(identity.head, Head::Unborn(_)) {
+        if let Some((_, base)) = &identity.base_ref {
+            let output = process::run(Some(tree), &args(&["merge-base", &identity.commit, base]), cancel)?;
+            let code = output.code;
+            let stdout = process::success(output, &[0, 1])?;
+            if code == 0 { return text(&stdout); }
+        }
+    }
+    Ok(identity.commit.clone())
+}
+
 pub(crate) fn scan_tree(tree: &Path, cancel: &Cancel) -> Result<WorktreeStats, Error> {
     for _ in 0..2 {
-        let (head, base) = head(tree, cancel)?;
-        let stats = count_tree(tree, head.clone(), &base, cancel)?;
-        if self::head(tree, cancel)? == (head, base) {
+        let identity = scan_identity(tree, cancel)?;
+        let base = comparison_base(tree, &identity, cancel)?;
+        let stats = count_tree(tree, identity.head.clone(), &base, cancel)?;
+        if scan_identity(tree, cancel)? == identity {
             return Ok(stats);
         }
     }
-    Err(Error::new(ErrorKind::ChangedDuringScan, "HEAD changed during the scan; retry on the next scan"))
+    Err(Error::new(ErrorKind::ChangedDuringScan, "HEAD or comparison branch changed during the scan; retry on the next scan"))
 }
 
 pub(crate) fn global_sources(tree: &Path, cancel: &Cancel) -> Result<Vec<PathBuf>, Error> {

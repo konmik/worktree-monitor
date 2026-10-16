@@ -25,7 +25,7 @@ Use **Hide** on a worktree to remove it from the list. **Show all** reveals hidd
 
 ## Counts
 
-Each worktree shows its branch and `S +n/-n · T +n/-n · X +n/-n`. `S` counts source changes, `T` counts test changes, and `X` counts scripts and tooling changes. The categories match the OpenCode line-changes plugin. Only source additions and deletions use green and red. Counts compare the working files with `HEAD`, including staged changes once and untracked files. A staged edit reverted in the working file contributes no lines. Repositories without a first commit are supported.
+Each worktree shows its branch and `S +n/-n · T +n/-n · X +n/-n`. `S` counts source changes, `T` counts test changes, and `X` counts scripts and tooling changes. The categories match the OpenCode line-changes plugin. Only source additions and deletions use green and red. Counts include branch commits, staged and unstaged changes, and untracked files. Working files are compared with the common ancestor of `HEAD` and the local `main` branch, or `master` if `main` is absent. Changes made only on the base branch are excluded. If neither branch exists or their histories are unrelated, counts compare with `HEAD`. Changes reverted in the working files contribute no lines. Repositories without a first commit are supported.
 
 Git's ignore rules and binary attributes apply. Binary files have a separate count, not an invented line count. Ignored untracked files and submodule contents are not counted. Missing or unreadable worktrees show errors rather than zero changes.
 
