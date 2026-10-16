@@ -37,6 +37,10 @@ public static class WtsDragProbe {
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr handle, out Rect rect);
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr handle, ref Point point);
     [DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr handle, ref Point point);
+    [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point point);
+    [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
     [DllImport("user32.dll")] public static extern IntPtr ChildWindowFromPointEx(IntPtr parent, Point point, uint flags);
     [DllImport("user32.dll")] public static extern bool GetGUIThreadInfo(uint thread, ref GuiInfo info);
     [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW")] public static extern IntPtr SendMessageTimeout(IntPtr handle, uint message, IntPtr wparam, IntPtr lparam, uint flags, uint timeout, out IntPtr result);
@@ -160,10 +164,26 @@ public static class WtsDragProbe {
         if (!ClientToScreen(button, ref bodyPoint) || !ScreenToClient(source, ref bodyPoint) ||
             ChildWindowFromPointEx(source, bodyPoint, 7) != button) { throw new InvalidOperationException("Card intercepts native action button"); }
         var root = GetAncestor(source, 2);
-        Send(button, 0x0201, new IntPtr(1), Position(point));
-        if (Captured(root) != button) { throw new InvalidOperationException("Native button did not own capture"); }
-        Send(button, 0x0202, IntPtr.Zero, Position(point));
-        if (Captured(root) != IntPtr.Zero) { throw new InvalidOperationException("Native button left capture active"); }
+        var screen = point;
+        Point saved;
+        if (!ClientToScreen(button, ref screen) || !GetCursorPos(out saved)) { throw new InvalidOperationException("Native button screen coordinates unavailable"); }
+        bool pressed = false;
+        try {
+            if (!SetCursorPos(screen.X, screen.Y) || WindowFromPoint(screen) != button) { throw new InvalidOperationException("Native button pointer target is not the fixture control"); }
+            mouse_event(2, 0, 0, 0, UIntPtr.Zero);
+            pressed = true;
+            var deadline = DateTime.UtcNow.AddSeconds(3);
+            while (Captured(root) != button && DateTime.UtcNow < deadline) { System.Threading.Thread.Sleep(10); }
+            if (Captured(root) != button) { throw new InvalidOperationException("Native button did not own capture"); }
+            mouse_event(4, 0, 0, 0, UIntPtr.Zero);
+            pressed = false;
+            deadline = DateTime.UtcNow.AddSeconds(3);
+            while (Captured(root) != IntPtr.Zero && DateTime.UtcNow < deadline) { System.Threading.Thread.Sleep(10); }
+            if (Captured(root) != IntPtr.Zero) { throw new InvalidOperationException("Native button left capture active"); }
+        } finally {
+            if (pressed) { mouse_event(4, 0, 0, 0, UIntPtr.Zero); }
+            if (!SetCursorPos(saved.X, saved.Y)) { throw new InvalidOperationException("Cursor restoration failed"); }
+        }
     }
     private static void DragAt(IntPtr source, IntPtr target, bool cancel, bool below, uint cancelMessage, string region) {
         var root = GetAncestor(source, 2);
