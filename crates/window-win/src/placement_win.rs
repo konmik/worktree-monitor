@@ -1,37 +1,34 @@
-use crate::placement::{self, Monitor, Placement, Rect, RestorePlacement, ShowState};
+use crate::placement::{self, Monitor, Placement, Rect, ShowState};
 use std::io;
 use std::mem::size_of;
 use std::path::Path;
 use std::ptr::{null, null_mut};
-use windows_sys::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows_sys::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, MonitorFromRect, MonitorFromWindow,
     HMONITOR, MONITORINFOEXW, MONITOR_DEFAULTTONEAREST};
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, GetWindowPlacement, GetWindowRect, IsIconic,
-    SetWindowLongPtrW, SetWindowPlacement, GWL_EXSTYLE, GWL_STYLE, SW_SHOWMAXIMIZED, SW_SHOWMINIMIZED,
-    SW_SHOWNOACTIVATE, WINDOWPLACEMENT, WPF_RESTORETOMAXIMIZED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_MAXIMIZE};
+    SetWindowPos, GWL_STYLE, SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOWMAXIMIZED, SW_SHOWMINIMIZED,
+    WINDOWPLACEMENT, WPF_RESTORETOMAXIMIZED, WS_EX_TOOLWINDOW, WS_MAXIMIZE};
 
 struct MonitorList {
     monitors: Vec<Monitor>,
     error: Option<io::Error>,
 }
 
-pub(crate) unsafe fn restore(hwnd: HWND, path: &Path) -> io::Result<bool> {
-    let Some(saved) = placement::read(path)? else { return Ok(false); };
+pub(crate) unsafe fn restore_hidden_geometry(hwnd: HWND, path: &Path) -> io::Result<Option<ShowState>> {
+    let Some(saved) = placement::read(path)? else { return Ok(None); };
     let monitors = monitors()?;
     let Some(current) = monitors.iter().find(|monitor| monitor.identity == saved.monitor.identity) else {
-        return Ok(false);
+        return Ok(None);
     };
-    let Some(candidate) = saved.restore_for(current) else { return Ok(false); };
-    let placement = native_placement(candidate, current, is_tool_window(hwnd))?;
-    let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE as isize);
-    let result = SetWindowPlacement(hwnd, &placement);
-    let error = if result == 0 { Some(io::Error::last_os_error()) } else { None };
-    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style);
-    if let Some(error) = error {
-        return Err(error);
+    let Some(candidate) = saved.restore_for(current) else { return Ok(None); };
+    let rect = candidate.normal;
+    let width = i32::try_from(rect.width()).map_err(|_| invalid("Window width overflow"))?;
+    let height = i32::try_from(rect.height()).map_err(|_| invalid("Window height overflow"))?;
+    if SetWindowPos(hwnd, null_mut(), rect.left, rect.top, width, height, SWP_NOZORDER | SWP_NOACTIVATE) == 0 {
+        return Err(io::Error::last_os_error());
     }
-    Ok(true)
+    Ok(Some(candidate.state))
 }
 
 pub(crate) unsafe fn save(hwnd: HWND, path: &Path) -> io::Result<()> {
@@ -58,21 +55,6 @@ pub(crate) unsafe fn save(hwnd: HWND, path: &Path) -> io::Result<()> {
     let monitor = if handle.is_null() { base } else { monitor_info(handle)? };
     let placement = Placement::new(normal, monitor, if maximized { ShowState::Maximized } else { ShowState::Normal });
     placement::write(path, &placement)
-}
-
-unsafe fn native_placement(candidate: RestorePlacement, monitor: &Monitor, tool_window: bool) -> io::Result<WINDOWPLACEMENT> {
-    let normal = screen_to_workspace(candidate.normal, monitor, tool_window)?;
-    Ok(WINDOWPLACEMENT {
-        length: size_of::<WINDOWPLACEMENT>() as u32,
-        showCmd: match candidate.state {
-            ShowState::Normal => SW_SHOWNOACTIVATE as u32,
-            ShowState::Maximized => SW_SHOWMAXIMIZED as u32,
-        },
-        ptMinPosition: POINT { x: 0, y: 0 },
-        ptMaxPosition: POINT { x: 0, y: 0 },
-        rcNormalPosition: normal,
-        ..std::mem::zeroed()
-    })
 }
 
 unsafe fn monitor_from_window(hwnd: HWND) -> io::Result<Monitor> {
@@ -140,19 +122,6 @@ fn workspace_to_screen(rect: RECT, monitor: &Monitor, tool_window: bool) -> io::
     }
 }
 
-fn screen_to_workspace(rect: Rect, monitor: &Monitor, tool_window: bool) -> io::Result<RECT> {
-    if !tool_window {
-        let x = monitor.work_area.left.checked_sub(monitor.full_bounds.left).ok_or_else(|| invalid("Monitor offset overflow"))?;
-        let y = monitor.work_area.top.checked_sub(monitor.full_bounds.top).ok_or_else(|| invalid("Monitor offset overflow"))?;
-        Ok(RECT { left: rect.left.checked_sub(x).ok_or_else(|| invalid("Window rectangle overflow"))?,
-            top: rect.top.checked_sub(y).ok_or_else(|| invalid("Window rectangle overflow"))?,
-            right: rect.right.checked_sub(x).ok_or_else(|| invalid("Window rectangle overflow"))?,
-            bottom: rect.bottom.checked_sub(y).ok_or_else(|| invalid("Window rectangle overflow"))? })
-    } else {
-        Ok(RECT { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom })
-    }
-}
-
 unsafe fn is_tool_window(hwnd: HWND) -> bool {
     GetWindowLongPtrW(hwnd, windows_sys::Win32::UI::WindowsAndMessaging::GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW != 0
 }
@@ -164,13 +133,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn restoring_geometry_keeps_the_window_hidden_until_its_owner_shows_it() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, IsWindowVisible, IsZoomed, WS_POPUP};
+        unsafe {
+            let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+            let window = CreateWindowExW(0, class.as_ptr(), class.as_ptr(), WS_POPUP, 100, 100, 640, 540,
+                null_mut(), null_mut(), null_mut(), null());
+            assert!(!window.is_null());
+            let monitor = monitor_from_window(window).unwrap();
+            let normal = Rect::new(monitor.work_area.left + 20, monitor.work_area.top + 20,
+                monitor.work_area.left + 400, monitor.work_area.top + 320);
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("placement.json");
+            for show_state in [ShowState::Normal, ShowState::Maximized] {
+                placement::write(&path, &Placement::new(normal, monitor.clone(), show_state)).unwrap();
+                assert_eq!(restore_hidden_geometry(window, &path).unwrap(), Some(show_state));
+                assert_eq!(IsWindowVisible(window), 0);
+                assert_eq!(IsZoomed(window), 0);
+                let mut actual: RECT = std::mem::zeroed();
+                assert_ne!(GetWindowRect(window, &mut actual), 0);
+                assert_eq!(model_rect(actual).unwrap(), normal);
+            }
+            DestroyWindow(window);
+        }
+    }
+
+    #[test]
     fn workspace_conversion_uses_taskbar_offsets_not_monitor_origins() {
         let monitor = Monitor::new("secondary", Rect::new(-1920, -120, 0, 1080), Rect::new(-1880, -80, 0, 1080));
         let normal = Rect::new(-1800, -60, -1200, 540);
-        let workspace = screen_to_workspace(normal, &monitor, false).unwrap();
-        assert_eq!((workspace.left, workspace.top, workspace.right, workspace.bottom), (-1840, -100, -1240, 500));
+        let workspace = RECT { left: -1840, top: -100, right: -1240, bottom: 500 };
         assert_eq!(model_rect(workspace_to_screen(workspace, &monitor, false).unwrap()).unwrap(), normal);
-        let tool = screen_to_workspace(normal, &monitor, true).unwrap();
-        assert_eq!((tool.left, tool.top, tool.right, tool.bottom), (-1800, -60, -1200, 540));
+        assert_eq!(model_rect(workspace_to_screen(workspace, &monitor, true).unwrap()).unwrap(), Rect::new(-1840, -100, -1240, 500));
     }
 }

@@ -2,7 +2,9 @@ param(
     [string]$Binary = "$PSScriptRoot/../target/debug/wts-ui.exe",
     [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wts-refreshing-$([Guid]::NewGuid().ToString('N'))",
     [switch]$SavedOrder,
-    [switch]$MainOnly
+    [switch]$MainOnly,
+    [string]$Placement,
+    [int]$PlacementWidth = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,6 +30,7 @@ using System.Text;
 public static class WtsRefreshingProbe {
     public struct Rect { public int Left, Top, Right, Bottom; }
     public struct Point { public int X, Y; }
+    public struct MonitorInfo { public uint Size; public Rect Monitor, Work; public uint Flags; }
     public delegate bool EnumProc(IntPtr window, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumProc callback, IntPtr data);
@@ -43,6 +46,8 @@ public static class WtsRefreshingProbe {
     [DllImport("dwmapi.dll")] public static extern int DwmFlush();
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr window);
+    [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr window, uint flags);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern bool GetMonitorInfoW(IntPtr monitor, ref MonitorInfo info);
     [DllImport("user32.dll")] public static extern bool RedrawWindow(IntPtr window, IntPtr rect, IntPtr region, uint flags);
     [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr window);
     [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr window, IntPtr dc);
@@ -118,6 +123,21 @@ public static class WtsRefreshingProbe {
         var text = new StringBuilder(65536);
         GetWindowText(window, text, text.Capacity);
         return text.ToString();
+    }
+    public static string Bounds(IntPtr window) {
+        Rect rect;
+        if (!GetWindowRect(window, out rect)) throw new InvalidOperationException("Window bounds unavailable");
+        return rect.Left + "," + rect.Top + "," + rect.Right + "," + rect.Bottom;
+    }
+    public static void AssertDefaultSize(IntPtr window) {
+        var monitor = new MonitorInfo { Size = (uint)Marshal.SizeOf(typeof(MonitorInfo)) };
+        if (!GetMonitorInfoW(MonitorFromWindow(window, 2), ref monitor)) throw new InvalidOperationException("Monitor unavailable");
+        Rect rect;
+        GetWindowRect(window, out rect);
+        int dpi = (int)GetDpiForWindow(window);
+        if (rect.Right - rect.Left != Math.Min(640 * dpi / 96, monitor.Work.Right - monitor.Work.Left) ||
+            rect.Bottom - rect.Top != Math.Min(540 * dpi / 96, monitor.Work.Bottom - monitor.Work.Top))
+            throw new InvalidOperationException("First visible window does not have its intended default size");
     }
     public static int RowHeight(IntPtr root, string firstLine) {
         int height = 0;
@@ -238,9 +258,29 @@ function Capture-Refreshing([string]$Name = 'refreshing') {
     } finally { $graphics.Dispose(); $image.Dispose() }
 }
 
+function Set-FixtureSize([int]$Width) {
+    if (-not [WtsRefreshingProbe]::SetWindowPos($script:window, [IntPtr]::Zero, 32, 32, $Width, 720, 20)) { throw 'Fixture resize failed' }
+    $script:expectedBounds = "32,32,$(32 + $Width),752"
+    if ([WtsRefreshingProbe]::Bounds($script:window) -ne $script:expectedBounds) { throw 'Manual resize did not apply the requested bounds' }
+    [void][WtsRefreshingProbe]::RedrawWindow($script:window, [IntPtr]::Zero, [IntPtr]::Zero, 0x0180)
+    [void][WtsRefreshingProbe]::DwmFlush()
+}
+
 function Sample {
     if ($script:process.HasExited) { throw 'The isolated dashboard exited during observation.' }
     if ($script:window -eq [IntPtr]::Zero) { $script:window = [WtsRefreshingProbe]::Find([uint32]$script:process.Id) }
+    $bounds = $null
+    if ($script:window -ne [IntPtr]::Zero) {
+        $bounds = [WtsRefreshingProbe]::Bounds($script:window)
+        if ($null -eq $script:expectedBounds) {
+            if ($Placement) {
+                if ($bounds -ne $script:savedBounds) { throw "First visible window has bounds $bounds instead of saved bounds $script:savedBounds" }
+            } else { [WtsRefreshingProbe]::AssertDefaultSize($script:window) }
+            $script:expectedBounds = $bounds
+            $proof.first_visible_bounds = $bounds
+        }
+        if ($bounds -ne $script:expectedBounds) { throw "Window resized without a manual resize: $script:expectedBounds to $bounds" }
+    }
     $start = $clock.Elapsed.TotalMilliseconds
     $activeGates = @{}
     foreach ($row in $expected) {
@@ -266,7 +306,7 @@ function Sample {
     foreach ($gate in @($activeGates.Keys)) {
         if (-not (Test-Path -LiteralPath (Join-Path $gates "$gate.active"))) { $activeGates.Remove($gate) }
     }
-    $sample = [pscustomobject]@{ start_ms = $start; end_ms = $clock.Elapsed.TotalMilliseconds; rows = $rows; captions = $captions; active_gates = $activeGates }
+    $sample = [pscustomobject]@{ start_ms = $start; end_ms = $clock.Elapsed.TotalMilliseconds; rows = $rows; captions = $captions; active_gates = $activeGates; window_bounds = $bounds }
     $samples.Add($sample)
     if ($SavedOrder) {
         $actual = @(foreach ($caption in $captions) {
@@ -322,6 +362,7 @@ $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 $script:process = $null
 $script:window = [IntPtr]::Zero
+$script:expectedBounds = $null
 $samples = [Collections.Generic.List[object]]::new()
 $expected = [Collections.Generic.List[object]]::new()
 $pollMs = 50
@@ -365,6 +406,13 @@ try {
         ) }
         $preferences | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $fixtureHome '.config/wts/config.order.json') -Encoding utf8NoBOM
     }
+    if ($Placement) {
+        $saved = Get-Content $Placement -Raw | ConvertFrom-Json
+        if ($PlacementWidth -gt 0) { $saved.normal.right = $saved.normal.left + $PlacementWidth }
+        $saved.state = 'normal'
+        $script:savedBounds = "$($saved.normal.left),$($saved.normal.top),$($saved.normal.right),$($saved.normal.bottom)"
+        $saved | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $fixtureHome '.config/wts/config.placement.json') -Encoding utf8NoBOM
+    }
     $env:WTS_REFRESH_GATES = $gates
     $env:WTS_REFRESH_REAL_GIT = $git
     $env:PATH = "$shim;$($previous.PATH)"
@@ -392,9 +440,7 @@ try {
                 if (-not $repositoryMarkers.ContainsKey($name) -and (Test-Path -LiteralPath (Join-Path $gates "$name.repository.active")) -and
                     $sample.rows.ContainsKey("repo:$name") -and (Is-Refreshing $sample.rows["repo:$name"])) {
                     foreach ($width in @(800, 380)) {
-                        [void][WtsRefreshingProbe]::SetWindowPos($script:window, [IntPtr]::Zero, 32, 32, $width, 720, 20)
-                        [void][WtsRefreshingProbe]::RedrawWindow($script:window, [IntPtr]::Zero, [IntPtr]::Zero, 0x0180)
-                        [void][WtsRefreshingProbe]::DwmFlush()
+                        Set-FixtureSize $width
                         [WtsRefreshingProbe]::VerifyMarker($script:window, $name, $true, $true)
                         $proof.marker_placement.Add(@{ name = $name; width = $width; dpi = [WtsRefreshingProbe]::GetDpiForWindow($script:window); physical_pixel_gap = 1 })
                         Capture-Refreshing "repository-$name-$width"
@@ -425,9 +471,7 @@ try {
             if ($indicated) { $initialActiveSeen[$row.key] = $true }
             if ($MainOnly -and $indicated -and -not $pendingSeen.ContainsKey("captured:$($row.key)")) {
                 foreach ($width in @(800, 380)) {
-                    [void][WtsRefreshingProbe]::SetWindowPos($script:window, [IntPtr]::Zero, 32, 32, $width, 720, 20)
-                    [void][WtsRefreshingProbe]::RedrawWindow($script:window, [IntPtr]::Zero, [IntPtr]::Zero, 0x0180)
-                    [void][WtsRefreshingProbe]::DwmFlush()
+                    Set-FixtureSize $width
                     Capture-Refreshing "startup-$($row.gate)-$width"
                 }
                 $pendingSeen["captured:$($row.key)"] = $true
@@ -490,9 +534,7 @@ try {
             if ($indicated -and -not $activeSeen) {
                 if ($MainOnly) {
                     foreach ($width in @(800, 380)) {
-                        [void][WtsRefreshingProbe]::SetWindowPos($script:window, [IntPtr]::Zero, 32, 32, $width, 720, 20)
-                        [void][WtsRefreshingProbe]::RedrawWindow($script:window, [IntPtr]::Zero, [IntPtr]::Zero, 0x0180)
-                        [void][WtsRefreshingProbe]::DwmFlush()
+                        Set-FixtureSize $width
                         [WtsRefreshingProbe]::VerifyMarker($script:window, 'alpha-main', $false, $true)
                         $proof.marker_placement.Add(@{ name = 'alpha-main'; width = $width; dpi = [WtsRefreshingProbe]::GetDpiForWindow($script:window); physical_pixel_gap = 1 })
                         Capture-Refreshing "worktree-$width"
@@ -543,6 +585,7 @@ try {
     if (-not [WtsRefreshingProbe]::PostMessage($script:window, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'Isolated dashboard close failed.' }
     if (-not $script:process.WaitForExit(10000) -or $script:process.ExitCode -ne 0) { throw 'Isolated dashboard did not exit cleanly.' }
     $proof.result = 'PASS'
+    $proof.window_bounds_stable = $true
     Write-Host "PASS. Refreshing captions, pending counts, sibling isolation, and minimum visibility. Evidence: $Output"
 } catch {
     $proof.error = $_.Exception.Message

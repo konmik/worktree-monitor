@@ -30,7 +30,7 @@ pub(crate) struct DashboardLayout {
 
 pub(crate) struct RowSize {
     pub height: i32,
-    pub action: Option<i32>,
+    pub action_width: Option<i32>,
     pub spacing: RowSpacing,
 }
 
@@ -146,7 +146,7 @@ pub(crate) fn content(width: i32, dpi: i32, typography: Typography, sizes: &[Row
             YGNodeStyleSetHeight(row, height as f32);
             YGNodeStyleSetFlexShrink(row, 0.0);
             if index + 1 < sizes.len() { YGNodeStyleSetMargin(row, YGEdgeBottom, size.spacing.gap_after as f32); }
-            let action = if let Some(action_width) = size.action {
+            let action = if let Some(action_width) = size.action_width {
                 let action = tree.child(row)?;
                 let action_width = action_width.max(1).min(width);
                 let action_height = typography.cell.max(typography.advance).min(height);
@@ -193,7 +193,7 @@ mod tests {
         for dpi in [96, 120, 144, 192] {
             for width in [1, 20, 120, 800] {
                 let spacing = RowSpacing::new(Typography::new(dpi, 15 * dpi / 96), false, false);
-                let sizes = [RowSize { height: 40, action: None, spacing }, RowSize { height: 64, action: Some(78), spacing }, RowSize { height: 220, action: Some(78), spacing }];
+                let sizes = [RowSize { height: 40, action_width: None, spacing }, RowSize { height: 64, action_width: Some(78), spacing }, RowSize { height: 220, action_width: Some(78), spacing }];
                 let layout = content(width, dpi, Typography::new(dpi, 15 * dpi / 96), &sizes).unwrap();
                 let mut bottom = 0;
                 for (index, row) in layout.rows.iter().enumerate() {
@@ -222,10 +222,10 @@ mod tests {
             let separate = RowSpacing::new(typography, false, false);
             for heading_lines in [1, 2, 3] {
                 let sizes = [
-                    RowSize { height: heading.height(typography, heading_lines), action: None, spacing: heading },
-                    RowSize { height: branch.height(typography, 3), action: Some(78), spacing: branch },
-                    RowSize { height: separate.height(typography, 2), action: Some(78), spacing: separate },
-                    RowSize { height: separate.height(typography, 1), action: None, spacing: separate },
+                    RowSize { height: heading.height(typography, heading_lines), action_width: None, spacing: heading },
+                    RowSize { height: branch.height(typography, 3), action_width: Some(78), spacing: branch },
+                    RowSize { height: separate.height(typography, 2), action_width: Some(78), spacing: separate },
+                    RowSize { height: separate.height(typography, 1), action_width: None, spacing: separate },
                 ];
                 let layout = content(800, dpi, typography, &sizes).unwrap();
                 let rows = &layout.rows;
@@ -252,8 +252,8 @@ mod tests {
             for lines in [1, 2, 7] {
                 for width in [180, 380, 800] {
                     let sizes = [
-                        RowSize { height: attached.height(typography, lines), action: Some(78), spacing: attached },
-                        RowSize { height: last.height(typography, 2), action: Some(78), spacing: last },
+                        RowSize { height: attached.height(typography, lines), action_width: Some(78), spacing: attached },
+                        RowSize { height: last.height(typography, 2), action_width: Some(78), spacing: last },
                     ];
                     let layout = content(width, dpi, typography, &sizes).unwrap();
                     let previous = &layout.rows[0];
@@ -282,8 +282,8 @@ mod tests {
                 assert_eq!(hidden.status.top, visible.status.top);
                 assert_eq!(hidden.status.height, visible.status.height);
                 let spacing = RowSpacing::new(typography, true, true);
-                let hidden = content(width, dpi, typography, &[RowSize { height: 60, action: None, spacing }]).unwrap();
-                let visible = content(width, dpi, typography, &[RowSize { height: 60, action: Some(60), spacing }]).unwrap();
+                let hidden = content(width, dpi, typography, &[RowSize { height: 60, action_width: None, spacing }]).unwrap();
+                let visible = content(width, dpi, typography, &[RowSize { height: 60, action_width: Some(60), spacing }]).unwrap();
                 assert_eq!(hidden.rows[0].rect, visible.rows[0].rect);
                 assert!(hidden.rows[0].action.is_none());
                 assert_eq!(visible.rows[0].action.unwrap().width, 60);

@@ -21,6 +21,8 @@ public static class WtsFeatureProbe {
     public struct Size { public int Width, Height; }
     public struct Point { public int X, Y; }
     public struct GuiInfo { public uint Size, Flags; public IntPtr Active, Focus, Capture, MenuOwner, MoveSize, Caret; public Rect CaretRect; }
+    public struct MouseInput { public int X, Y; public uint Data, Flags, Time; public UIntPtr Extra; }
+    public struct Input { public uint Type; public MouseInput Mouse; }
     public delegate bool EnumProc(IntPtr window, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumProc callback, IntPtr data);
@@ -30,7 +32,8 @@ public static class WtsFeatureProbe {
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr window, int id);
     [DllImport("user32.dll")] public static extern bool GetGUIThreadInfo(uint thread, ref GuiInfo info);
-    [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
+    [DllImport("user32.dll")] public static extern uint SendInput(uint count, Input[] inputs, int size);
+    [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll")] public static extern bool EnableWindow(IntPtr window, bool enabled);
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
     [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Point point);
@@ -65,6 +68,35 @@ public static class WtsFeatureProbe {
         var text = new StringBuilder(65536);
         GetWindowText(window, text, text.Capacity);
         return text.ToString();
+    }
+    public static void Click(IntPtr window) {
+        Rect rect;
+        if (!GetWindowRect(window, out rect) || !IsWindowVisible(window)) throw new InvalidOperationException("Click target unavailable");
+        int x = (rect.Left + rect.Right) / 2;
+        int y = (rect.Top + rect.Bottom) / 2;
+        var inputs = new[] {
+            new Input { Mouse = new MouseInput {
+                X = (int)Math.Round((x - GetSystemMetrics(76)) * 65535.0 / (GetSystemMetrics(78) - 1)),
+                Y = (int)Math.Round((y - GetSystemMetrics(77)) * 65535.0 / (GetSystemMetrics(79) - 1)), Flags = 0xc001 } },
+            new Input { Mouse = new MouseInput { Flags = 2 } },
+            new Input { Mouse = new MouseInput { Flags = 4 } }
+        };
+        if (SendInput(3, inputs, Marshal.SizeOf(typeof(Input))) != 3) throw new InvalidOperationException("Pointer click failed");
+    }
+    public static void AssertRepeatedDpiKeepsBounds(IntPtr window) {
+        Rect before;
+        GetWindowRect(window, out before);
+        var suggested = new Rect { Left = before.Left + 5, Top = before.Top + 5, Right = before.Right - 25, Bottom = before.Bottom - 25 };
+        var data = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(Rect)));
+        try {
+            Marshal.StructureToPtr(suggested, data, false);
+            uint dpi = GetDpiForWindow(window);
+            SendMessage(window, 0x02e0, new IntPtr(dpi | (dpi << 16)), data);
+            Rect after;
+            GetWindowRect(window, out after);
+            if (before.Left != after.Left || before.Top != after.Top || before.Right != after.Right || before.Bottom != after.Bottom)
+                throw new InvalidOperationException("Repeated DPI notification resized the window after counts loaded");
+        } finally { Marshal.FreeHGlobal(data); }
     }
     public static IntPtr Find(uint pid) {
         var found = IntPtr.Zero;
@@ -168,6 +200,13 @@ public static class WtsFeatureProbe {
                 }
             }
         } finally { DeleteObject(font); }
+    }
+    public static void AssertActionWidth(IntPtr root, string caption) {
+        var button = FindCount(root, caption);
+        Rect rect;
+        if (button == IntPtr.Zero || !GetWindowRect(button, out rect)) throw new InvalidOperationException("Action unavailable");
+        if (rect.Right - rect.Left != Measure(button, caption) + 16 * (int)GetDpiForWindow(button) / 96)
+            throw new InvalidOperationException("Action width does not follow its current label: " + caption);
     }
     public static string AssertFont(IntPtr root, IntPtr sample, Bitmap image, int left, int top, int secondLineOffset = 0) {
         var font = SendMessage(sample, 0x0031, IntPtr.Zero, IntPtr.Zero);
@@ -320,7 +359,7 @@ function Start-Window([string]$Name) {
         return $script:window -ne [IntPtr]::Zero -and $script:card -ne [IntPtr]::Zero
     } "$Name window and exact S/T/X caption"
     if ([WtsFeatureProbe]::IsIconic($script:window)) { throw 'Startup restored a minimized window' }
-    if ($foreground -ne [IntPtr]::Zero -and [WtsFeatureProbe]::GetForegroundWindow() -ne $foreground) { throw "$Name startup stole focus" }
+    if ($foreground -ne [IntPtr]::Zero -and [WtsFeatureProbe]::GetForegroundWindow() -eq $script:window) { throw "$Name startup stole focus" }
     $proof.runs += [ordered]@{ name = $Name; pid = $script:process.Id; caption = [WtsFeatureProbe]::Text($script:card) }
 }
 
@@ -354,8 +393,7 @@ function Move-Pointer([int]$X, [int]$Y) {
 function Click-Control([IntPtr]$Control) {
     $rect = Bounds $Control
     Move-Pointer ([int](($rect.Left + $rect.Right) / 2)) ([int](($rect.Top + $rect.Bottom) / 2))
-    [WtsFeatureProbe]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
-    [WtsFeatureProbe]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+    [WtsFeatureProbe]::Click($Control)
 }
 
 function Assert-Hover {
@@ -391,7 +429,11 @@ function Assert-Hover {
                     if ([WtsFeatureProbe]::GetAncestor($under, 2) -ne $script:window -or
                         $position.X -ne [int](($rect.Left + $rect.Right) / 2) -or $position.Y -ne [int](($rect.Top + $rect.Bottom) / 2)) {
                         Move-Pointer ([int](($rect.Left + $rect.Right) / 2)) ([int](($rect.Top + $rect.Bottom) / 2))
-                        Wait-For { [WtsFeatureProbe]::IsWindowVisible($toggle) -and [WtsFeatureProbe]::IsWindowVisible($button) } 'controls after pointer return'
+                        Wait-For {
+                            if ([WtsFeatureProbe]::IsWindowVisible($toggle) -and [WtsFeatureProbe]::IsWindowVisible($button)) { return $true }
+                            Move-Pointer ([int](($rect.Left + $rect.Right) / 2)) ([int](($rect.Top + $rect.Bottom) / 2))
+                            return $false
+                        } 'controls after pointer return'
                         continue
                     }
                     if (-not [WtsFeatureProbe]::IsWindowVisible($toggle) -or -not [WtsFeatureProbe]::IsWindowVisible($button)) {
@@ -423,8 +465,10 @@ function Assert-Hover {
             Move-Pointer ($target.Left + 20) ($target.Top + 400)
             Wait-For { [WtsFeatureProbe]::IsWindowVisible($toggle) } 'checked toggle restored'
             $unhide = [WtsFeatureProbe]::FindCount($script:window, 'Unhide')
+            [WtsFeatureProbe]::AssertActionWidth($script:window, 'Unhide')
             Click-Control $unhide
             Wait-For { [WtsFeatureProbe]::FindCount($script:window, 'Hide') -ne [IntPtr]::Zero } 'Unhide click'
+            [WtsFeatureProbe]::AssertActionWidth($script:window, 'Hide')
             Click-Control $toggle
             Wait-For { [WtsFeatureProbe]::SendMessage($toggle, 0x00f0, [IntPtr]::Zero, [IntPtr]::Zero) -eq [IntPtr]::Zero } 'Show all unchecked'
             [void][WtsFeatureProbe]::SetWindowPos($script:window, [IntPtr]::Zero, $target.Left, $target.Top, $width, 100, 20)
@@ -532,6 +576,8 @@ try {
     [void][WtsFeatureProbe]::SendMessage($script:window, 0x0232, [IntPtr]::Zero, [IntPtr]::Zero)
     $savedMove = Get-Content $placementPath -Raw | ConvertFrom-Json
     if (-not (Same-Bounds $target $savedMove.normal)) { throw 'Completed move did not save its bounds' }
+    [WtsFeatureProbe]::AssertRepeatedDpiKeepsBounds($script:window)
+    $proof.checks += [ordered]@{ name = 'repeated DPI notification'; bounds_unchanged = $true }
     Assert-Hover
     Assert-Colors
     Close-Window

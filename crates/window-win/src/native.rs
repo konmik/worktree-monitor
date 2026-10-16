@@ -1,5 +1,6 @@
 use crate::dashboard::{ellipsize_start, DashboardView, DisplayItem, Health, ItemKey, RefreshTracker};
 use crate::order::{Order, OrderMove};
+use crate::placement::ShowState;
 use crate::placement_win;
 use crate::layout::{self, Rect, RowSize};
 use crate::visibility::Visibility;
@@ -213,15 +214,17 @@ unsafe fn destroy_card(card: Card) {
     DestroyWindow(card.window);
 }
 
-unsafe fn set_action(card: &mut Card, visibility: &Visibility) {
-    let Some(action) = card.action else { return; };
-    let Some(ItemKey::Worktree(repository, worktree)) = &card.key else { return; };
+unsafe fn update_action_caption(card: &mut Card, visibility: &Visibility) -> bool {
+    let Some(action) = card.action else { return false; };
+    let Some(ItemKey::Worktree(repository, worktree)) = &card.key else { return false; };
     let hidden = visibility.contains(repository, worktree);
     if card.action_hidden != Some(hidden) {
         SetWindowTextW(action, wide(if hidden { "Unhide" } else { "Hide" }).as_ptr());
         InvalidateRect(action, null(), 0);
         card.action_hidden = Some(hidden);
+        return true;
     }
+    false
 }
 
 unsafe fn reconcile(state: &mut State) -> bool {
@@ -232,7 +235,7 @@ unsafe fn reconcile(state: &mut State) -> bool {
     for item in &state.view.items {
         if let Some(mut card) = previous.remove(&item.key) {
             set_item(&mut card, item.display.clone());
-            set_action(&mut card, &state.visibility);
+            update_action_caption(&mut card, &state.visibility);
             state.cards.push(card);
         } else {
             let action_id = matches!(item.key, ItemKey::Worktree(_, _)).then(|| {
@@ -242,7 +245,7 @@ unsafe fn reconcile(state: &mut State) -> bool {
             });
             if let Some(mut card) = create_card(state.viewport, state.next_card_id, action_id, Some(item.key.clone()), item.display.clone(), resources) {
                 state.next_card_id += 1;
-                set_action(&mut card, &state.visibility);
+                update_action_caption(&mut card, &state.visibility);
                 if let Some(action) = card.action { ShowWindow(action, if state.controls_visible { SW_SHOWNOACTIVATE } else { SW_HIDE }); }
                 state.cards.push(card);
             } else { succeeded = false; break; }
@@ -524,7 +527,7 @@ unsafe fn layout(window: HWND, state: &mut State, restore: Option<(ItemKey, i32)
     let dc = GetDC(window);
     let sizes: Vec<_> = state.cards.iter().map(|card| RowSize {
         height: item_height(card, dc, state.width, state.dpi, resources),
-        action: card.action.filter(|_| state.controls_visible).map(|action| wrapped_width(dc, &button_caption(action), resources.font) + scaled(16, state.dpi)),
+        action_width: card.action.filter(|_| state.controls_visible).map(|action| wrapped_width(dc, &button_caption(action), resources.font) + scaled(16, state.dpi)),
         spacing: card.spacing,
     }).collect();
     ReleaseDC(window, dc);
@@ -1216,7 +1219,9 @@ unsafe fn refresh(window: HWND, state: &mut State) {
         }
         layout(window, state, saved, false);
     }
-    for card in &mut state.cards { set_action(card, &state.visibility); }
+    let mut action_caption_changed = false;
+    for card in &mut state.cards { action_caption_changed |= update_action_caption(card, &state.visibility); }
+    if action_caption_changed && state.controls_visible { layout(window, state, None, false); }
     refresh_indicators(state);
     set_status(state);
 }
@@ -1440,11 +1445,12 @@ unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, p
         }
         WM_DPICHANGED if !viewport => {
             cancel_drag(pointer);
+            let previous_dpi = (*pointer).dpi;
             let saved = anchor(&*pointer).map(|(key, offset)| (key,
                 (i64::from(offset) * i64::from(GetDpiForWindow(window).max(96)) / i64::from((*pointer).dpi)) as i32));
             if !fonts(window, &mut *pointer) { (*pointer).failure = Some(io::Error::last_os_error()); }
-            let suggested = &*(lparam as *const RECT);
-            if !(*pointer).starting {
+            if !(*pointer).starting && (*pointer).dpi != previous_dpi {
+                let suggested = &*(lparam as *const RECT);
                 SetWindowPos(window, null_mut(), suggested.left, suggested.top, suggested.right - suggested.left,
                     suggested.bottom - suggested.top, SWP_NOZORDER | SWP_NOACTIVATE);
             }
@@ -1609,7 +1615,7 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
             UnregisterClassW(class.as_ptr(), instance);
             return Err(error);
         }
-        let window = CreateWindowExW(WS_EX_TOPMOST, class.as_ptr(), wide("WTS Worktree status").as_ptr(),
+        let window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE, class.as_ptr(), wide("WTS Worktree status").as_ptr(),
             WS_POPUP | WS_SYSMENU | WS_THICKFRAME | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, CW_USEDEFAULT, CW_USEDEFAULT, 640, 540, null_mut(), null_mut(), instance,
             (&mut *state as *mut State).cast());
         if window.is_null() {
@@ -1625,8 +1631,8 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
         DwmSetWindowAttribute(window, 33, (&disabled as *const u32).cast(), std::mem::size_of::<u32>() as u32);
         let no_border = 0xfffffffeu32;
         DwmSetWindowAttribute(window, 34, (&no_border as *const u32).cast(), std::mem::size_of::<u32>() as u32);
-        let restored = placement_win::restore(window, &state.placement_path).unwrap_or(false);
-        let positioned = if restored {
+        let restored = placement_win::restore_hidden_geometry(window, &state.placement_path).unwrap_or(None);
+        let positioned = if restored.is_some() {
             SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
         } else {
             let dpi = GetDpiForWindow(window).max(96) as i32;
@@ -1642,11 +1648,15 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
             } else { (rect.left, rect.top, 640 * dpi / 96, 540 * dpi / 96) };
             SetWindowPos(window, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE)
         };
-        state.starting = false;
         if positioned == 0 {
             state.failure = Some(io::Error::last_os_error());
             DestroyWindow(window);
-        } else { ShowWindow(window, if restored { SW_SHOWNA } else { SW_SHOWNOACTIVATE }); }
+        } else {
+            ShowWindow(window, if restored == Some(ShowState::Maximized) { SW_SHOWMAXIMIZED } else { SW_SHOWNOACTIVATE });
+            let style = GetWindowLongPtrW(window, GWL_EXSTYLE);
+            SetWindowLongPtrW(window, GWL_EXSTYLE, style & !(WS_EX_NOACTIVATE as isize));
+        }
+        state.starting = false;
         let mut message: MSG = std::mem::zeroed();
         loop {
             let received = GetMessageW(&mut message, null_mut(), 0, 0);
