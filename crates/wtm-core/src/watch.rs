@@ -1218,6 +1218,37 @@ mod tests {
         assert_eq!(cancel.generation(), generation + 1);
     }
 
+    #[test]
+    fn planned_event_policy_preserves_tracked_exceptions_and_directory_changes() {
+        let root = absolute(Path::new("watch-root"));
+        let plan = plan_for(&root, &git::WatchPaths {
+            directories: ["visible", "ignored", "ignored/nested", "ignored/noise"]
+                .into_iter().map(PathBuf::from).collect(),
+            ignored_directories: HashSet::from([PathBuf::from("ignored")]),
+            tracked: ["visible/tracked.txt", "ignored/nested/tracked.txt"]
+                .into_iter().map(PathBuf::from).collect(),
+        });
+        let policy = EventPolicy { worktrees: vec![WorktreeEventPolicy {
+            key: WorktreeKey::new(&root.join(".git"), &root), root: normalize(&root),
+            plan: Arc::new(plan), protected: Vec::new(),
+        }] };
+        let modified = EventKind::Modify(ModifyKind::Data(DataChange::Content));
+        let removed = EventKind::Remove(RemoveKind::Folder);
+        for (path, kind, allowed) in [
+            ("visible/tracked.txt", modified, true),
+            ("visible/untracked.txt", modified, true),
+            ("ignored/nested/tracked.txt", modified, true),
+            ("ignored/nested/untracked.txt", modified, false),
+            ("ignored/nested/.gitignore", modified, true),
+            ("ignored/noise/.gitignore", modified, false),
+            ("ignored/nested", removed, true),
+            ("ignored/noise", removed, false),
+        ] {
+            let event = Event::new(kind).add_path(root.join(path));
+            assert_eq!(policy.filter(event).is_some(), allowed, "{path}");
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_callback_filters_ignored_events_before_waking_or_queuing() {
