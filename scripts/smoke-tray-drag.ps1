@@ -52,6 +52,11 @@ $extra = @'
     [DllImport("shell32.dll")] public static extern int Shell_NotifyIconGetRect(ref IconId id, out Rect rect);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern uint RegisterWindowMessage(string name);
     [DllImport("user32.dll")] public static extern bool GetMenuItemRect(IntPtr window, IntPtr menu, uint item, out Rect rect);
+    [DllImport("user32.dll")] public static extern int GetMenuItemCount(IntPtr menu);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetMenuStringW(IntPtr menu, uint item, StringBuilder text, int count, uint flags);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr window, int command);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr window);
+    [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr window);
     [DllImport("user32.dll", EntryPoint="SystemParametersInfoW")] public static extern bool SystemParametersInfo(uint action, uint parameter, out Rect rect, uint flags);
     public static Rect Bounds(IntPtr handle) {
         Rect rect;
@@ -74,7 +79,7 @@ $extra = @'
         var info = new GuiInfo { Size = (uint)Marshal.SizeOf(typeof(GuiInfo)) };
         return GetGUIThreadInfo(thread, ref info) && info.MenuOwner == window && (info.Flags & 4) != 0;
     }
-    public static void Menu(IntPtr window, bool exit) {
+    public static void Menu(IntPtr window, string caption) {
         var rect = Bounds(window);
         if (!PostMessage(window, 32811, Position(rect.Left + 40, rect.Top + 40), new IntPtr((1 << 16) | 123))) throw new InvalidOperationException("Cannot open fixture tray menu");
         WaitFor(() => HasMenu(window), "Fixture tray menu did not open");
@@ -93,8 +98,18 @@ $extra = @'
             return popup != IntPtr.Zero;
         }, "Fixture popup window unavailable");
         var menu = SendMessage(popup, 0x01e1, IntPtr.Zero, IntPtr.Zero);
+        int index = -1;
+        for (int i = 0; i < GetMenuItemCount(menu); i++) {
+            var text = new StringBuilder(128);
+            GetMenuStringW(menu, (uint)i, text, text.Capacity, 0x400);
+            if (text.ToString() == caption) { index = i; break; }
+        }
+        if (index < 0) {
+            PostMessage(window, 0x001f, IntPtr.Zero, IntPtr.Zero);
+            throw new InvalidOperationException("Fixture menu item unavailable: " + caption);
+        }
         Rect item;
-        if (!GetMenuItemRect(IntPtr.Zero, menu, exit ? 1u : 0u, out item)) throw new InvalidOperationException("Fixture menu item bounds unavailable");
+        if (!GetMenuItemRect(IntPtr.Zero, menu, (uint)index, out item)) throw new InvalidOperationException("Fixture menu item bounds unavailable");
         int x = (item.Left + item.Right) / 2, y = (item.Top + item.Bottom) / 2;
         if (!SetCursorPos(x, y) || WindowFromPoint(new Point { X = x, Y = y }) != popup) throw new InvalidOperationException("Menu click target is not the fixture popup");
         mouse_event(2, 0, 0, 0, UIntPtr.Zero);
@@ -182,21 +197,52 @@ try {
     $point = [WtmTrayDragProbe]::Position([int](($bounds.Left + $bounds.Right) / 2), [int](($bounds.Top + $bounds.Bottom) / 2))
     if ([WtmTrayDragProbe]::SendMessage($window, 0x84, [IntPtr]::Zero, $point).ToInt64() -ne 1) { throw 'Show all is treated as a window drag region' }
     Write-Host 'PASS. Real mouse drags on the read text and empty status row move the window. Real corner drag still resizes it.'
-    [WtmTrayDragProbe]::Menu($window, $false)
+    [WtmTrayDragProbe]::Menu($window, 'Hide')
     Wait-For { -not [WtmTrayDragProbe]::IsWindowVisible($window) } 'tray Hide action'
     if (-not [WtmTrayDragProbe]::HasIcon($window, 1)) { throw 'Hiding window removed its notification icon' }
     [WtmTrayDragProbe]::CheckOutsideDismissal($window, $work.Left + 10, $work.Top + 10)
     Write-Host 'PASS. A real outside click on an owned backdrop dismisses the tray menu while the app is hidden.'
     [void][WtmTrayDragProbe]::PostMessage($window, 32811, [IntPtr]::Zero, [IntPtr]((1 -shl 16) -bor 1024))
     Wait-For { [WtmTrayDragProbe]::IsWindowVisible($window) } 'tray selection to restore window'
-    [WtmTrayDragProbe]::Menu($window, $false)
+    [WtmTrayDragProbe]::Menu($window, 'Hide')
     Wait-For { -not [WtmTrayDragProbe]::IsWindowVisible($window) } 'second tray Hide action'
-    [WtmTrayDragProbe]::Menu($window, $false)
+    [WtmTrayDragProbe]::Menu($window, 'Show')
     Wait-For { [WtmTrayDragProbe]::IsWindowVisible($window) } 'tray Show action'
-    [WtmTrayDragProbe]::Menu($window, $true)
+    $defaultBounds = $null
+    foreach ($mode in @('normal', 'hidden', 'minimized', 'maximized')) {
+        if (-not [WtmTrayDragProbe]::SetWindowPos($window, [IntPtr](-1), $work.Left + 80, $work.Top + 80, 640, 300, 0x10)) { throw 'Cannot move fixture before Reset' }
+        switch ($mode) {
+            'hidden' { [void][WtmTrayDragProbe]::ShowWindow($window, 0) }
+            'minimized' { [void][WtmTrayDragProbe]::ShowWindow($window, 6) }
+            'maximized' { [void][WtmTrayDragProbe]::ShowWindow($window, 3) }
+        }
+        [WtmTrayDragProbe]::Menu($window, 'Reset')
+        Wait-For {
+            $rect = [WtmTrayDragProbe]::Bounds($window)
+            $dpi = [WtmTrayDragProbe]::GetDpiForWindow($window)
+            [WtmTrayDragProbe]::IsWindowVisible($window) -and -not [WtmTrayDragProbe]::IsIconic($window) -and -not [WtmTrayDragProbe]::IsZoomed($window) -and
+                $rect.Left -eq $work.Left -and $rect.Top -eq $work.Top -and
+                ($rect.Right - $rect.Left) -eq [Math]::Min(640 * $dpi / 96, $work.Right - $work.Left) -and
+                ($rect.Bottom - $rect.Top) -eq [Math]::Min(540 * $dpi / 96, $work.Bottom - $work.Top)
+        } "Reset from $mode"
+        $defaultBounds = [WtmTrayDragProbe]::Bounds($window)
+        Wait-For {
+            $saved = Get-Content -LiteralPath (Join-Path $fixture '.config/wtm/config.placement.json') -Raw | ConvertFrom-Json
+            $saved.state -eq 'normal' -and $saved.normal.left -eq $defaultBounds.Left -and $saved.normal.top -eq $defaultBounds.Top -and
+                $saved.normal.right -eq $defaultBounds.Right -and $saved.normal.bottom -eq $defaultBounds.Bottom
+        } 'saved reset placement'
+        Write-Host "PASS. Tray Reset from $mode shows the window at default bounds and saves them."
+    }
+    [WtmTrayDragProbe]::Menu($window, 'Exit')
     if (-not $process.WaitForExit(5000) -or $process.ExitCode -ne 0) { throw 'Tray Exit did not close cleanly' }
     if ([WtmTrayDragProbe]::HasIcon($window, 1)) { throw 'Notification icon remains after Exit' }
     Write-Host 'PASS. Tray callback opens a real mouse-operated menu. Hide, Show, selection restore, and Exit work. Exit removes the icon.'
+    $process.Dispose()
+    $process = [Diagnostics.Process]::Start($start)
+    Wait-For { $script:window = [WtmTrayDragProbe]::Find([uint32]$process.Id); $window -ne [IntPtr]::Zero } 'restarted fixture'
+    $restored = [WtmTrayDragProbe]::Bounds($window)
+    if ($restored.Left -ne $defaultBounds.Left -or $restored.Top -ne $defaultBounds.Top -or $restored.Right -ne $defaultBounds.Right -or $restored.Bottom -ne $defaultBounds.Bottom) { throw 'Restart did not retain reset bounds' }
+    Write-Host 'PASS. Reset bounds survive app restart.'
 } finally {
     if ($null -ne $process -and -not $process.HasExited) {
         if ($window -ne [IntPtr]::Zero) { [void][WtmTrayDragProbe]::PostMessage($window, 0x10, [IntPtr]::Zero, [IntPtr]::Zero) }
