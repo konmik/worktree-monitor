@@ -41,7 +41,7 @@ Registrations live in `~/.config/wtm/config.json`. On Windows, this is `%USERPRO
 
 The live window saves display order in `config.order.json` and hidden worktrees in `config.visibility.json` beside the registration file. Neither changes which repositories are registered. A failed save shows a warning and leaves the previous settings in place.
 
-The window saves its size and position separately in `config.placement.json`. Startup restores the saved window unless its screen changed or its bounds no longer fit. Closing a minimized window preserves its normal bounds and does not reopen it minimized.
+The window saves its size and position separately in `config.placement.json`. Startup restores the saved window unless its screen changed or its bounds no longer overlap the screen's work area. Closing a minimized window preserves its normal bounds and does not reopen it minimized.
 
 ## Verify
 

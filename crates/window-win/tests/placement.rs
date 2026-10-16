@@ -25,7 +25,7 @@ fn literal_bounds_and_negative_monitor_origins_are_preserved() {
 #[test]
 fn restore_requires_the_same_monitor_and_full_screen_size() {
     let saved = placement(ShowState::Normal);
-    let moved = monitor("\\\\.\\DISPLAY2", Rect::new(-1600, -120, 320, 1080), Rect::new(-1600, -80, 320, 1040));
+    let moved = monitor("\\\\.\\DISPLAY2", Rect::new(0, -120, 1920, 1080), Rect::new(0, -80, 1920, 1040));
     let resized = monitor("\\\\.\\DISPLAY2", Rect::new(-1920, -120, 1, 1080), saved.monitor.work_area);
     let missing = monitor("\\\\.\\DISPLAY3", saved.monitor.full_bounds, saved.monitor.work_area);
     assert!(saved.restore_for(&moved).is_none());
@@ -34,10 +34,42 @@ fn restore_requires_the_same_monitor_and_full_screen_size() {
 }
 
 #[test]
-fn restore_rejects_a_rectangle_that_does_not_fit() {
+fn restore_preserves_windows_partly_outside_each_work_area_edge() {
+    let screen = monitor("DISPLAY1", Rect::new(0, 0, 1920, 1080), Rect::new(0, 40, 1920, 1040));
+    for normal in [
+        Rect::new(-200, 100, 400, 700),
+        Rect::new(100, -200, 700, 400),
+        Rect::new(1800, 100, 2400, 700),
+        Rect::new(100, 900, 700, 1500),
+    ] {
+        let saved = Placement::new(normal, screen.clone(), ShowState::Normal);
+        assert_eq!(saved.restore_for(&screen).unwrap().normal, normal);
+    }
+}
+
+#[test]
+fn restore_rejects_windows_fully_outside_or_only_touching_the_work_area() {
+    let screen = monitor("DISPLAY1", Rect::new(0, 0, 1920, 1080), Rect::new(0, 40, 1920, 1040));
+    for normal in [
+        Rect::new(-700, 100, -100, 700),
+        Rect::new(100, -700, 700, -100),
+        Rect::new(2000, 100, 2600, 700),
+        Rect::new(100, 1100, 700, 1700),
+        Rect::new(-600, 100, 0, 700),
+        Rect::new(100, -560, 700, 40),
+        Rect::new(1920, 100, 2520, 700),
+        Rect::new(100, 1040, 700, 1640),
+    ] {
+        let saved = Placement::new(normal, screen.clone(), ShowState::Normal);
+        assert!(saved.restore_for(&screen).is_none(), "{normal:?}");
+    }
+}
+
+#[test]
+fn work_area_changes_preserve_windows_with_visible_overlap() {
     let saved = placement(ShowState::Normal);
     let smaller_work_area = monitor("\\\\.\\DISPLAY2", saved.monitor.full_bounds, Rect::new(-1920, 0, -100, 1040));
-    assert!(saved.restore_for(&smaller_work_area).is_none());
+    assert_eq!(saved.restore_for(&smaller_work_area).unwrap().normal, Rect::new(-1800, -80, -1200, 520));
 }
 
 #[test]

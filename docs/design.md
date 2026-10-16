@@ -56,7 +56,7 @@ Display order lives in a separate window-library model. Stable Git common-direct
 
 Hidden worktrees use the same stable identity pairs in a separate `config.visibility.json` file. Filtering changes the displayed rows, not monitoring, repository totals, or error health. Show all is a temporary display override that leaves saved hidden settings intact. Unhide clears one worktree's hidden setting.
 
-Window placement has its own model and `config.placement.json` file. It records normal window bounds and the associated monitor's geometry. Startup restores fitting bounds when the monitor's pixel dimensions are unchanged. A work-area change alone does not discard a placement that still fits. Normal bounds survive maximization and minimization, and startup never restores a minimized window.
+Window placement has its own model and `config.placement.json` file. It records normal window bounds and the associated monitor's geometry. Startup restores bounds with visible overlap when the monitor's identity and pixel dimensions are unchanged. A work-area change alone does not discard a placement that still overlaps the work area. Normal bounds survive maximization and minimization, and startup never restores a minimized window.
 
 ## Evidence and tradeoffs
 

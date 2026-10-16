@@ -80,7 +80,8 @@ impl Placement {
         if !self.is_valid() || !current.is_valid() || self.monitor.identity != current.identity
             || self.monitor.full_bounds.width() != current.full_bounds.width()
             || self.monitor.full_bounds.height() != current.full_bounds.height()
-            || !self.normal.fits_within(current.work_area) {
+            || self.normal.right <= current.work_area.left || self.normal.left >= current.work_area.right
+            || self.normal.bottom <= current.work_area.top || self.normal.top >= current.work_area.bottom {
             return None;
         }
         Some(RestorePlacement { normal: self.normal, state: self.state })

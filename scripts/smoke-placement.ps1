@@ -65,14 +65,14 @@ $script:process = $null
 try {
     $area = [WtmPlacementProbe+Rect]::new()
     if (-not [WtmPlacementProbe]::SystemParametersInfo(0x0030, 0, [ref]$area, 0)) { throw 'Work area unavailable' }
-    foreach ($scenario in @('inside work area', 'across right edge', 'behind taskbar', 'across top edge', 'across bottom edge', 'fully offscreen')) {
+    foreach ($scenario in @('inside work area', 'across right edge', 'across left edge', 'across top edge', 'across bottom edge', 'fully offscreen')) {
         Start-Window
         $width = 640
         $height = 540
         $x = $area.Left + 100
         $y = $area.Top + 100
         if ($scenario -eq 'across right edge') { $x = $area.Right - 200 }
-        if ($scenario -eq 'behind taskbar') { $x = $area.Left - 20 }
+        if ($scenario -eq 'across left edge') { $x = $area.Left - 20 }
         if ($scenario -eq 'across top edge') { $y = $area.Top - 20 }
         if ($scenario -eq 'across bottom edge') { $y = $area.Bottom - 200 }
         if ($scenario -eq 'fully offscreen') { $x = $area.Right + 20 }
