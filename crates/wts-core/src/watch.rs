@@ -135,6 +135,9 @@ fn forward_event(result: Result<Event, notify::Error>, sender: &Sender<Result<Ev
     }
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PlanPhase { Deferred, Ready }
+
 pub(crate) struct WatchBoundary {
     watcher: Option<RecommendedWatcher>,
     sender: Sender<Result<Event, notify::Error>>,
@@ -145,9 +148,12 @@ pub(crate) struct WatchBoundary {
     plans: HashMap<WorktreeKey, Arc<WorktreeWatchPlan>>,
     plan_dirty: HashSet<WorktreeKey>,
     plan_errors: HashSet<WorktreeKey>,
+    plan_phase: PlanPhase,
     retry_due: Option<Instant>,
     force_rebuild: bool,
     degraded: bool,
+    #[cfg(test)]
+    pub(crate) before_plan: Option<Box<dyn FnMut() + Send>>,
 }
 
 impl WatchBoundary {
@@ -163,9 +169,12 @@ impl WatchBoundary {
             plans: HashMap::new(),
             plan_dirty: HashSet::new(),
             plan_errors: HashSet::new(),
+            plan_phase: PlanPhase::Ready,
             retry_due: None,
             force_rebuild: false,
             degraded: false,
+            #[cfg(test)]
+            before_plan: None,
         };
         let now = Instant::now();
         boundary.create_watcher(now);
@@ -173,7 +182,25 @@ impl WatchBoundary {
     }
 
     pub(crate) fn reconcile(&mut self, targets: &WatchTargets, now: Instant) -> WatchStatus {
+        self.plan_phase = PlanPhase::Ready;
+        if self.force_rebuild || self.watcher.is_none() { self.plan_dirty.extend(self.plans.keys().cloned()); }
         self.refresh_plans(targets);
+        self.reconcile_roots(targets, now)
+    }
+
+    pub(crate) fn prepare(&mut self, targets: &WatchTargets, now: Instant) -> WatchStatus {
+        self.plan_phase = PlanPhase::Deferred;
+        if self.force_rebuild || self.watcher.is_none() { self.plan_dirty.extend(self.plans.keys().cloned()); }
+        for (key, path) in &targets.worktrees {
+            if !self.plans.contains_key(key) {
+                self.plans.insert(key.clone(), Arc::new(fallback_plan(path)));
+                self.plan_dirty.insert(key.clone());
+            }
+        }
+        self.reconcile_roots(targets, now)
+    }
+
+    fn reconcile_roots(&mut self, targets: &WatchTargets, now: Instant) -> WatchStatus {
         self.publish_policy(targets);
         let desired = self.registrations(targets);
         let planning_failed = !self.plan_errors.is_empty();
@@ -196,6 +223,10 @@ impl WatchBoundary {
                     .is_some_and(|desired| desired.mode != registration.mode))
                 .map(|(path, _)| path.clone())
                 .collect();
+            if !replacements.is_empty() {
+                full = true;
+                self.plan_dirty.extend(self.plans.keys().cloned());
+            }
             for path in replacements {
                 if watcher.unwatch(&path).is_err() {
                     failed = true;
@@ -253,6 +284,8 @@ impl WatchBoundary {
     }
 
     fn refresh_plan(&mut self, key: &WorktreeKey, path: &Path) {
+        #[cfg(test)]
+        if let Some(before_plan) = &mut self.before_plan { before_plan(); }
         let plan = git::watch_paths(path, &self.cancel).map(|paths| plan_for(path, &paths));
         match plan {
             Ok(plan) => {
@@ -268,6 +301,7 @@ impl WatchBoundary {
     }
 
     fn refresh_dirty_plans(&mut self) {
+        if self.plan_phase == PlanPhase::Deferred { return; }
         let dirty: Vec<_> = self.plan_dirty.iter().cloned().collect();
         if dirty.is_empty() { return; }
         for key in dirty { self.refresh_plan(&key, &key.path); }
@@ -1103,6 +1137,56 @@ mod tests {
     }
 
     #[test]
+    fn full_recovery_reloads_ignore_rules_changed_while_disconnected() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("repo");
+        std::fs::create_dir_all(root.join("ignored/nested")).unwrap();
+        let cancel = Cancel::new();
+        crate::process::checked(Some(&root), &crate::process::args(&["init", "--quiet"]), &cancel).unwrap();
+        std::fs::write(root.join(".gitignore"), b"ignored/\n").unwrap();
+        let key = WorktreeKey::new(&root.join(".git"), &root);
+        let targets = WatchTargets {
+            config: directory.path().join("config.json"), launch: None,
+            repositories: Vec::new(), worktrees: vec![(key.clone(), root.clone())],
+            global_excludes: Vec::new(),
+        };
+        let mut boundary = WatchBoundary::new(cancel);
+        boundary.reconcile(&targets, Instant::now());
+        let changed = root.join("ignored/nested/visible.txt");
+        let kind = EventKind::Modify(ModifyKind::Data(DataChange::Content));
+        assert!(!boundary.event_policy.read().unwrap().allows(&changed, &kind));
+        boundary.watcher = None;
+        std::fs::write(root.join(".gitignore"), b"").unwrap();
+        boundary.sender.send(Err(notify::Error::generic("lost events"))).unwrap();
+        assert!(boundary.drain(Instant::now()).full);
+        assert!(!boundary.reconcile(&targets, Instant::now()).degraded);
+        let policy = boundary.event_policy.read().unwrap().clone();
+        assert!(policy.allows(&changed, &kind));
+        std::fs::write(&changed, b"visible after recovery\n").unwrap();
+        forward_event(Ok(Event::new(kind).add_path(changed)), &boundary.sender, &boundary.cancel, &policy);
+        assert!(boundary.drain(Instant::now()).worktrees.contains(&key));
+    }
+
+    #[test]
+    fn replacing_native_watch_mode_requests_full_recovery() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = normalize(directory.path());
+        let config = directory.path().join("config.json");
+        let mut boundary = WatchBoundary::new(Cancel::new());
+        boundary.watcher.as_mut().unwrap().watch(&root, RecursiveMode::Recursive).unwrap();
+        boundary.roots.insert(root.clone(), Registration {
+            mode: RecursiveMode::Recursive, targets: vec![Target::Config(config.clone())],
+        });
+        let status = boundary.reconcile(&WatchTargets {
+            config, launch: None, repositories: Vec::new(), worktrees: Vec::new(),
+            global_excludes: Vec::new(),
+        }, Instant::now());
+        assert!(status.full);
+        assert!(!status.degraded);
+        assert_eq!(boundary.roots[&root].mode, RecursiveMode::NonRecursive);
+    }
+
+    #[test]
     fn forced_rebuild_reports_full_reconcile() {
         let mut boundary = WatchBoundary::new(Cancel::new());
         boundary.force_rebuild = true;
@@ -1250,6 +1334,29 @@ mod tests {
         let policy = boundary.event_policy.read().unwrap().clone();
         assert_eq!(policy.filter(Event::new(EventKind::Modify(ModifyKind::Any))
             .add_path(changed.clone())).unwrap().paths, vec![changed]);
+    }
+
+    #[test]
+    fn deferred_plans_keep_nested_startup_events_without_git_planning() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("repo");
+        std::fs::create_dir_all(root.join("nested/deep")).unwrap();
+        let key = WorktreeKey::new(&root.join(".git"), &root);
+        let targets = WatchTargets {
+            config: directory.path().join("config.json"), launch: None,
+            repositories: Vec::new(), worktrees: vec![(key.clone(), root.clone())],
+            global_excludes: Vec::new(),
+        };
+        let mut boundary = WatchBoundary::new(Cancel::new());
+        boundary.before_plan = Some(Box::new(|| panic!("detailed planning ran before initial counts")));
+        assert!(!boundary.prepare(&targets, Instant::now()).degraded);
+        let changed = root.join("nested/deep/startup.txt");
+        std::fs::write(&changed, b"startup\n").unwrap();
+        boundary.sender.send(Ok(Event::new(EventKind::Create(CreateKind::File))
+            .add_path(changed))).unwrap();
+        let batch = boundary.drain(Instant::now());
+        assert!(batch.worktrees.contains(&key));
+        assert!(boundary.plan_dirty.contains(&key));
     }
 
     #[test]

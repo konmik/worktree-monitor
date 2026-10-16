@@ -247,8 +247,13 @@ impl Coordinator {
     fn reconcile_watches(&mut self) {
         let now = Instant::now();
         if !self.watch_dirty && !self.watch.next_retry().is_some_and(|retry| now >= retry) { return; }
-        let status = self.watch.reconcile(&self.watch_targets(), now);
-        self.watch_dirty = false;
+        let deferred = self.worktrees.values().any(|state| state.last.is_none());
+        let status = if deferred {
+            self.watch.prepare(&self.watch_targets(), now)
+        } else {
+            self.watch.reconcile(&self.watch_targets(), now)
+        };
+        self.watch_dirty = deferred;
         if status.degraded {
             self.monitors_failed = true;
         } else if status.full || self.monitors_failed {
@@ -279,7 +284,10 @@ impl Coordinator {
             self.passes.changed.extend(self.worktrees.keys().cloned());
             self.discoveries.extend(self.repo_order.iter().cloned());
         }
-        if batch.full { self.discoveries.extend(self.repo_order.iter().cloned()); }
+        if batch.full {
+            self.discoveries.extend(self.repo_order.iter().cloned());
+            self.passes.changed.extend(self.worktrees.keys().cloned());
+        }
         if batch.topology || batch.full || !batch.plans.is_empty() { self.watch_dirty = true; }
     }
 
@@ -360,6 +368,7 @@ impl Coordinator {
             self.publish();
             self.receive_watch();
         }
+        if !self.cancel.is_cancelled() { self.reconcile_watches(); }
         if worked { self.passes.finish(Instant::now()); }
     }
 
@@ -656,13 +665,49 @@ mod tests {
     }
 
     #[test]
-    fn monitor_repair_does_not_schedule_unchanged_worktrees() {
-        let latest = Arc::new(Mutex::new(None));
-        let mut coordinator = Coordinator::new(Service::at("config.json"), None, Cancel::new(), latest);
-        let key = WorktreeKey::new(Path::new("repo/.git"), Path::new("repo"));
-        coordinator.worktrees.insert(key, WorktreeState { path: PathBuf::from("repo"), last: None, activity: None });
+    fn startup_publishes_counts_before_detailed_plans_and_retains_edits_during_planning() {
+        let (directory, mut coordinator) = scan_fixture(2);
+        let latest = coordinator.latest.clone();
+        let changed = directory.path().join("repo-0/startup.txt");
+        let edited = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let edited_by_plan = edited.clone();
+        coordinator.watch.before_plan = Some(Box::new(move || {
+            let update = latest.lock().unwrap().clone().unwrap();
+            assert_eq!(update.snapshot.repos.len(), 2);
+            assert!(update.snapshot.repos.iter().all(|repo| repo.worktrees.as_ref().is_ok_and(|trees|
+                trees.len() == 1 && trees[0].result.is_ok())));
+            if !edited_by_plan.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                std::fs::write(&changed, b"during startup\n").unwrap();
+            }
+        }));
+        coordinator.scan_pass();
+        assert!(edited.load(std::sync::atomic::Ordering::SeqCst));
+        let common = coordinator.repo_order[0].clone();
+        let key = coordinator.repos[&common].worktrees[0].clone();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !coordinator.passes.changed.contains(&key) && Instant::now() < deadline {
+            coordinator.receive_watch();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(coordinator.passes.changed.contains(&key));
+        coordinator.scan_pass();
+        assert_eq!(coordinator.snapshot.repos[0].worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts.source.additions, 1);
+    }
+
+    #[test]
+    fn monitor_repair_refreshes_counts_after_missed_events() {
+        let (_directory, mut coordinator) = scan_fixture(1);
+        coordinator.scan_pass();
+        let key = coordinator.worktrees.keys().next().unwrap().clone();
+        assert_eq!(coordinator.snapshot.repos[0].worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts.source.additions, 0);
+        coordinator.watch = watch::WatchBoundary::new(coordinator.cancel.clone());
+        coordinator.discoveries.clear();
+        coordinator.passes.changed.clear();
+        std::fs::write(coordinator.worktrees[&key].path.join("missed.txt"), b"one\ntwo\n").unwrap();
         coordinator.enqueue(watch::WatchBatch { full: true, ..Default::default() });
-        assert!(coordinator.passes.changed.is_empty());
+        assert!(coordinator.passes.changed.contains(&key));
+        coordinator.scan_pass();
+        assert_eq!(coordinator.snapshot.repos[0].worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts.source.additions, 2);
     }
 
     #[test]

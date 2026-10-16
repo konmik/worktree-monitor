@@ -7,7 +7,8 @@ param(
     [switch]$ShowAll,
     [switch]$VerifyScrollbar,
     [int]$DirectoryCount = 0,
-    [switch]$VerifyRefresh
+    [switch]$VerifyRefresh,
+    [switch]$VerifySerialGit
 )
 
 $ErrorActionPreference = 'Stop'
@@ -129,7 +130,12 @@ try {
         & $CliBinary add $repo
         if ($LASTEXITCODE -ne 0) { throw 'Visual fixture registration failed' }
     }
-    $process = Start-Process -FilePath $Binary -WorkingDirectory $fixtureHome -NoNewWindow -PassThru
+    $start = [Diagnostics.ProcessStartInfo]::new($Binary)
+    $start.UseShellExecute = $false
+    $start.WorkingDirectory = $fixtureHome
+    $gitTrace = Join-Path $fixture 'git-trace.jsonl'
+    if ($VerifySerialGit) { $start.Environment['GIT_TRACE2_EVENT'] = $gitTrace }
+    $process = [Diagnostics.Process]::Start($start)
     $handle = [IntPtr]::Zero
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
     do {
@@ -362,6 +368,23 @@ foreach (`$item in `$items) { `$item.Current.Name }
     if (-not [WtsCapture]::PostMessage($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'Close failed' }
     if (-not $process.WaitForExit(10000)) { throw 'Captured window did not close' }
     if ($process.ExitCode -ne 0) { throw 'Captured app exited unsuccessfully' }
+    if ($VerifySerialGit) {
+        $activeGit = [Collections.Generic.HashSet[string]]::new()
+        $maximumGit = 0
+        $countScans = 0
+        foreach ($line in [IO.File]::ReadLines($gitTrace)) {
+            $event = $line | ConvertFrom-Json
+            if ($event.event -eq 'start' -and $event.argv -contains 'core.fsmonitor=false') {
+                [void]$activeGit.Add($event.sid)
+                $maximumGit = [Math]::Max($maximumGit, $activeGit.Count)
+                if ($event.argv -contains 'diff' -and $event.argv -contains '--numstat') { $countScans++ }
+            } elseif ($event.event -eq 'exit') {
+                [void]$activeGit.Remove($event.sid)
+            }
+        }
+        if ($maximumGit -ne 1 -or $countScans -lt 3) { throw 'Git checks did not run sequentially or count scans are missing' }
+        Write-Output 'PASS. Git trace confirms sequential worktree checks.'
+    }
 } finally {
     $env:HOME = $oldHome
     $env:USERPROFILE = $oldProfile

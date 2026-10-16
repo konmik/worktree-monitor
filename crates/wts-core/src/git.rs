@@ -1,7 +1,6 @@
 use crate::process::{self, args};
 use crate::{Cancel, Counts, Error, ErrorKind, Head, LineCounts, RepoEntry, Snapshot, WorktreeEntry, WorktreeStats};
 use std::collections::HashSet;
-use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -135,20 +134,24 @@ fn watch_directories(tree: &Path, tracked: &[PathBuf], cancel: &Cancel)
     -> Result<(Vec<PathBuf>, HashSet<PathBuf>), Error> {
     let mut directories = vec![PathBuf::new()];
     let mut ignored_directories = HashSet::new();
-    let mut pending = VecDeque::from([PathBuf::new()]);
-    while let Some(relative) = pending.pop_front() {
-        let directory = tree.join(&relative);
-        let entries = std::fs::read_dir(&directory)
-            .map_err(|error| Error::io(format!("Cannot read {}", directory.display()), error))?;
+    let mut frontier = vec![PathBuf::new()];
+    while !frontier.is_empty() {
         let mut children = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|error| Error::io(format!("Cannot read {}", directory.display()), error))?;
-            if !entry.file_type().map_err(|error| Error::io(format!("Cannot read {}", entry.path().display()), error))?.is_dir() {
-                continue;
+        for relative in frontier.drain(..) {
+            if cancel.is_cancelled() { return Err(Error::new(ErrorKind::Cancelled, "Git scan cancelled")); }
+            let directory = tree.join(&relative);
+            let entries = std::fs::read_dir(&directory)
+                .map_err(|error| Error::io(format!("Cannot read {}", directory.display()), error))?;
+            for entry in entries {
+                if cancel.is_cancelled() { return Err(Error::new(ErrorKind::Cancelled, "Git scan cancelled")); }
+                let entry = entry.map_err(|error| Error::io(format!("Cannot read {}", directory.display()), error))?;
+                if !entry.file_type().map_err(|error| Error::io(format!("Cannot read {}", entry.path().display()), error))?.is_dir() {
+                    continue;
+                }
+                let name = entry.file_name();
+                if relative.as_os_str().is_empty() && name == ".git" { continue; }
+                children.push(relative.join(name));
             }
-            let name = entry.file_name();
-            if relative.as_os_str().is_empty() && name == ".git" { continue; }
-            children.push(relative.join(name));
         }
         children.sort();
         let ignored = check_ignored_directories(tree, &children, cancel)?;
@@ -158,7 +161,7 @@ fn watch_directories(tree: &Path, tracked: &[PathBuf], cancel: &Cancel)
                 ignored_directories.insert(child.clone());
             }
             if !ignored.contains(&child) || tracked.iter().any(|file| file.starts_with(&child)) {
-                pending.push_back(child);
+                frontier.push(child);
             }
         }
     }
@@ -513,6 +516,36 @@ mod tests {
         assert!(paths.tracked.contains(&PathBuf::from("ignored/noise/deep/tracked.txt")));
         assert!(!paths.tracked.contains(&PathBuf::from("untracked.txt")));
         assert!(!paths.directories.contains(&PathBuf::from("ignored/disposable/hidden")));
+    }
+
+    #[test]
+    fn watch_paths_preserves_broad_directory_coverage_and_prunes_ignored_children() {
+        let directory = tempfile::tempdir().unwrap();
+        let tree = directory.path();
+        let cancel = Cancel::new();
+        process::checked(Some(tree), &args(&["init", "--quiet"]), &cancel).unwrap();
+        std::fs::write(tree.join(".gitignore"), b"ignored/\n").unwrap();
+        for index in 0..48 {
+            std::fs::create_dir_all(tree.join(format!("branch-{index}/visible/deep"))).unwrap();
+            std::fs::create_dir_all(tree.join(format!("branch-{index}/ignored/hidden"))).unwrap();
+        }
+        let paths = watch_paths(tree, &cancel).unwrap();
+        assert_eq!(paths.directories.len(), 1 + 48 * 4);
+        assert_eq!(paths.ignored_directories.len(), 48);
+        for index in 0..48 {
+            assert!(paths.directories.contains(&PathBuf::from(format!("branch-{index}/visible/deep"))));
+            assert!(paths.ignored_directories.contains(&PathBuf::from(format!("branch-{index}/ignored"))));
+            assert!(!paths.directories.contains(&PathBuf::from(format!("branch-{index}/ignored/hidden"))));
+        }
+    }
+
+    #[test]
+    fn cancelled_directory_walk_stops_before_reading_the_next_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let cancel = Cancel::new();
+        cancel.cancel();
+        let error = watch_directories(&directory.path().join("missing"), &[], &cancel).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Cancelled);
     }
 
     #[test]
