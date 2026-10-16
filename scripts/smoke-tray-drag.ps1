@@ -53,6 +53,9 @@ $extra = @'
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern uint RegisterWindowMessage(string name);
     [DllImport("user32.dll")] public static extern bool GetMenuItemRect(IntPtr window, IntPtr menu, uint item, out Rect rect);
     [DllImport("user32.dll")] public static extern int GetMenuItemCount(IntPtr menu);
+    [DllImport("user32.dll")] public static extern IntPtr GetSubMenu(IntPtr menu, int index);
+    [DllImport("user32.dll")] public static extern uint GetMenuState(IntPtr menu, uint item, uint flags);
+    [DllImport("user32.dll")] public static extern bool GetLayeredWindowAttributes(IntPtr window, out uint color, out byte alpha, out uint flags);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetMenuStringW(IntPtr menu, uint item, StringBuilder text, int count, uint flags);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr window, int command);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr window);
@@ -83,7 +86,35 @@ $extra = @'
         var info = new GuiInfo { Size = (uint)Marshal.SizeOf(typeof(GuiInfo)) };
         return GetGUIThreadInfo(thread, ref info) && info.MenuOwner == window && (info.Flags & 4) != 0;
     }
-    public static void Menu(IntPtr window, string caption) {
+    public static byte Alpha(IntPtr window) {
+        uint color, flags;
+        byte alpha;
+        if (!GetLayeredWindowAttributes(window, out color, out alpha, out flags)) throw new InvalidOperationException("Fixture opacity unavailable");
+        return alpha;
+    }
+    public static IntPtr FindPopup(uint pid, IntPtr menu) {
+        IntPtr popup = IntPtr.Zero;
+        EnumWindows((handle, data) => {
+            uint owner;
+            GetWindowThreadProcessId(handle, out owner);
+            var name = new StringBuilder(128);
+            GetClassName(handle, name, name.Capacity);
+            if (owner == pid && IsWindowVisible(handle) && name.ToString() == "#32768" &&
+                (menu == IntPtr.Zero || SendMessage(handle, 0x01e1, IntPtr.Zero, IntPtr.Zero) == menu)) { popup = handle; return false; }
+            return true;
+        }, IntPtr.Zero);
+        return popup;
+    }
+    public static void ClickMenuItem(IntPtr popup, IntPtr menu, uint index) {
+        Rect item;
+        if (!GetMenuItemRect(IntPtr.Zero, menu, index, out item)) throw new InvalidOperationException("Fixture menu item bounds unavailable");
+        int x = (item.Left + item.Right) / 2, y = (item.Top + item.Bottom) / 2;
+        if (!SetCursorPos(x, y)) throw new InvalidOperationException("Cannot move to fixture menu item");
+        WaitFor(() => WindowFromPoint(new Point { X = x, Y = y }) == popup, "Menu click target is not the fixture popup");
+        mouse_event(2, 0, 0, 0, UIntPtr.Zero);
+        mouse_event(4, 0, 0, 0, UIntPtr.Zero);
+    }
+    public static void Menu(IntPtr window, string caption, int opacity = 0, int expectedOpacity = 0) {
         var rect = Bounds(window);
         if (!PostMessage(window, 32811, Position(rect.Left + 40, rect.Top + 40), new IntPtr((1 << 16) | 123))) throw new InvalidOperationException("Cannot open fixture tray menu");
         WaitFor(() => HasMenu(window), "Fixture tray menu did not open");
@@ -91,14 +122,7 @@ $extra = @'
         uint pid;
         GetWindowThreadProcessId(window, out pid);
         WaitFor(() => {
-            EnumWindows((handle, data) => {
-                uint owner;
-                GetWindowThreadProcessId(handle, out owner);
-                var name = new StringBuilder(128);
-                GetClassName(handle, name, name.Capacity);
-                if (owner == pid && IsWindowVisible(handle) && name.ToString() == "#32768") { popup = handle; return false; }
-                return true;
-            }, IntPtr.Zero);
+            popup = FindPopup(pid, IntPtr.Zero);
             return popup != IntPtr.Zero;
         }, "Fixture popup window unavailable");
         var menu = SendMessage(popup, 0x01e1, IntPtr.Zero, IntPtr.Zero);
@@ -112,13 +136,22 @@ $extra = @'
             PostMessage(window, 0x001f, IntPtr.Zero, IntPtr.Zero);
             throw new InvalidOperationException("Fixture menu item unavailable: " + caption);
         }
-        Rect item;
-        if (!GetMenuItemRect(IntPtr.Zero, menu, (uint)index, out item)) throw new InvalidOperationException("Fixture menu item bounds unavailable");
-        int x = (item.Left + item.Right) / 2, y = (item.Top + item.Bottom) / 2;
-        if (!SetCursorPos(x, y)) throw new InvalidOperationException("Cannot move to fixture menu item");
-        WaitFor(() => WindowFromPoint(new Point { X = x, Y = y }) == popup, "Menu click target is not the fixture popup");
-        mouse_event(2, 0, 0, 0, UIntPtr.Zero);
-        mouse_event(4, 0, 0, 0, UIntPtr.Zero);
+        if (opacity != 0) {
+            var submenu = GetSubMenu(menu, index);
+            if (submenu == IntPtr.Zero || GetMenuItemCount(submenu) != 20) throw new InvalidOperationException("Opacity submenu must have twenty 5% steps");
+            for (uint i = 0; i < 20; i++) {
+                var text = new StringBuilder(128);
+                GetMenuStringW(submenu, i, text, text.Capacity, 0x400);
+                if (text.ToString() != ((i + 1) * 5) + "%") throw new InvalidOperationException("Opacity submenu step is incorrect");
+                if (((GetMenuState(submenu, i, 0x400) & 8) != 0) != ((i + 1) * 5 == expectedOpacity)) throw new InvalidOperationException("Current opacity is not the sole checked item");
+            }
+            ClickMenuItem(popup, menu, (uint)index);
+            IntPtr child = IntPtr.Zero;
+            WaitFor(() => { child = FindPopup(pid, submenu); return child != IntPtr.Zero; }, "Opacity submenu did not open");
+            ClickMenuItem(child, submenu, (uint)(opacity / 5 - 1));
+        } else {
+            ClickMenuItem(popup, menu, (uint)index);
+        }
         WaitFor(() => !IsWindow(popup), "Fixture popup did not close after selection");
     }
 
@@ -216,6 +249,17 @@ try {
     Wait-For { -not [WtmTrayDragProbe]::IsWindowVisible($window) } 'second tray Hide action'
     [WtmTrayDragProbe]::Menu($window, 'Show')
     Wait-For { [WtmTrayDragProbe]::IsWindowVisible($window) } 'tray Show action'
+    $selectedOpacity = 20
+    foreach ($percent in @(5, 35, 100, 40)) {
+        [WtmTrayDragProbe]::Menu($window, 'Opacity', $percent, $selectedOpacity)
+        $selectedOpacity = $percent
+        [void][WtmTrayDragProbe]::SetCursorPos($work.Right - 10, $work.Top + 10)
+        Wait-For { [WtmTrayDragProbe]::Alpha($window) -eq [Math]::Floor($percent * 255 / 100) } "idle opacity $percent%"
+        $bounds = [WtmTrayDragProbe]::Bounds($window)
+        [void][WtmTrayDragProbe]::SetCursorPos($bounds.Left + 30, $bounds.Top + 30)
+        Wait-For { [WtmTrayDragProbe]::Alpha($window) -eq 255 } 'full opacity on hover'
+        Write-Host "PASS. Opacity submenu highlights the current value, selects $percent%, and keeps full opacity on hover."
+    }
     $defaultBounds = $null
     foreach ($mode in @('normal', 'hidden', 'minimized', 'maximized')) {
         if (-not [WtmTrayDragProbe]::SetWindowPos($window, [IntPtr](-1), $work.Left + 80, $work.Top + 80, 640, 300, 0x10)) { throw 'Cannot move fixture before Reset' }
@@ -251,6 +295,10 @@ try {
     $restored = [WtmTrayDragProbe]::Bounds($window)
     if ($restored.Left -ne $defaultBounds.Left -or $restored.Top -ne $defaultBounds.Top -or $restored.Right -ne $defaultBounds.Right -or $restored.Bottom -ne $defaultBounds.Bottom) { throw 'Restart did not retain reset bounds' }
     Write-Host 'PASS. Reset bounds survive app restart.'
+    [void][WtmTrayDragProbe]::SetCursorPos($work.Right - 10, $work.Top + 10)
+    Wait-For { [WtmTrayDragProbe]::Alpha($window) -eq 102 } 'saved 40% opacity after restart'
+    [WtmTrayDragProbe]::Menu($window, 'Opacity', 40, 40)
+    Write-Host 'PASS. Selected opacity survives Reset and app restart and remains highlighted.'
 } finally {
     if ($null -ne $process -and -not $process.HasExited) {
         if ($window -ne [IntPtr]::Zero) { [void][WtmTrayDragProbe]::PostMessage($window, 0x10, [IntPtr]::Zero, [IntPtr]::Zero) }
