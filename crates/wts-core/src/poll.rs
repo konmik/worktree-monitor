@@ -280,7 +280,7 @@ impl Coordinator {
             self.discoveries.extend(self.repo_order.iter().cloned());
         }
         if batch.full { self.discoveries.extend(self.repo_order.iter().cloned()); }
-        if batch.topology || batch.full { self.watch_dirty = true; }
+        if batch.topology || batch.full || !batch.plans.is_empty() { self.watch_dirty = true; }
     }
 
     fn refresh_repositories(&mut self) {

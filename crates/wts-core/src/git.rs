@@ -1,5 +1,7 @@
 use crate::process::{self, args};
 use crate::{Cancel, Counts, Error, ErrorKind, Head, LineCounts, RepoEntry, Snapshot, WorktreeEntry, WorktreeStats};
+use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -103,6 +105,91 @@ pub(crate) struct DiscoveredTree {
 pub(crate) struct DiscoveredRepo {
     pub path: PathBuf,
     pub trees: Vec<DiscoveredTree>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct WatchPaths {
+    pub directories: Vec<PathBuf>,
+    pub ignored_directories: HashSet<PathBuf>,
+    pub tracked: Vec<PathBuf>,
+}
+
+pub(crate) fn watch_paths(tree: &Path, cancel: &Cancel) -> Result<WatchPaths, Error> {
+    let tracked_output = process::checked(Some(tree), &args(&[
+        "ls-files", "--full-name", "-z", "--cached",
+    ]), cancel)?;
+    if !tracked_output.is_empty() && !tracked_output.ends_with(b"\0") {
+        return Err(invalid("Git tracked list is not NUL terminated"));
+    }
+    let mut tracked = Vec::new();
+    for bytes in tracked_output.split(|byte| *byte == 0).filter(|bytes| !bytes.is_empty()) {
+        tracked.push(relative_path(bytes)?);
+    }
+    tracked.sort();
+    tracked.dedup();
+    let (directories, ignored_directories) = watch_directories(tree, &tracked, cancel)?;
+    Ok(WatchPaths { directories, ignored_directories, tracked })
+}
+
+fn watch_directories(tree: &Path, tracked: &[PathBuf], cancel: &Cancel)
+    -> Result<(Vec<PathBuf>, HashSet<PathBuf>), Error> {
+    let mut directories = vec![PathBuf::new()];
+    let mut ignored_directories = HashSet::new();
+    let mut pending = VecDeque::from([PathBuf::new()]);
+    while let Some(relative) = pending.pop_front() {
+        let directory = tree.join(&relative);
+        let entries = std::fs::read_dir(&directory)
+            .map_err(|error| Error::io(format!("Cannot read {}", directory.display()), error))?;
+        let mut children = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|error| Error::io(format!("Cannot read {}", directory.display()), error))?;
+            if !entry.file_type().map_err(|error| Error::io(format!("Cannot read {}", entry.path().display()), error))?.is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            if relative.as_os_str().is_empty() && name == ".git" { continue; }
+            children.push(relative.join(name));
+        }
+        children.sort();
+        let ignored = check_ignored_directories(tree, &children, cancel)?;
+        for child in children {
+            directories.push(child.clone());
+            if ignored.contains(&child) {
+                ignored_directories.insert(child.clone());
+            }
+            if !ignored.contains(&child) || tracked.iter().any(|file| file.starts_with(&child)) {
+                pending.push_back(child);
+            }
+        }
+    }
+    directories.sort();
+    Ok((directories, ignored_directories))
+}
+
+fn check_ignored_directories(tree: &Path, directories: &[PathBuf], cancel: &Cancel)
+    -> Result<HashSet<PathBuf>, Error> {
+    if directories.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let mut input = Vec::new();
+    for directory in directories {
+        input.extend(git_input_path(directory)?);
+        input.push(0);
+    }
+    let output = process::run_with_input(Some(tree), &args(&[
+        "check-ignore", "--stdin", "-z", "--no-index",
+    ]), &input, cancel)?;
+    let output = process::success(output, &[0, 1])?;
+    output.split(|byte| *byte == 0)
+        .filter(|bytes| !bytes.is_empty()).map(relative_path).collect()
+}
+
+fn git_input_path(path: &Path) -> Result<Vec<u8>, Error> {
+    #[cfg(windows)]
+    { path.to_str().map(|path| path.replace('\\', "/").into_bytes())
+        .ok_or_else(|| invalid("Git path is not valid UTF-8")) }
+    #[cfg(not(windows))]
+    { Ok(std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()).to_vec()) }
 }
 
 pub(crate) fn worktrees(bytes: &[u8]) -> Result<Vec<ListedTree>, Error> {
@@ -234,6 +321,10 @@ pub(crate) fn global_sources(tree: &Path, cancel: &Cancel) -> Result<Vec<PathBuf
                 if let Some(value) = setting.next().filter(|value| !value.is_empty()) {
                     sources.push(source_path(origin.parent().unwrap_or(tree), path(value)?));
                 }
+            } else if key == b"core.attributesfile" {
+                if let Some(value) = setting.next().filter(|value| !value.is_empty()) {
+                    sources.push(source_path(tree, path(value)?));
+                }
             }
             sources.push(origin);
         }
@@ -268,7 +359,9 @@ pub(crate) fn global_source_candidates() -> Vec<PathBuf> {
         let xdg_config = std::env::var_os("XDG_CONFIG_HOME")
             .filter(|path| !path.is_empty()).map(PathBuf::from).unwrap_or_else(|| home_config.clone());
         sources.push(xdg_config.join("git/ignore"));
+        sources.push(xdg_config.join("git/attributes"));
         if xdg_config != home_config { sources.push(home_config.join("git/ignore")); }
+        if xdg_config != home_config { sources.push(home_config.join("git/attributes")); }
         sources.push(home.join(".gitconfig"));
         sources.push(xdg_config.join("git/config"));
         if xdg_config != home_config { sources.push(home_config.join("git/config")); }
@@ -392,5 +485,60 @@ mod tests {
         process::checked(Some(tree), &command, &cancel).unwrap();
         let sources = global_sources(tree, &cancel).unwrap();
         assert!(sources.iter().any(|source| crate::poll::normalize(source) == crate::poll::normalize(&included)));
+    }
+
+    #[test]
+    fn watch_paths_checks_ignores_before_descending_and_lists_cached_paths_only() {
+        let directory = tempfile::tempdir().unwrap();
+        let tree = directory.path().join("repo");
+        std::fs::create_dir(&tree).unwrap();
+        let cancel = Cancel::new();
+        process::checked(Some(&tree), &args(&["init", "--quiet"]), &cancel).unwrap();
+        std::fs::write(tree.join(".gitignore"), b"ignored/\n").unwrap();
+        std::fs::create_dir_all(tree.join("ignored/noise/deep")).unwrap();
+        std::fs::create_dir_all(tree.join("ignored/disposable/hidden/deep")).unwrap();
+        std::fs::create_dir(tree.join("empty")).unwrap();
+        std::fs::write(tree.join("ignored/noise/deep/tracked.txt"), b"tracked\n").unwrap();
+        process::checked(Some(&tree), &args(&["add", ".gitignore"]), &cancel).unwrap();
+        process::checked(Some(&tree), &args(&["add", "-f", "ignored/noise/deep/tracked.txt"]), &cancel).unwrap();
+        std::fs::write(tree.join("untracked.txt"), b"untracked\n").unwrap();
+        let paths = watch_paths(&tree, &cancel).unwrap();
+        assert!(paths.directories.contains(&PathBuf::from("empty")));
+        assert!(paths.directories.contains(&PathBuf::from("ignored")));
+        assert!(paths.directories.contains(&PathBuf::from("ignored/noise")));
+        assert!(paths.directories.contains(&PathBuf::from("ignored/noise/deep")));
+        assert!(paths.ignored_directories.contains(&PathBuf::from("ignored")));
+        assert!(paths.ignored_directories.contains(&PathBuf::from("ignored/noise")));
+        assert!(paths.tracked.contains(&PathBuf::from(".gitignore")));
+        assert!(paths.tracked.contains(&PathBuf::from("ignored/noise/deep/tracked.txt")));
+        assert!(!paths.tracked.contains(&PathBuf::from("untracked.txt")));
+        assert!(!paths.directories.contains(&PathBuf::from("ignored/disposable/hidden")));
+    }
+
+    #[test]
+    fn watch_paths_preserves_negated_directory_listing() {
+        let directory = tempfile::tempdir().unwrap();
+        let tree = directory.path().join("repo");
+        std::fs::create_dir(&tree).unwrap();
+        let cancel = Cancel::new();
+        process::checked(Some(&tree), &args(&["init", "--quiet"]), &cancel).unwrap();
+        std::fs::write(tree.join(".gitignore"), b"listed/*\n!listed/visible.txt\n").unwrap();
+        std::fs::create_dir_all(tree.join("listed/nested")).unwrap();
+        let paths = watch_paths(&tree, &cancel).unwrap();
+        assert!(paths.directories.contains(&PathBuf::from("listed")));
+        assert!(paths.directories.contains(&PathBuf::from("listed/nested")));
+        assert!(paths.ignored_directories.contains(&PathBuf::from("listed/nested")));
+    }
+
+    #[test]
+    fn configured_attributes_are_retained_as_monitoring_sources() {
+        let directory = tempfile::tempdir().unwrap();
+        let tree = directory.path();
+        let cancel = Cancel::new();
+        process::checked(Some(tree), &args(&["init", "--quiet"]), &cancel).unwrap();
+        process::checked(Some(tree), &args(&["config", "core.attributesFile", "ignored/rules"]), &cancel).unwrap();
+        let sources = global_sources(tree, &cancel).unwrap();
+        assert!(sources.iter().any(|source| crate::poll::normalize(source)
+            == crate::poll::normalize(&tree.join("ignored/rules"))));
     }
 }

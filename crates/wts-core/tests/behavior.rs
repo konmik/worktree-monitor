@@ -642,27 +642,36 @@ fn ignored_artifact_bursts_do_not_repeat_scans_and_real_edits_update() {
     let fixture = Fixture::new("sha1");
     fixture.write("tracked.txt", "before\n");
     fixture.write(".gitignore", "ignored/\n");
-    fixture.commit();
     let ignored = fixture.repo.join("ignored");
     fs::create_dir_all(&ignored).unwrap();
+    fixture.write("ignored/tracked.txt", "before\n");
+    git(&fixture.repo, &["add", "-f", "ignored/tracked.txt"]);
+    fixture.commit();
     fixture.service().add(&fixture.repo).unwrap();
-    let mut monitor = fixture.service().monitor().unwrap();
+    let mut monitor = fixture.service().monitor_from(fixture.repo.clone()).unwrap();
     wait_for(&monitor, |update| update.snapshot.repos.len() == 1
         && update.snapshot.repos[0].worktrees.as_ref().is_ok_and(|trees|
             trees[0].result.as_ref().is_ok_and(|stats| stats.counts == Counts::default()))
         && update.polling_time_last_minute > Duration::ZERO);
-    let before = settled_polling_time(&monitor);
+    settled_polling_time(&monitor);
+    thread::sleep(Duration::from_secs(11));
+    let before = monitor.latest().unwrap().polling_time_last_minute;
+    let before_generations: Vec<_> = monitor.latest().unwrap().scan_activities.iter()
+        .map(|activity| activity.generation).collect();
     for index in 0..100 {
         let artifact = ignored.join(format!("artifact-{index}.jsonl"));
         fs::write(&artifact, format!("ignored {index}\n")).unwrap();
         fs::write(&artifact, format!("rewritten {index}\n")).unwrap();
         if index % 5 == 4 { thread::sleep(Duration::from_millis(220)); }
     }
-    thread::sleep(Duration::from_millis(1200));
+    thread::sleep(Duration::from_secs(12));
     let after = monitor.latest().unwrap().polling_time_last_minute;
+    let after_generations: Vec<_> = monitor.latest().unwrap().scan_activities.iter()
+        .map(|activity| activity.generation).collect();
+    assert_eq!(after_generations, before_generations);
     assert!(after.saturating_sub(before) <= before,
         "ignored burst repeated more work than startup: {before:?} -> {after:?}");
-    fixture.write("tracked.txt", "before\nafter\n");
+    fixture.write("ignored/tracked.txt", "before\nafter\n");
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
         == source_counts(1, 0, 0), Duration::from_secs(18));

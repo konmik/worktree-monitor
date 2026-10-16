@@ -1,11 +1,17 @@
+use crate::git;
 use crate::poll::{normalize, WorktreeKey};
 use crate::Cancel;
 use notify::event::ModifyKind;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{mpsc, Arc, RwLock};
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
+
+#[path = "watch_plan.rs"]
+mod watch_plan;
+use watch_plan::{fallback_plan, plan_for, WorktreeWatchPlan};
 
 const MAX_DRAIN_EVENTS: usize = 128;
 pub(crate) const WATCH_RETRY: Duration = Duration::from_secs(5);
@@ -36,6 +42,9 @@ pub(crate) struct WatchBatch {
     pub(crate) topology: bool,
     pub(crate) full: bool,
     pub(crate) global_excludes: bool,
+    pub(crate) plans: HashSet<WorktreeKey>,
+    pub(crate) worktree_paths: HashMap<WorktreeKey, HashMap<PathBuf, EventKind>>,
+    pub(crate) force_worktrees: HashSet<WorktreeKey>,
 }
 
 impl WatchBatch {
@@ -43,6 +52,7 @@ impl WatchBatch {
         !self.config && !self.launch && self.repositories.is_empty() && self.discoveries.is_empty()
             && self.worktrees.is_empty() && !self.topology && !self.full
             && !self.global_excludes
+            && self.plans.is_empty()
     }
 }
 
@@ -59,12 +69,82 @@ pub(crate) struct WatchStatus {
     pub(crate) degraded: bool,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct EventPolicy {
+    worktrees: Vec<WorktreeEventPolicy>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WorktreeEventPolicy {
+    key: WorktreeKey,
+    root: PathBuf,
+    plan: Arc<WorktreeWatchPlan>,
+    protected: Vec<PathBuf>,
+}
+
+impl EventPolicy {
+    fn filter(&self, mut event: Event) -> Option<Event> {
+        if event.need_rescan() || event.paths.is_empty() {
+            return Some(event);
+        }
+        event.paths.retain(|path| self.allows(path, &event.kind));
+        (!event.paths.is_empty()).then_some(event)
+    }
+
+    fn allows(&self, path: &Path, kind: &EventKind) -> bool {
+        let path = normalize(&absolute(path));
+        let mut matching = self.worktrees.iter().filter(|worktree| path.starts_with(&worktree.root)).peekable();
+        matching.peek().is_none() || matching.any(|worktree| !ignored_by_plan(&path, kind, worktree))
+    }
+}
+
+fn ignored_by_plan(path: &Path, kind: &EventKind, worktree: &WorktreeEventPolicy) -> bool {
+    if worktree.protected.iter().any(|protected| {
+        path == protected || path.starts_with(protected)
+            || topology_event(kind) && protected.starts_with(path)
+    }) {
+        return false;
+    }
+    if !worktree.plan.ignored_directories.iter().any(|directory| {
+        path == directory || path.starts_with(directory)
+    }) {
+        return false;
+    }
+    if worktree.plan.tracked_files.contains(path)
+        || topology_event(kind) && worktree.plan.tracked_directories.contains(path)
+        || rule_file(path) && path.parent().is_some_and(|parent| worktree.plan.tracked_directories.contains(parent)) {
+        return false;
+    }
+    true
+}
+
+fn forward_event(result: Result<Event, notify::Error>, sender: &Sender<Result<Event, notify::Error>>,
+    cancel: &Cancel, policy: &EventPolicy) {
+    match result {
+        Err(error) => {
+            let _ = sender.send(Err(error));
+            cancel.wake();
+        }
+        Ok(event) => {
+            let event = if cfg!(windows) { policy.filter(event) } else { Some(event) };
+            if let Some(event) = event {
+                let _ = sender.send(Ok(event));
+                cancel.wake();
+            }
+        }
+    }
+}
+
 pub(crate) struct WatchBoundary {
     watcher: Option<RecommendedWatcher>,
     sender: Sender<Result<Event, notify::Error>>,
     receiver: Receiver<Result<Event, notify::Error>>,
     cancel: Cancel,
+    event_policy: Arc<RwLock<Arc<EventPolicy>>>,
     roots: HashMap<PathBuf, Registration>,
+    plans: HashMap<WorktreeKey, Arc<WorktreeWatchPlan>>,
+    plan_dirty: HashSet<WorktreeKey>,
+    plan_errors: HashSet<WorktreeKey>,
     retry_due: Option<Instant>,
     force_rebuild: bool,
     degraded: bool,
@@ -78,7 +158,11 @@ impl WatchBoundary {
             sender,
             receiver,
             cancel,
+            event_policy: Arc::new(RwLock::new(Arc::new(EventPolicy::default()))),
             roots: HashMap::new(),
+            plans: HashMap::new(),
+            plan_dirty: HashSet::new(),
+            plan_errors: HashSet::new(),
             retry_due: None,
             force_rebuild: false,
             degraded: false,
@@ -89,8 +173,11 @@ impl WatchBoundary {
     }
 
     pub(crate) fn reconcile(&mut self, targets: &WatchTargets, now: Instant) -> WatchStatus {
-        let desired = registrations(targets);
-        let changed = self.force_rebuild || self.watcher.is_none() || self.roots != desired;
+        self.refresh_plans(targets);
+        self.publish_policy(targets);
+        let desired = self.registrations(targets);
+        let planning_failed = !self.plan_errors.is_empty();
+        let changed = self.force_rebuild || self.watcher.is_none() || self.roots != desired || planning_failed;
         if !changed && !self.degraded {
             return WatchStatus { full: false, degraded: false };
         }
@@ -104,18 +191,20 @@ impl WatchBoundary {
         }
         let mut failed = self.watcher.is_none();
         if let Some(watcher) = self.watcher.as_mut() {
-            let stale: Vec<_> = self.roots.iter()
-                .filter(|(path, registration)| desired.get(*path) != Some(registration))
+            let replacements: Vec<_> = self.roots.iter()
+                .filter(|(path, registration)| desired.get(*path)
+                    .is_some_and(|desired| desired.mode != registration.mode))
                 .map(|(path, _)| path.clone())
                 .collect();
-            for path in stale {
+            for path in replacements {
                 if watcher.unwatch(&path).is_err() {
                     failed = true;
                 }
                 self.roots.remove(&path);
             }
             let additions: Vec<_> = desired.iter()
-                .filter(|(path, registration)| self.roots.get(*path) != Some(registration))
+                .filter(|(path, registration)| self.roots.get(*path)
+                    .is_none_or(|current| current.mode != registration.mode))
                 .map(|(path, registration)| (path.clone(), registration.clone()))
                 .collect();
             for (path, registration) in additions {
@@ -124,17 +213,106 @@ impl WatchBoundary {
                     Err(_) => { failed = true; full = true; }
                 }
             }
+            for (path, registration) in &desired {
+                if self.roots.get(path).is_some_and(|current| current.mode == registration.mode) {
+                    self.roots.insert(path.clone(), registration.clone());
+                }
+            }
+            let stale: Vec<_> = self.roots.iter()
+                .filter(|(path, _)| !desired.contains_key(*path))
+                .map(|(path, _)| path.clone())
+                .collect();
+            for path in stale {
+                if watcher.unwatch(&path).is_err() {
+                    failed = true;
+                }
+                self.roots.remove(&path);
+            }
         }
         if failed { full = true; }
         self.force_rebuild = failed;
         self.degraded = failed || self.watcher.is_none() || self.roots != desired;
-        if self.degraded {
+        if self.degraded || planning_failed {
             self.retry_due = Some(now + WATCH_RETRY);
         } else {
             self.retry_due = None;
             self.force_rebuild = false;
         }
         WatchStatus { full, degraded: self.degraded }
+    }
+
+    fn refresh_plans(&mut self, targets: &WatchTargets) {
+        let desired: HashSet<_> = targets.worktrees.iter().map(|(key, _)| key.clone()).collect();
+        self.plans.retain(|key, _| desired.contains(key));
+        self.plan_dirty.retain(|key| desired.contains(key));
+        self.plan_errors.retain(|key| desired.contains(key));
+        for (key, path) in &targets.worktrees {
+            if self.plans.contains_key(key) && !self.plan_dirty.contains(key) && !self.plan_errors.contains(key) { continue; }
+            self.refresh_plan(key, path);
+        }
+    }
+
+    fn refresh_plan(&mut self, key: &WorktreeKey, path: &Path) {
+        let plan = git::watch_paths(path, &self.cancel).map(|paths| plan_for(path, &paths));
+        match plan {
+            Ok(plan) => {
+                self.plans.insert(key.clone(), Arc::new(plan));
+                self.plan_errors.remove(key);
+            }
+            Err(_) => {
+                self.plans.insert(key.clone(), Arc::new(fallback_plan(path)));
+                self.plan_errors.insert(key.clone());
+            }
+        }
+        self.plan_dirty.remove(key);
+    }
+
+    fn refresh_dirty_plans(&mut self) {
+        let dirty: Vec<_> = self.plan_dirty.iter().cloned().collect();
+        if dirty.is_empty() { return; }
+        for key in dirty { self.refresh_plan(&key, &key.path); }
+        self.publish_plan_policy();
+    }
+
+    fn registrations(&self, targets: &WatchTargets) -> HashMap<PathBuf, Registration> {
+        registrations_with_plans(targets, &self.plans)
+    }
+
+    fn publish_policy(&self, targets: &WatchTargets) {
+        let mut worktrees = Vec::new();
+        for (key, path) in &targets.worktrees {
+            let Some(plan) = self.plans.get(key) else { continue; };
+            let mut protected = vec![normalize(&absolute(&path.join(".git"))), key.common.clone()];
+            protected.extend(targets.repositories.iter().cloned());
+            protected.extend(targets.global_excludes.iter().cloned());
+            protected.push(targets.config.clone());
+            if let Some(launch) = &targets.launch {
+                protected.extend(launch.ancestors().map(|ancestor| ancestor.join(".git")));
+            }
+            protected = protected.into_iter().map(|path| normalize(&absolute(&path))).collect();
+            protected.sort();
+            protected.dedup();
+            worktrees.push(WorktreeEventPolicy {
+                key: key.clone(), root: normalize(&absolute(path)), plan: plan.clone(), protected,
+            });
+        }
+        self.replace_policy(EventPolicy { worktrees });
+    }
+
+    fn publish_plan_policy(&self) {
+        let current = self.event_policy.read().map(|policy| policy.as_ref().clone()).unwrap_or_default();
+        let worktrees = current.worktrees.into_iter().filter_map(|mut worktree| {
+            let plan = self.plans.get(&worktree.key)?.clone();
+            worktree.plan = plan;
+            Some(worktree)
+        }).collect();
+        self.replace_policy(EventPolicy { worktrees });
+    }
+
+    fn replace_policy(&self, policy: EventPolicy) {
+        if let Ok(mut current) = self.event_policy.write() {
+            *current = Arc::new(policy);
+        }
     }
 
     pub(crate) fn drain(&mut self, now: Instant) -> WatchBatch {
@@ -152,6 +330,8 @@ impl WatchBoundary {
                 }
             }
         }
+        self.refresh_dirty_plans();
+        self.filter_ignored_batch(&mut batch);
         if drained == MAX_DRAIN_EVENTS { self.cancel.wake(); }
         if batch.full {
             self.force_rebuild = true;
@@ -161,14 +341,32 @@ impl WatchBoundary {
         batch
     }
 
+    fn filter_ignored_batch(&self, batch: &mut WatchBatch) {
+        let keys: Vec<_> = batch.worktrees.iter().cloned().collect();
+        for key in keys {
+            if batch.force_worktrees.contains(&key) {
+                continue;
+            }
+            let allowed = batch.worktree_paths.get(&key).is_some_and(|paths| {
+                paths.iter().any(|(path, kind)| !self.ignored_event(path, &key, kind))
+            });
+            if !allowed {
+                batch.worktrees.remove(&key);
+                batch.worktree_paths.remove(&key);
+                batch.force_worktrees.remove(&key);
+            }
+        }
+    }
+
     pub(crate) fn next_retry(&self) -> Option<Instant> { self.retry_due }
 
     fn create_watcher(&mut self, now: Instant) {
         let sender = self.sender.clone();
         let cancel = self.cancel.clone();
+        let event_policy = self.event_policy.clone();
         let watcher = RecommendedWatcher::new(move |result| {
-            let _ = sender.send(result);
-            cancel.wake();
+            let policy = event_policy.read().map(|policy| policy.clone()).unwrap_or_default();
+            forward_event(result, &sender, &cancel, &policy);
         }, notify::Config::default());
         match watcher {
             Ok(watcher) => {
@@ -209,7 +407,8 @@ impl WatchBoundary {
                 batch.topology = true;
             }
             let mut repositories = HashSet::new();
-            let metadata: HashSet<_> = self.roots.values().flat_map(|registration| &registration.targets)
+            let metadata: HashSet<_> = self.roots.values()
+                .flat_map(|registration| &registration.targets)
                 .filter_map(|target| match target {
                     Target::WorktreeMetadata(key, directory) if metadata_event(&path, directory, &key.common, &event.kind) => Some(key.clone()),
                     _ => None,
@@ -268,6 +467,9 @@ impl WatchBoundary {
                         }
                         Target::GlobalExclude(exclude) if global_exclude_event(&path, exclude, &event.kind) => {
                             batch.global_excludes = true;
+                            let keys = self.worktree_keys();
+                            self.plan_dirty.extend(keys.iter().cloned());
+                            batch.plans.extend(keys);
                             if normalize(exclude).starts_with(&path) && topology_event(&event.kind) {
                                 batch.topology = true;
                             }
@@ -287,14 +489,22 @@ impl WatchBoundary {
                                 let tree_path = normalize(tree_path);
                                 let root_topology = worktree_topology
                                     && (path == tree_path || tree_path.starts_with(&path));
-                                batch.worktrees.insert(key.clone());
+                                Self::mark_worktree(batch, key, &path, &event.kind, false);
+                                if self.plan_event(&path, key, &event.kind) {
+                                    self.plan_dirty.insert(key.clone());
+                                    batch.plans.insert(key.clone());
+                                }
                                 if root_topology {
                                     batch.topology = true;
                                 }
                             }
                         }
-                        Target::WorktreeMetadata(key, _) if metadata.contains(key) => {
-                            batch.worktrees.insert(key.clone());
+                        Target::WorktreeMetadata(key, directory) if metadata.contains(key) => {
+                            Self::mark_worktree(batch, key, &path, &event.kind, true);
+                            if metadata_plan_event(&path, directory, &key.common, &event.kind) {
+                                self.plan_dirty.insert(key.clone());
+                                batch.plans.insert(key.clone());
+                            }
                         }
                         Target::Repository(_) | Target::Launch(_) | Target::GlobalExclude(_)
                             | Target::WorktreeMetadata(_, _) => {}
@@ -303,6 +513,15 @@ impl WatchBoundary {
             }
         }
         if !invalid_roots.is_empty() {
+            for root in &invalid_roots {
+                if let Some(registration) = self.roots.get(root) {
+                    for target in &registration.targets {
+                        if let Target::Worktree(key) = target {
+                            Self::mark_worktree(batch, key, root, &EventKind::Modify(ModifyKind::Name(notify::event::RenameMode::Both)), true);
+                        }
+                    }
+                }
+            }
             if let Some(watcher) = self.watcher.as_mut() {
                 for root in &invalid_roots {
                     let _ = watcher.unwatch(root);
@@ -313,78 +532,155 @@ impl WatchBoundary {
             }
         }
     }
+
+    fn mark_worktree(batch: &mut WatchBatch, key: &WorktreeKey, path: &Path,
+        kind: &EventKind, force: bool) {
+        batch.worktrees.insert(key.clone());
+        batch.worktree_paths.entry(key.clone()).or_default()
+            .insert(path.to_path_buf(), *kind);
+        if force { batch.force_worktrees.insert(key.clone()); }
+    }
+
+    fn worktree_keys(&self) -> HashSet<WorktreeKey> {
+        self.roots.values()
+            .flat_map(|registration| registration.targets.iter()).filter_map(|target| {
+            match target {
+                Target::Worktree(key) | Target::WorktreeMetadata(key, _) => Some(key.clone()),
+                _ => None,
+            }
+        }).collect()
+    }
+
+    fn plan_event(&self, path: &Path, key: &WorktreeKey, kind: &EventKind) -> bool {
+        let tree = normalize(&key.path);
+        if !path.starts_with(&tree) { return false; }
+        if self.ignored_event(path, key, kind) { return false; }
+        if path.file_name().is_some_and(|name| name == ".gitignore") { return true; }
+        topology_event(kind) && (self.roots.contains_key(path) || path.is_dir()
+            || matches!(kind, EventKind::Create(notify::event::CreateKind::Folder)
+                | EventKind::Remove(notify::event::RemoveKind::Folder)))
+    }
+
+    fn ignored_event(&self, path: &Path, key: &WorktreeKey, kind: &EventKind) -> bool {
+        let Some(plan) = self.plans.get(key) else { return false; };
+        if !plan.ignored_directories.iter().any(|directory| path == directory || path.starts_with(directory)) {
+            return false;
+        }
+        if plan.tracked_files.contains(path) || topology_event(kind) && plan.tracked_directories.contains(path) {
+            return false;
+        }
+        !rule_file(path)
+    }
 }
 
+#[cfg(test)]
 fn registrations(targets: &WatchTargets) -> HashMap<PathBuf, Registration> {
+    let mut plans = HashMap::new();
+    for (key, path) in &targets.worktrees {
+        if let Ok(paths) = git::watch_paths(path, &Cancel::new()) {
+            plans.insert(key.clone(), Arc::new(plan_for(path, &paths)));
+        }
+    }
+    registrations_with_plans(targets, &plans)
+}
+
+fn registrations_with_plans(targets: &WatchTargets,
+    plans: &HashMap<WorktreeKey, Arc<WorktreeWatchPlan>>) -> HashMap<PathBuf, Registration> {
+    #[cfg(windows)]
+    let _ = plans;
     let mut result = HashMap::new();
-    let worktree_paths: Vec<_> = targets.worktrees.iter()
-        .map(|(key, path)| (key.common.clone(), absolute(path)))
-        .filter(|(_, path)| path.is_dir()).collect();
-    let (config_root, config_mode) = recovery_root(&targets.config);
-    add_target(&mut result, config_root, config_mode, Target::Config(absolute(&targets.config)));
-    add_ancestor(&mut result, &targets.config, Target::Config(absolute(&targets.config)));
+    let config = absolute(&targets.config);
+    let config_mode = if nested_in_worktree(&config, targets) {
+        RecursiveMode::NonRecursive
+    } else {
+        RecursiveMode::Recursive
+    };
+    add_recovery_with_mode(&mut result, &config, Target::Config(config.clone()), config_mode);
     for exclude in &targets.global_excludes {
         let exclude = absolute(exclude);
         let target = Target::GlobalExclude(exclude.clone());
-        if cfg!(windows) {
-            if let Some((_, root)) = worktree_paths.iter()
-                .filter(|(_, root)| normalize(&exclude).starts_with(normalize(root)))
-                .max_by_key(|(_, root)| root.components().count()) {
-                add_target(&mut result, root.clone(), RecursiveMode::Recursive, target);
-                continue;
-            }
-        }
-        let (root, mode) = recovery_root(&exclude);
-        add_target(&mut result, root, mode, target.clone());
-        add_ancestor(&mut result, &exclude, target);
+        let mode = if nested_in_worktree(&exclude, targets) {
+            RecursiveMode::NonRecursive
+        } else {
+            RecursiveMode::Recursive
+        };
+        add_recovery_with_mode(&mut result, &exclude, target, mode);
     }
     if let Some(launch) = &targets.launch {
         let launch = absolute(launch);
         let target = Target::Launch(launch.clone());
-        let (launch_root, launch_mode) = recovery_root(&launch);
-        add_target(&mut result, launch_root, launch_mode, target.clone());
         if launch.is_dir() {
             add_target(&mut result, launch.clone(), RecursiveMode::NonRecursive, target.clone());
+        } else {
+            let mode = if nested_in_worktree(&launch, targets) {
+                RecursiveMode::NonRecursive
+            } else {
+                RecursiveMode::Recursive
+            };
+            add_recovery_with_mode(&mut result, &launch, target.clone(), mode);
         }
-        add_ancestor(&mut result, &launch, target);
     }
     for common in &targets.repositories {
         let common = absolute(common);
-        let nested_in_worktree = cfg!(windows) && worktree_paths.iter().any(|(worktree_common, path)| {
-            normalize(worktree_common) == normalize(&common)
-                && normalize(&common).starts_with(normalize(path))
-        });
-        if !nested_in_worktree {
-            add_existing_or_parent(&mut result, &common, RecursiveMode::NonRecursive,
-                Target::Repository(common.clone()));
-            add_ancestor(&mut result, &common, Target::Repository(common.clone()));
-            for directory in [common.join("refs"), common.join("worktrees"), common.join("info")] {
-                if directory.is_dir() {
-                    add_target(&mut result, directory.clone(), RecursiveMode::Recursive,
-                        Target::Repository(common.clone()));
-                }
-            }
+        let repository = Target::Repository(common.clone());
+        add_existing_or_parent(&mut result, &common, RecursiveMode::NonRecursive, repository.clone());
+        for directory in [common.join("refs"), common.join("worktrees"), common.join("info")] {
+            add_existing_or_parent(&mut result, &directory, RecursiveMode::Recursive, repository.clone());
         }
+        let exclude = common.join("info/exclude");
+        add_recovery(&mut result, &exclude, Target::GlobalExclude(exclude.clone()));
     }
     for (key, path) in &targets.worktrees {
         let path = absolute(path);
-        let (parent, parent_mode) = recovery_root(&path);
-        add_target(&mut result, parent, parent_mode, Target::Worktree(key.clone()));
-        add_ancestor(&mut result, &path, Target::Worktree(key.clone()));
+        add_recovery(&mut result, &path, Target::Worktree(key.clone()));
+        #[cfg(windows)]
         if path.is_dir() {
             add_target(&mut result, path.clone(), RecursiveMode::Recursive, Target::Worktree(key.clone()));
-            if cfg!(windows) {
-                for common in &targets.repositories {
-                    let common = absolute(common);
-                    if normalize(&common) == normalize(key.common.as_path())
-                        && normalize(&common).starts_with(normalize(&path)) {
-                        add_target(&mut result, absolute(&path), RecursiveMode::Recursive,
-                            Target::Repository(common));
-                    }
-                }
-            }
+        }
+        #[cfg(not(windows))]
+        let plan = plans.get(key).cloned().unwrap_or_else(|| Arc::new(fallback_plan(&path)));
+        #[cfg(not(windows))]
+        for root in &plan.recursive_roots {
+            add_target(&mut result, root.clone(), RecursiveMode::Recursive, Target::Worktree(key.clone()));
+        }
+        #[cfg(not(windows))]
+        for gate in &plan.directory_gates {
+            add_existing_or_parent(&mut result, gate, RecursiveMode::NonRecursive,
+                Target::Worktree(key.clone()));
         }
     }
+    add_metadata_targets(&mut result, targets);
+    #[cfg(windows)]
+    merge_windows_registrations(&mut result);
+    for registration in result.values_mut() {
+        registration.targets.sort();
+        registration.targets.dedup();
+    }
+    result
+}
+
+#[cfg(windows)]
+fn merge_windows_registrations(result: &mut HashMap<PathBuf, Registration>) {
+    loop {
+        let recursive: Vec<_> = result.iter()
+            .filter(|(_, registration)| registration.mode == RecursiveMode::Recursive)
+            .map(|(path, _)| path.clone()).collect();
+        let nested = result.keys().filter_map(|path| {
+            recursive.iter().filter(|root| *root != path && path.starts_with(*root))
+                .max_by_key(|root| root.components().count())
+                .map(|root| (path.clone(), root.clone()))
+        }).next();
+        let Some((child, root)) = nested else { break; };
+        let Some(registration) = result.remove(&child) else { continue; };
+        if let Some(parent) = result.get_mut(&root) {
+            parent.targets.extend(registration.targets);
+        } else {
+            result.insert(child, registration);
+        }
+    }
+}
+
+fn add_metadata_targets(result: &mut HashMap<PathBuf, Registration>, targets: &WatchTargets) {
     for (key, path) in &targets.worktrees {
         let marker = path.join(".git");
         let directory = if marker.is_dir() { Some(marker) } else {
@@ -404,21 +700,35 @@ fn registrations(targets: &WatchTargets) -> HashMap<PathBuf, Registration> {
             }
         }
     }
-    for registration in result.values_mut() {
-        registration.targets.sort();
-        registration.targets.dedup();
-    }
-    result
 }
 
 fn add_existing_or_parent(result: &mut HashMap<PathBuf, Registration>, path: &Path,
     mode: RecursiveMode, target: Target) {
-    let root = if path.exists() { path.to_path_buf() } else {
-        nearest_existing(path).unwrap_or_else(|| path.to_path_buf())
-    };
+    if path.is_dir() {
+        add_target(result, path.to_path_buf(), mode, target);
+    } else {
+        add_recovery(result, path, target);
+    }
+}
+
+fn add_recovery(result: &mut HashMap<PathBuf, Registration>, path: &Path, target: Target) {
+    add_recovery_with_mode(result, path, target, RecursiveMode::NonRecursive);
+}
+
+fn add_recovery_with_mode(result: &mut HashMap<PathBuf, Registration>, path: &Path,
+    target: Target, mode: RecursiveMode) {
     let parent = path.parent().unwrap_or(path);
-    let mode = if root != path && root != parent { RecursiveMode::Recursive } else { mode };
+    let root = nearest_existing(parent).unwrap_or_else(|| parent.to_path_buf());
+    let mode = if root == parent { RecursiveMode::NonRecursive } else { mode };
     add_target(result, root, mode, target);
+}
+
+fn nested_in_worktree(path: &Path, targets: &WatchTargets) -> bool {
+    let path = normalize(&absolute(path));
+    targets.worktrees.iter().any(|(_, tree)| {
+        let tree = normalize(&absolute(tree));
+        path == tree || path.starts_with(&tree)
+    })
 }
 
 fn add_target(result: &mut HashMap<PathBuf, Registration>, path: PathBuf,
@@ -432,14 +742,6 @@ fn add_target(result: &mut HashMap<PathBuf, Registration>, path: PathBuf,
         registration.mode = RecursiveMode::Recursive;
     }
     registration.targets.push(target);
-}
-
-fn add_ancestor(result: &mut HashMap<PathBuf, Registration>, path: &Path, target: Target) {
-    let path = absolute(path);
-    let parent = path.parent().unwrap_or(&path);
-    if parent == path { return; }
-    let (root, mode) = recovery_root(parent);
-    add_target(result, root, mode, target);
 }
 
 fn config_event(path: &Path, config: &Path, kind: &EventKind) -> bool {
@@ -461,15 +763,34 @@ fn metadata_event(path: &Path, directory: &Path, common: &Path, kind: &EventKind
         matches!(part.as_os_str().to_string_lossy().to_ascii_lowercase().as_str(),
             "head" | "index" | "index.lock" | "orig_head" | "config.worktree")
             || relative == Path::new("logs/HEAD") || relative == Path::new("logs/head")
+            || relative == Path::new("info/exclude")
     })
 }
 
-fn recovery_root(path: &Path) -> (PathBuf, RecursiveMode) {
+fn metadata_plan_event(path: &Path, directory: &Path, common: &Path, kind: &EventKind) -> bool {
+    if !metadata_event(path, directory, common, kind) {
+        return false;
+    }
+    let directory = normalize(directory);
+    let common = normalize(common);
+    let Ok(relative) = path.strip_prefix(&directory) else { return false; };
+    let name = relative.components().next()
+        .map(|part| part.as_os_str().to_string_lossy().to_ascii_lowercase());
+    if directory != common {
+        return name.is_some_and(|name| name == "index" || name == "index.lock" || name == "config.worktree");
+    }
+    name.is_some_and(|name| name == "index" || name == "index.lock" || name == "config.worktree")
+        || relative == Path::new("info/exclude")
+}
+
+fn rule_file(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == ".gitignore" || name == ".gitattributes")
+}
+
+fn recovery_root(path: &Path) -> PathBuf {
     let path = absolute(path);
     let parent = path.parent().unwrap_or(&path);
-    let root = nearest_existing(parent).unwrap_or_else(|| parent.to_path_buf());
-    let mode = if root == parent { RecursiveMode::NonRecursive } else { RecursiveMode::Recursive };
-    (root, mode)
+    nearest_existing(parent).unwrap_or_else(|| parent.to_path_buf())
 }
 
 fn nearest_existing(path: &Path) -> Option<PathBuf> {
@@ -683,6 +1004,11 @@ mod tests {
             assert!(batch.repositories.is_empty());
         }
         let mut batch = WatchBatch::default();
+        boundary.classify(Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
+            .add_path(common.join("HEAD")), &mut batch);
+        assert_eq!(batch.worktrees, HashSet::from([main.clone()]));
+        assert!(batch.plans.is_empty());
+        let mut batch = WatchBatch::default();
         boundary.classify(Event::new(EventKind::Modify(ModifyKind::Any))
             .add_path(common.join("refs/heads/main")), &mut batch);
         assert!(batch.repositories.contains(&normalize(&common)));
@@ -692,6 +1018,30 @@ mod tests {
         boundary.classify(Event::new(EventKind::Remove(RemoveKind::File))
             .add_path(common.join("packed-refs.lock")), &mut batch);
         assert!(batch.is_empty());
+    }
+
+    #[test]
+    fn metadata_events_survive_ignored_noise_in_the_same_batch() {
+        let root = absolute(Path::new("watch-root"));
+        let common = root.join(".git");
+        let key = WorktreeKey::new(&common, &root);
+        let ignored = normalize(&root.join("ignored"));
+        let plan = Arc::new(WorktreeWatchPlan {
+            recursive_roots: vec![normalize(&root)], directory_gates: Vec::new(),
+            ignored_directories: HashSet::from([ignored]),
+            tracked_files: HashSet::new(), tracked_directories: HashSet::new(),
+        });
+        let mut boundary = boundary_with(root.clone(), vec![
+            Target::Worktree(key.clone()), Target::WorktreeMetadata(key.clone(), common.clone()),
+        ]);
+        boundary.plans.insert(key.clone(), plan);
+        let mut batch = WatchBatch::default();
+        boundary.classify(Event::new(EventKind::Create(CreateKind::File))
+            .add_path(root.join("ignored/noise.txt")), &mut batch);
+        boundary.classify(Event::new(EventKind::Modify(ModifyKind::Any))
+            .add_path(common.join("index")), &mut batch);
+        boundary.filter_ignored_batch(&mut batch);
+        assert_eq!(batch.worktrees, HashSet::from([key]));
     }
 
     #[test]
@@ -784,11 +1134,182 @@ mod tests {
         assert_eq!(cancel.generation(), generation + 1);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_callback_filters_ignored_events_before_waking_or_queuing() {
+        let root = absolute(Path::new("watch-root"));
+        let ignored = root.join("ignored");
+        let tracked = ignored.join("tracked.txt");
+        let plan = Arc::new(WorktreeWatchPlan {
+            recursive_roots: vec![root.clone()], directory_gates: Vec::new(),
+            ignored_directories: HashSet::from([normalize(&ignored)]),
+            tracked_files: HashSet::from([normalize(&tracked)]),
+            tracked_directories: HashSet::from([normalize(&ignored)]),
+        });
+        let key = WorktreeKey::new(&root.join(".git"), &root);
+        let mut boundary = WatchBoundary::new(Cancel::new());
+        boundary.plans.insert(key.clone(), plan);
+        boundary.publish_policy(&WatchTargets {
+            config: ignored.join("config.json"), launch: Some(root.clone()),
+            repositories: vec![root.join(".git")], worktrees: vec![(key, root.clone())],
+            global_excludes: Vec::new(),
+        });
+        let policy = boundary.event_policy.read().unwrap().clone();
+        let cancel = Cancel::new();
+        let (sender, receiver) = mpsc::channel();
+        let generation = cancel.generation();
+        for path in [ignored.join("noise.txt"), ignored.join("noise/.gitignore")] {
+            forward_event(Ok(Event::new(EventKind::Create(CreateKind::File))
+                .add_path(path)), &sender, &cancel, &policy);
+        }
+        assert_eq!(cancel.generation(), generation);
+        assert!(receiver.try_recv().is_err());
+
+        forward_event(Ok(Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
+            .add_path(tracked.clone())), &sender, &cancel, &policy);
+        assert_eq!(cancel.generation(), generation + 1);
+        assert_eq!(receiver.try_recv().unwrap().unwrap().paths, vec![tracked]);
+
+        for path in [ignored.join("config.json"), ignored.join(".gitattributes"), root.join(".git/HEAD")] {
+            forward_event(Ok(Event::new(EventKind::Modify(ModifyKind::Any))
+                .add_path(path.clone())), &sender, &cancel, &policy);
+            assert_eq!(receiver.try_recv().unwrap().unwrap().paths, vec![path]);
+        }
+
+        let visible = root.join("visible.txt");
+        forward_event(Ok(Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Both)))
+            .add_path(ignored.join("noise.txt")).add_path(visible.clone())),
+            &sender, &cancel, &policy);
+        let event = receiver.try_recv().unwrap().unwrap();
+        assert_eq!(event.paths, vec![visible]);
+    }
+
+    #[test]
+    fn failed_initial_plan_keeps_recursive_fallback_coverage() {
+        let directory = tempfile::tempdir().unwrap();
+        let tree = directory.path().join("tree");
+        std::fs::create_dir(&tree).unwrap();
+        let common = tree.join(".git");
+        let key = WorktreeKey::new(&common, &tree);
+        let mut boundary = WatchBoundary::new(Cancel::new());
+        let status = boundary.reconcile(&WatchTargets {
+            config: directory.path().join("config.json"), launch: None,
+            repositories: Vec::new(), worktrees: vec![(key.clone(), tree.clone())],
+            global_excludes: Vec::new(),
+        }, Instant::now());
+        assert!(!status.degraded);
+        assert_eq!(boundary.roots[&normalize(&tree)].mode, RecursiveMode::Recursive);
+        boundary.sender.send(Ok(Event::new(EventKind::Modify(ModifyKind::Any))
+            .add_path(tree.join("edited.txt")))).unwrap();
+        let batch = boundary.drain(Instant::now());
+        assert!(batch.worktrees.contains(&key));
+    }
+
+    #[test]
+    fn overlapping_worktree_policies_keep_changes_needed_by_either_repository() {
+        let root = absolute(Path::new("watch-parent"));
+        let child = root.join("child");
+        let ignored = child.join("ignored");
+        let changed = ignored.join("source.rs");
+        let mut child_plan = fallback_plan(&child);
+        child_plan.ignored_directories.insert(normalize(&ignored));
+        let child_policy = WorktreeEventPolicy {
+            key: WorktreeKey::new(&child.join(".git"), &child), root: normalize(&child),
+            plan: Arc::new(child_plan), protected: Vec::new(),
+        };
+        let mut policy = EventPolicy { worktrees: vec![child_policy] };
+        assert!(policy.filter(Event::new(EventKind::Modify(ModifyKind::Any))
+            .add_path(changed.clone())).is_none());
+        policy.worktrees.push(WorktreeEventPolicy {
+            key: WorktreeKey::new(&root.join(".git"), &root), root: normalize(&root),
+            plan: Arc::new(fallback_plan(&root)), protected: Vec::new(),
+        });
+        assert_eq!(policy.filter(Event::new(EventKind::Modify(ModifyKind::Any))
+            .add_path(changed.clone())).unwrap().paths, vec![changed]);
+    }
+
+    #[test]
+    fn later_plan_failure_does_not_keep_stale_ignore_rules() {
+        let directory = tempfile::tempdir().unwrap();
+        let tree = directory.path().join("tree");
+        let ignored = tree.join("ignored");
+        std::fs::create_dir_all(&ignored).unwrap();
+        let changed = ignored.join("source.rs");
+        let key = WorktreeKey::new(&tree.join(".git"), &tree);
+        let mut plan = fallback_plan(&tree);
+        plan.ignored_directories.insert(normalize(&ignored));
+        let mut boundary = WatchBoundary::new(Cancel::new());
+        boundary.plans.insert(key.clone(), Arc::new(plan));
+        assert!(boundary.ignored_event(&normalize(&changed), &key, &EventKind::Modify(ModifyKind::Any)));
+        boundary.refresh_plan(&key, &tree);
+        assert!(boundary.plan_errors.contains(&key));
+        boundary.publish_policy(&WatchTargets {
+            config: directory.path().join("config.json"), launch: Some(tree.clone()),
+            repositories: Vec::new(), worktrees: vec![(key, tree)], global_excludes: Vec::new(),
+        });
+        let policy = boundary.event_policy.read().unwrap().clone();
+        assert_eq!(policy.filter(Event::new(EventKind::Modify(ModifyKind::Any))
+            .add_path(changed.clone())).unwrap().paths, vec![changed]);
+    }
+
+    #[test]
+    fn ignored_directories_use_gates_and_never_recursive_native_roots() {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = directory.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let cancel = Cancel::new();
+        crate::process::checked(Some(&repo), &crate::process::args(&["init", "--quiet"]), &cancel).unwrap();
+        std::fs::write(repo.join(".gitignore"), b"ignored/\n").unwrap();
+        std::fs::create_dir_all(repo.join("ignored/nested")).unwrap();
+        std::fs::create_dir_all(repo.join("allowed/nested/deep")).unwrap();
+        std::fs::write(repo.join("ignored/nested/tracked.txt"), b"tracked\n").unwrap();
+        crate::process::checked(Some(&repo), &crate::process::args(&["add", ".gitignore"]), &cancel).unwrap();
+        crate::process::checked(Some(&repo), &crate::process::args(&["add", "-f", "ignored/nested/tracked.txt"]), &cancel).unwrap();
+        let common = repo.join(".git");
+        let key = WorktreeKey::new(&common, &repo);
+        let roots = registrations(&WatchTargets {
+            config: directory.path().join("config.json"),
+            launch: None,
+            repositories: vec![common],
+            worktrees: vec![(key, repo.clone())],
+            global_excludes: Vec::new(),
+        });
+        #[cfg(not(windows))]
+        let ignored = normalize(&repo.join("ignored"));
+        #[cfg(not(windows))]
+        assert_eq!(roots[&ignored].mode, RecursiveMode::NonRecursive);
+        #[cfg(not(windows))]
+        assert_eq!(roots[&normalize(&repo.join("ignored/nested"))].mode, RecursiveMode::NonRecursive);
+        #[cfg(not(windows))]
+        assert_eq!(roots[&normalize(&repo.join("allowed"))].mode, RecursiveMode::Recursive);
+        #[cfg(not(windows))]
+        assert!(!roots.contains_key(&normalize(&repo.join("allowed/nested"))));
+        #[cfg(not(windows))]
+        assert!(roots[&normalize(&repo)].targets.iter().all(|target| matches!(target, Target::Worktree(_))));
+        #[cfg(not(windows))]
+        assert!(roots.iter().filter(|(_, registration)| registration.mode == RecursiveMode::Recursive)
+            .all(|(path, _)| !path.starts_with(&ignored)));
+        #[cfg(windows)]
+        assert_eq!(roots[&normalize(&repo)].mode, RecursiveMode::Recursive);
+        #[cfg(windows)]
+        assert!(roots[&normalize(&repo)].targets.iter().any(|target| matches!(target, Target::Repository(_))));
+        #[cfg(windows)]
+        assert!(roots.keys().all(|path| *path == normalize(&repo) || !path.starts_with(&repo)));
+        #[cfg(not(windows))]
+        let recursive: Vec<_> = roots.iter().filter_map(|(path, registration)|
+            (registration.mode == RecursiveMode::Recursive).then_some(path)).collect();
+        #[cfg(not(windows))]
+        assert!(recursive.iter().enumerate().all(|(index, path)| recursive.iter().enumerate()
+            .all(|(other, other_path)| index == other || !path.starts_with(*other_path))));
+    }
+
     #[test]
     fn existing_repository_and_worktree_use_narrow_roots() {
         let directory = tempfile::tempdir().unwrap();
         let repo = directory.path().join("repo");
         let common = repo.join(".git");
+        std::fs::create_dir(&repo).unwrap();
+        crate::process::checked(Some(&repo), &crate::process::args(&["init", "--quiet"]), &Cancel::new()).unwrap();
         for name in ["refs", "worktrees", "info"] {
             std::fs::create_dir_all(common.join(name)).unwrap();
         }
@@ -800,15 +1321,24 @@ mod tests {
             worktrees: vec![(key, repo.clone())],
             global_excludes: vec![common.join("config")],
         });
-        assert_eq!(roots[&normalize(&repo)].mode, RecursiveMode::Recursive);
         assert_eq!(roots[&normalize(directory.path())].mode, RecursiveMode::NonRecursive);
         #[cfg(windows)]
-        assert!(!roots.contains_key(&normalize(&common)));
+        {
+            assert_eq!(roots[&normalize(&repo)].mode, RecursiveMode::Recursive);
+            assert!(!roots.contains_key(&normalize(&common)));
+            for name in ["refs", "worktrees", "info"] {
+                assert!(!roots.contains_key(&normalize(&common.join(name))));
+            }
+            assert!(roots[&normalize(&repo)].targets.iter()
+                .any(|target| matches!(target, Target::Repository(_))));
+        }
         #[cfg(not(windows))]
-        assert_eq!(roots[&normalize(&common)].mode, RecursiveMode::NonRecursive);
-        #[cfg(not(windows))]
-        for name in ["refs", "worktrees", "info"] {
-            assert_eq!(roots[&normalize(&common.join(name))].mode, RecursiveMode::Recursive);
+        {
+            assert_eq!(roots[&normalize(&repo)].mode, RecursiveMode::NonRecursive);
+            assert_eq!(roots[&normalize(&common)].mode, RecursiveMode::NonRecursive);
+            for name in ["refs", "worktrees", "info"] {
+                assert_eq!(roots[&normalize(&common.join(name))].mode, RecursiveMode::Recursive);
+            }
         }
     }
 
@@ -833,10 +1363,12 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_accepts_narrow_nested_registrations() {
+    fn windows_merges_nested_registrations_onto_the_worktree_root() {
         let directory = tempfile::tempdir().unwrap();
         let repo = directory.path().join("repo");
         let common = repo.join(".git");
+        std::fs::create_dir(&repo).unwrap();
+        crate::process::checked(Some(&repo), &crate::process::args(&["init", "--quiet"]), &Cancel::new()).unwrap();
         for name in ["refs", "worktrees", "info"] {
             std::fs::create_dir_all(common.join(name)).unwrap();
         }
@@ -855,9 +1387,7 @@ mod tests {
         for name in ["refs", "worktrees", "info"] {
             assert!(!boundary.roots.contains_key(&normalize(&common.join(name))));
         }
-        assert!(boundary.roots[&normalize(&repo)].targets.iter().any(|target| {
-            matches!(target, Target::Repository(path) if normalize(path) == normalize(&common))
-        }));
+        assert!(boundary.roots[&normalize(&repo)].targets.iter().any(|target| matches!(target, Target::Repository(_))));
     }
 
     #[cfg(windows)]
@@ -866,6 +1396,8 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let repo = directory.path().join("repo");
         let common = repo.join(".git");
+        std::fs::create_dir(&repo).unwrap();
+        crate::process::checked(Some(&repo), &crate::process::args(&["init", "--quiet"]), &Cancel::new()).unwrap();
         for name in ["refs", "worktrees", "info"] {
             std::fs::create_dir_all(common.join(name)).unwrap();
         }
@@ -879,6 +1411,7 @@ mod tests {
             global_excludes: Vec::new(),
         }, Instant::now());
         assert!(!status.degraded);
+        boundary.watcher = None;
         let moved = directory.path().join("moved");
         std::fs::rename(&repo, &moved).unwrap();
         std::fs::rename(moved, repo).unwrap();

@@ -1,6 +1,6 @@
 use crate::{Error, ErrorKind};
 use std::ffi::OsString;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
@@ -63,13 +63,18 @@ pub(crate) struct Output {
 }
 
 pub(crate) fn run(directory: Option<&Path>, args: &[OsString], cancel: &Cancel) -> Result<Output, Error> {
+    run_with_input(directory, args, &[], cancel)
+}
+
+pub(crate) fn run_with_input(directory: Option<&Path>, args: &[OsString], input: &[u8], cancel: &Cancel) -> Result<Output, Error> {
     if cancel.is_cancelled() {
         return Err(Error::new(ErrorKind::Cancelled, "Git scan cancelled"));
     }
     let mut command = Command::new("git");
     command.args(["-c", "core.fsmonitor=false"]);
     if let Some(directory) = directory { command.arg("-C").arg(directory); }
-    command.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command.args(args).stdin(if input.is_empty() { Stdio::null() } else { Stdio::piped() })
+        .stdout(Stdio::piped()).stderr(Stdio::piped());
     for variable in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
         "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX",
         "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_CEILING_DIRECTORIES",
@@ -84,6 +89,16 @@ pub(crate) fn run(directory: Option<&Path>, args: &[OsString], cancel: &Cancel) 
     }
     let mut child = command.spawn().map_err(|error| Error::io("Could not start Git", error))?;
     let (sender, receiver) = mpsc::channel();
+    let input_writer = child.stdin.take().map(|mut stdin| {
+        let input = input.to_owned();
+        let sender = sender.clone();
+        thread::spawn(move || {
+            let result = stdin.write_all(&input)
+                .map(|_| Vec::new())
+                .map_err(|error| Error::io("Could not write Git input", error));
+            let _ = sender.send((2, result));
+        })
+    });
     let pipes: [Box<dyn Read + Send>; 2] = [Box::new(child.stdout.take().unwrap()), Box::new(child.stderr.take().unwrap())];
     let readers: Vec<_> = pipes.into_iter().enumerate().map(|(index, pipe)| {
         let sender = sender.clone();
@@ -100,18 +115,24 @@ pub(crate) fn run(directory: Option<&Path>, args: &[OsString], cancel: &Cancel) 
     drop(sender);
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut buffers: [Option<Vec<u8>>; 2] = [None, None];
+    let mut input_complete = input_writer.is_none();
     let result = (|| {
-        let mut readers_remaining = readers.len();
+        let mut streams_remaining = readers.len() + usize::from(!input_complete);
         let mut disconnected = false;
         loop {
             if cancel.is_cancelled() { return Err(Error::new(ErrorKind::Cancelled, "Git scan cancelled")); }
             if Instant::now() >= deadline { return Err(Error::new(ErrorKind::Timeout, "Git command timed out after 10 seconds")); }
             let wait = deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(20));
-            if readers_remaining > 0 && !disconnected {
+            if streams_remaining > 0 && !disconnected {
                 match receiver.recv_timeout(wait) {
-                    Ok((index, bytes)) => {
-                        buffers[index] = Some(bytes?);
-                        readers_remaining -= 1;
+                    Ok((index, result)) => {
+                        if index < 2 {
+                            buffers[index] = Some(result?);
+                        } else {
+                            result?;
+                            input_complete = true;
+                        }
+                        streams_remaining -= 1;
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                     Err(mpsc::RecvTimeoutError::Disconnected) => { disconnected = true; }
@@ -120,13 +141,19 @@ pub(crate) fn run(directory: Option<&Path>, args: &[OsString], cancel: &Cancel) 
                 cancel.wait(wait);
             }
             while let Ok((index, bytes)) = receiver.try_recv() {
-                if buffers[index].is_none() {
-                    buffers[index] = Some(bytes?);
-                    readers_remaining = readers_remaining.saturating_sub(1);
+                if index < 2 {
+                    if buffers[index].is_none() {
+                        buffers[index] = Some(bytes?);
+                        streams_remaining = streams_remaining.saturating_sub(1);
+                    }
+                } else if !input_complete {
+                    bytes?;
+                    input_complete = true;
+                    streams_remaining = streams_remaining.saturating_sub(1);
                 }
             }
             if let Some(status) = child.try_wait().map_err(|error| Error::io("Could not wait for Git", error))? {
-                if buffers.iter().all(Option::is_some) {
+                if streams_remaining == 0 && buffers.iter().all(Option::is_some) {
                     return Ok(Output { code: status.code().unwrap_or(-1),
                         stdout: buffers[0].take().unwrap(), stderr: buffers[1].take().unwrap() });
                 }
@@ -138,6 +165,7 @@ pub(crate) fn run(directory: Option<&Path>, args: &[OsString], cancel: &Cancel) 
         let _ = child.wait();
     } else {
         for reader in readers { let _ = reader.join(); }
+        if let Some(writer) = input_writer { let _ = writer.join(); }
     }
     result
 }
