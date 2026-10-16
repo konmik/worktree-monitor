@@ -19,6 +19,8 @@ Plain `wts` prints one current snapshot. `wts-ui` opens the Windows status windo
 
 The live window includes the repository you launch it from, even when it is not registered. This does not register it. Drag a repository header to move its whole group. Drag a worktree card to reorder it within its repository. The window remembers these positions across refreshes and restarts. Change counts appear on individual worktrees, without summary totals.
 
+The window has no title bar or visible frame. Drag empty space to move it, or drag an edge or corner to resize it. The scrollbar uses the right gutter without changing card widths. It hides after three seconds without scrolling or resizing. Repository headers show names without branch totals.
+
 Use **Hide** on a worktree to remove it from the list. **Show all** reveals hidden worktrees without clearing their saved settings. Use **Unhide** to keep a revealed worktree visible when you turn **Show all** off. Hiding a worktree does not unregister it or stop monitoring it.
 
 ## Counts
@@ -28,6 +30,8 @@ Each worktree shows its branch and `S +n/-n · T +n/-n · X +n/-n`. `S` counts s
 Git's ignore rules and binary attributes apply. Binary files have a separate count, not an invented line count. Ignored untracked files and submodule contents are not counted. Missing or unreadable worktrees show errors rather than zero changes.
 
 WTS installs filesystem monitors before scanning all worktrees once at startup. Later scan passes include only changed or newly discovered worktrees. All discovery and scanning runs serially, with at least ten seconds between the end of one pass and the start of the next. Changes during a pass remain queued for the next pass. Unchanged worktrees are not scanned again. There is no periodic rescan, backoff, or debounce. The window shows time spent scanning and discovering repositories during the last minute, not CPU time or time waiting between passes.
+
+The monitor ignores changes inside Git-ignored folders, except tracked files and Git rule files that affect counts. On Windows, it filters native notifications before queuing monitoring work so parent folders can still be renamed. Changes to ignore rules update the filter.
 
 Repository headers and worktree cards show a small refresh icon during scans. Each indicator stays visible for at least one second. Existing counts remain visible while a worktree refreshes.
 
