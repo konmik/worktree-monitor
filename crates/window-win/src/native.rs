@@ -1,5 +1,6 @@
 use crate::dashboard::{ellipsize_start, DashboardView, DisplayItem, Health, ItemKey, RefreshTracker};
 use crate::order::{Order, OrderMove};
+use crate::opacity::Opacity;
 use crate::placement::ShowState;
 use crate::placement_win;
 use crate::layout::{self, Rect, RowSize};
@@ -8,7 +9,7 @@ use crate::typography::{self, RowSpacing, Typography, FONT_SIZE};
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::ptr::{null, null_mut};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -137,6 +138,8 @@ struct State {
     failure: Option<io::Error>,
     order_path: PathBuf,
     placement_path: PathBuf,
+    opacity_path: PathBuf,
+    opacity: Opacity,
     starting: bool,
     order: Order,
     order_warning: Option<String>,
@@ -225,9 +228,25 @@ unsafe fn reset_window_bounds(window: HWND) -> io::Result<()> {
     Ok(())
 }
 
-unsafe fn tray_menu(window: HWND, point: POINT, placement_path: &Path) -> Result<(), io::Error> {
+unsafe fn tray_menu(window: HWND, point: POINT, pointer: *mut State) -> Result<(), io::Error> {
     let menu = CreatePopupMenu();
     if menu.is_null() { return Err(io::Error::last_os_error()); }
+    let opacity_menu = CreatePopupMenu();
+    if opacity_menu.is_null() {
+        let error = io::Error::last_os_error();
+        DestroyMenu(menu);
+        return Err(error);
+    }
+    let opacity = (*pointer).opacity;
+    let populated = (5..=100).step_by(5).all(|percent| {
+        AppendMenuW(opacity_menu, MF_STRING, percent, wide(&format!("{percent}%")).as_ptr()) != 0
+    }) && CheckMenuRadioItem(opacity_menu, 5, 100, u32::from(opacity.percent()), MF_BYCOMMAND) != 0;
+    if !populated || AppendMenuW(menu, MF_POPUP, opacity_menu as usize, wide("Opacity").as_ptr()) == 0 {
+        let error = io::Error::last_os_error();
+        DestroyMenu(opacity_menu);
+        DestroyMenu(menu);
+        return Err(error);
+    }
     let visible = IsWindowVisible(window) != 0 && IsIconic(window) == 0;
     let populated = AppendMenuW(menu, MF_STRING, 1, wide(if visible { "Hide" } else { "Show" }).as_ptr()) != 0
         && AppendMenuW(menu, MF_STRING, 3, wide("Reset").as_ptr()) != 0
@@ -249,9 +268,17 @@ unsafe fn tray_menu(window: HWND, point: POINT, placement_path: &Path) -> Result
             ShowWindow(window, SW_SHOWNORMAL);
             reset_window_bounds(window)?;
             SetForegroundWindow(window);
-            placement_win::save(window, placement_path)?;
+            placement_win::save(window, &(*pointer).placement_path)?;
         }
-        _ => {}
+        command => {
+            if let Some(opacity) = u8::try_from(command).ok().and_then(Opacity::new) {
+                opacity.write(&(*pointer).opacity_path)?;
+                (*pointer).opacity = opacity;
+                if SetLayeredWindowAttributes(window, 0, if (*pointer).controls_visible { 255 } else { opacity.alpha() }, LWA_ALPHA) == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+        }
     }
     PostMessageW(window, WM_NULL, 0, 0);
     Ok(())
@@ -1309,7 +1336,7 @@ unsafe fn update_hover_state(window: HWND, state: &mut State) {
     let visible = IsWindowVisible(window) != 0 && IsIconic(window) == 0 && GetCursorPos(&mut point) != 0
         && { let hit = GetAncestor(WindowFromPoint(point), GA_ROOT); hit == window || hit == state.indicator_overlay };
     if visible == state.controls_visible { return; }
-    if SetLayeredWindowAttributes(window, 0, if visible { 255 } else { 51 }, LWA_ALPHA) == 0 {
+    if SetLayeredWindowAttributes(window, 0, if visible { 255 } else { state.opacity.alpha() }, LWA_ALPHA) == 0 {
         state.failure = Some(io::Error::last_os_error());
         PostMessageW(window, WM_CLOSE, 0, 0);
         return;
@@ -1782,7 +1809,7 @@ unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, p
                 WM_CONTEXTMENU => {
                     let mut point = mouse_point(wparam as LPARAM);
                     if point.x == -1 && point.y == -1 { GetCursorPos(&mut point); }
-                    if let Err(error) = tray_menu(window, point, &(*pointer).placement_path) { (*pointer).failure = Some(error); }
+                    if let Err(error) = tray_menu(window, point, pointer) { (*pointer).failure = Some(error); }
                 }
                 _ => {}
             }
@@ -1991,6 +2018,8 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
     let order_path = service.config_path().with_extension("order.json");
     let visibility_path = service.config_path().with_extension("visibility.json");
     let placement_path = service.config_path().with_extension("placement.json");
+    let opacity_path = service.config_path().with_extension("opacity.json");
+    let opacity = Opacity::read(&opacity_path).unwrap_or_default();
     let (order, order_warning) = match Order::read(&order_path) {
         Ok(order) => (order, None),
         Err(error) => (Order::default(), Some(format!("Cannot load presentation order: {error}"))),
@@ -2003,7 +2032,7 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
         fixed: Vec::new(), cards: Vec::new(), resources: None, view: DashboardView::scanning(), latest: None,
         refresh_tracker: RefreshTracker::default(), refreshing: HashSet::new(),
         dpi: 96, scroll: 0, content: 0, page: 0, scrollbar_idle: None, width: 0, wheel_remainder: 0, next_card_id: 2000, failure: None,
-        order_path, placement_path, starting: true, order, order_warning, order_write_failed: false, order_check: Instant::now(),
+        order_path, placement_path, opacity_path, opacity, starting: true, order, order_warning, order_write_failed: false, order_check: Instant::now(),
         visibility_path, visibility, visibility_warning, visibility_write_failed: false, visibility_check: Instant::now(),
         show_all_button: null_mut(), controls_visible: false, next_action_id: 3000, drag: None,
         indicator_overlay: null_mut(), indicators_dirty: true, indicators_queued: false, tray: None, taskbar_created: 0 });
@@ -2071,7 +2100,7 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
         } else if let Err(error) = positioned {
             state.failure = Some(error);
             DestroyWindow(window);
-        } else if SetLayeredWindowAttributes(window, 0, 51, LWA_ALPHA) == 0 {
+        } else if SetLayeredWindowAttributes(window, 0, state.opacity.alpha(), LWA_ALPHA) == 0 {
             state.failure = Some(io::Error::last_os_error());
             DestroyWindow(window);
         } else {

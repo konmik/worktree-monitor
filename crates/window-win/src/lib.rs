@@ -1,5 +1,6 @@
 pub mod dashboard;
 pub mod order;
+pub mod opacity;
 pub mod placement;
 pub mod visibility;
 

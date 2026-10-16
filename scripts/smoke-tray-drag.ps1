@@ -254,7 +254,7 @@ try {
         [WtmTrayDragProbe]::Menu($window, 'Opacity', $percent, $selectedOpacity)
         $selectedOpacity = $percent
         [void][WtmTrayDragProbe]::SetCursorPos($work.Right - 10, $work.Top + 10)
-        Wait-For { [WtmTrayDragProbe]::Alpha($window) -eq [Math]::Floor($percent * 255 / 100) } "idle opacity $percent%"
+        Wait-For { [WtmTrayDragProbe]::Alpha($window) -eq [Math]::Floor(($percent * 255 + 50) / 100) } "idle opacity $percent%"
         $bounds = [WtmTrayDragProbe]::Bounds($window)
         [void][WtmTrayDragProbe]::SetCursorPos($bounds.Left + 30, $bounds.Top + 30)
         Wait-For { [WtmTrayDragProbe]::Alpha($window) -eq 255 } 'full opacity on hover'
