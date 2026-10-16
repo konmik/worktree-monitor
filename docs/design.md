@@ -2,11 +2,11 @@
 
 ## Usage
 
-`wts add <path>` registers a repository from any of its worktrees. `wts` prints a snapshot. `wts --live` displays registered repositories and the repository it is launched from in an always-on-top Windows window. Launch context does not change registrations. `wts remove <path>` unregisters the repository.
+`wtm add <path>` registers a repository from any of its worktrees. `wtm` prints a snapshot. `wtm --live` displays registered repositories and the repository it is launched from in an always-on-top Windows window. Launch context does not change registrations. `wtm remove <path>` unregisters the repository.
 
 ## Shape
 
-The workspace contains a reusable `wts-core` library, the `wts` command, and the `window-win` platform library. The core owns Git discovery, counting, configuration, and polling. Future window implementations can reuse it without changing the counter.
+The workspace contains a reusable `wtm-core` library, the `wtm` command, and the `window-win` platform library. The core owns Git discovery, counting, configuration, and polling. Future window implementations can reuse it without changing the counter.
 
 A snapshot contains repositories and their worktrees. Each worktree has a path and either successful branch and count data or an error. A failed scan cannot claim zero changed lines. The configuration representation stays private to the core.
 
@@ -29,7 +29,7 @@ The selected shape uses a normal captioned, resizable window. Herald's nonactiva
 
 The competing design contributed the successful worktree object, immediate first publication, and last-good configuration behavior. A sortable table, custom process launcher, and interchangeable Git engines were rejected as unnecessary scope.
 
-Codex's worktree and Git utilities supplied a second local precedent for subprocesses, NUL-delimited worktree records, inherited-environment isolation, and disabling filesystem-monitor helpers. WTS keeps ordinary ignore rules and binary attributes while disabling fsmonitor during polling.
+Codex's worktree and Git utilities supplied a second local precedent for subprocesses, NUL-delimited worktree records, inherited-environment isolation, and disabling filesystem-monitor helpers. WTM keeps ordinary ignore rules and binary attributes while disabling fsmonitor during polling.
 
 The coordinator owns scan scheduling. A private watcher boundary owns native watch registration and reports invalidations. Configuration watches follow parent directories so atomic file replacement does not detach them. Shared Git metadata watches cover linked worktrees even when the main worktree's files do not change. A five-minute safety pass covers lost events. Short recovery polling remains available when native watches fail.
 
@@ -50,7 +50,7 @@ Monitor updates carry scan targets and retained scan activities separately from 
 | Native repository cards | Selected for clear hierarchy, colored counters, branch badges, and an actual visual redesign. |
 | Dark terminal ledger | Rejected because a recolored text buffer still makes long paths and worktrees harder to scan. |
 
-The terminal sketch contributed the vivid green and teal palette and WTS wordmark. Core counting, registration storage, CLI output, and monitor ownership remain unchanged. The viewport preserves scroll on unchanged and count-only updates.
+The terminal sketch contributed the vivid green and teal palette and WTM wordmark. Core counting, registration storage, CLI output, and monitor ownership remain unchanged. The viewport preserves scroll on unchanged and count-only updates.
 
 Display order lives in a separate window-library model. Stable Git common-directory and worktree-root paths identify groups and rows. A completed drop updates `config.order.json` through its own nonblocking lock and atomic replacement. A failed save keeps the prior order and shows a warning. The core accepts explicit live launch context but does not register it. Saved ranks cannot discover or register repositories.
 

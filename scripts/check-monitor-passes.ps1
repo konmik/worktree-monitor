@@ -1,7 +1,7 @@
 param([string]$Binary = "$PSScriptRoot/../target/release/examples/measure-monitor.exe")
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
-$root = "$env:LOCALAPPDATA/Temp/opencode/wts-serial-$([Guid]::NewGuid().ToString('N'))"
+$root = "$env:LOCALAPPDATA/Temp/opencode/wtm-serial-$([Guid]::NewGuid().ToString('N'))"
 $repo = "$root/repo"
 $linked = "$root/linked"
 $added = "$root/added"
@@ -21,7 +21,7 @@ $start.UseShellExecute = $false
 $start.WorkingDirectory = $repo
 $start.ArgumentList.Add('1')
 $start.ArgumentList.Add('0')
-$start.Environment['WTS_BENCH_CONFIG'] = "$root/config.json"
+$start.Environment['WTM_BENCH_CONFIG'] = "$root/config.json"
 $start.Environment['GIT_TRACE2_PERF'] = "$root/git.trace"
 $start.RedirectStandardOutput = $true
 $start.RedirectStandardError = $true

@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 $Baseline = (Resolve-Path -LiteralPath $Baseline).Path
 $Treatment = (Resolve-Path -LiteralPath $Treatment).Path
 if ((Get-FileHash -LiteralPath $Baseline).Hash -eq (Get-FileHash -LiteralPath $Treatment).Hash) { throw 'Baseline and treatment executables are identical' }
-$evidence = Join-Path $env:LOCALAPPDATA "Temp/opencode/wts-benchmark-$([Guid]::NewGuid().ToString('N'))"
+$evidence = Join-Path $env:LOCALAPPDATA "Temp/opencode/wtm-benchmark-$([Guid]::NewGuid().ToString('N'))"
 [void][IO.Directory]::CreateDirectory($evidence)
 $processes = @()
 try {

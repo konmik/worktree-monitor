@@ -19,6 +19,6 @@ mod native;
 pub use native::run;
 
 #[cfg(not(windows))]
-pub fn run(_service: wts_core::Service, _launch_directory: std::path::PathBuf) -> Result<(), std::io::Error> {
+pub fn run(_service: wtm_core::Service, _launch_directory: std::path::PathBuf) -> Result<(), std::io::Error> {
     Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "--live is supported only on Windows"))
 }

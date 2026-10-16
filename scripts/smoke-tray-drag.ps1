@@ -1,11 +1,11 @@
-param([string]$Binary = "$PSScriptRoot/../target/debug/wts-ui.exe")
+param([string]$Binary = "$PSScriptRoot/../target/debug/wtm-ui.exe")
 
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
 $source = Get-Content -LiteralPath "$PSScriptRoot/smoke-window.ps1" -Raw
 $start = $source.IndexOf('using System;')
 $end = $source.IndexOf("`n'@", $start)
-$source = $source.Substring($start, $end - $start).Replace('WtsWindowProbe', 'WtsTrayDragProbe')
+$source = $source.Substring($start, $end - $start).Replace('WtmWindowProbe', 'WtmTrayDragProbe')
 $source = $source.Replace('private static void Drag(', 'public static void Drag(')
 $extra = @'
     public struct Message { public IntPtr Window; public uint Id; public UIntPtr WParam; public IntPtr LParam; public uint Time; public Point Position; public uint Private; }
@@ -19,7 +19,7 @@ $extra = @'
         var worker = new System.Threading.Thread(() => {
             SetThreadDpiAwarenessContext(new IntPtr(-4));
             try {
-                backdrop = CreateWindowExW(0x88, "STATIC", "WTS tray probe", 0x10cf0000, x, y, 160, 100, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+                backdrop = CreateWindowExW(0x88, "STATIC", "WTM tray probe", 0x10cf0000, x, y, 160, 100, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
                 if (backdrop == IntPtr.Zero) throw new InvalidOperationException("Cannot create owned backdrop");
                 ready.Set();
                 while (IsWindow(backdrop)) {
@@ -135,13 +135,13 @@ function Wait-For([scriptblock]$Condition, [string]$Label) {
     throw "Timed out waiting for $Label"
 }
 
-$fixture = Join-Path $env:LOCALAPPDATA "Temp/opencode/wts-tray-drag-$([Guid]::NewGuid().ToString('N'))"
+$fixture = Join-Path $env:LOCALAPPDATA "Temp/opencode/wtm-tray-drag-$([Guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $fixture | Out-Null
 $process = $null
 $window = [IntPtr]::Zero
-$savedCursor = [WtsTrayDragProbe+Point]::new()
-if (-not [WtsTrayDragProbe]::GetCursorPos([ref]$savedCursor)) { throw 'Cannot save cursor position' }
-$previousDpi = [WtsTrayDragProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
+$savedCursor = [WtmTrayDragProbe+Point]::new()
+if (-not [WtmTrayDragProbe]::GetCursorPos([ref]$savedCursor)) { throw 'Cannot save cursor position' }
+$previousDpi = [WtmTrayDragProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
 try {
     $start = [Diagnostics.ProcessStartInfo]::new($Binary)
     $start.WorkingDirectory = $fixture
@@ -150,59 +150,59 @@ try {
     $start.Environment['HOME'] = $fixture
     $start.Environment['USERPROFILE'] = $fixture
     $process = [Diagnostics.Process]::Start($start)
-    Wait-For { $script:window = [WtsTrayDragProbe]::Find([uint32]$process.Id); $window -ne [IntPtr]::Zero } 'visible fixture'
-    $style = [WtsTrayDragProbe]::GetWindowLongPtr($window, -20).ToInt64()
+    Wait-For { $script:window = [WtmTrayDragProbe]::Find([uint32]$process.Id); $window -ne [IntPtr]::Zero } 'visible fixture'
+    $style = [WtmTrayDragProbe]::GetWindowLongPtr($window, -20).ToInt64()
     if (($style -band 0x80) -eq 0 -or ($style -band 0x40000) -ne 0) { throw 'Window is not excluded from the taskbar' }
-    Wait-For { [WtsTrayDragProbe]::HasIcon($window, 1) } 'real Shell notification icon'
+    Wait-For { [WtmTrayDragProbe]::HasIcon($window, 1) } 'real Shell notification icon'
     foreach ($id in @(0, 2, 3)) {
-        if ([WtsTrayDragProbe]::HasIcon($window, $id)) { throw "Unexpected extra notification icon $id" }
+        if ([WtmTrayDragProbe]::HasIcon($window, $id)) { throw "Unexpected extra notification icon $id" }
     }
-    $taskbarCreated = [WtsTrayDragProbe]::RegisterWindowMessage('TaskbarCreated')
+    $taskbarCreated = [WtmTrayDragProbe]::RegisterWindowMessage('TaskbarCreated')
     if ($taskbarCreated -eq 0) { throw 'TaskbarCreated message unavailable' }
-    1..3 | ForEach-Object { [void][WtsTrayDragProbe]::SendMessage($window, $taskbarCreated, [IntPtr]::Zero, [IntPtr]::Zero) }
-    if (-not [WtsTrayDragProbe]::HasIcon($window, 1)) { throw 'Notification icon disappeared after repeated registration' }
+    1..3 | ForEach-Object { [void][WtmTrayDragProbe]::SendMessage($window, $taskbarCreated, [IntPtr]::Zero, [IntPtr]::Zero) }
+    if (-not [WtmTrayDragProbe]::HasIcon($window, 1)) { throw 'Notification icon disappeared after repeated registration' }
     Write-Host 'PASS. Tool window has a real notification icon and no taskbar app style. Repeated registration preserves its identity.'
-    $work = [WtsTrayDragProbe+Rect]::new()
-    if (-not [WtsTrayDragProbe]::SystemParametersInfo(0x30, 0, [ref]$work, 0)) { throw 'Work area unavailable' }
-    if (-not [WtsTrayDragProbe]::SetWindowPos($window, [IntPtr](-1), $work.Left + 80, $work.Top + 80, 640, 300, 0x10)) { throw 'Cannot position fixture' }
-    $status = [WtsTrayDragProbe]::GetDlgItem($window, 1002)
-    Wait-For { [WtsTrayDragProbe]::Caption($status) -match '\[read: \d+%\]' } 'read indicator'
-    $bounds = [WtsTrayDragProbe]::Bounds($status)
-    [WtsTrayDragProbe]::DragAndCheck($window, $bounds.Left + 25, [int](($bounds.Top + $bounds.Bottom) / 2), $false)
-    $bounds = [WtsTrayDragProbe]::Bounds($status)
-    [WtsTrayDragProbe]::DragAndCheck($window, $bounds.Right - 30, [int](($bounds.Top + $bounds.Bottom) / 2), $false)
-    $bounds = [WtsTrayDragProbe]::Bounds($window)
-    if ([WtsTrayDragProbe]::SendMessage($window, 0x84, [IntPtr]::Zero, [WtsTrayDragProbe]::Position($bounds.Right - 2, $bounds.Bottom - 2)).ToInt64() -ne 17) { throw 'Resize corner no longer has its resize hit test' }
-    [WtsTrayDragProbe]::DragAndCheck($window, $bounds.Right - 2, $bounds.Bottom - 2, $true)
-    $toggle = [WtsTrayDragProbe]::GetDlgItem($window, 1004)
-    $bounds = [WtsTrayDragProbe]::Bounds($status)
-    [void][WtsTrayDragProbe]::SetCursorPos($bounds.Left + 25, [int](($bounds.Top + $bounds.Bottom) / 2))
-    Wait-For { [WtsTrayDragProbe]::IsWindowVisible($toggle) } 'Show all on hover'
-    $bounds = [WtsTrayDragProbe]::Bounds($toggle)
-    $point = [WtsTrayDragProbe]::Position([int](($bounds.Left + $bounds.Right) / 2), [int](($bounds.Top + $bounds.Bottom) / 2))
-    if ([WtsTrayDragProbe]::SendMessage($window, 0x84, [IntPtr]::Zero, $point).ToInt64() -ne 1) { throw 'Show all is treated as a window drag region' }
+    $work = [WtmTrayDragProbe+Rect]::new()
+    if (-not [WtmTrayDragProbe]::SystemParametersInfo(0x30, 0, [ref]$work, 0)) { throw 'Work area unavailable' }
+    if (-not [WtmTrayDragProbe]::SetWindowPos($window, [IntPtr](-1), $work.Left + 80, $work.Top + 80, 640, 300, 0x10)) { throw 'Cannot position fixture' }
+    $status = [WtmTrayDragProbe]::GetDlgItem($window, 1002)
+    Wait-For { [WtmTrayDragProbe]::Caption($status) -match '\[read: \d+%\]' } 'read indicator'
+    $bounds = [WtmTrayDragProbe]::Bounds($status)
+    [WtmTrayDragProbe]::DragAndCheck($window, $bounds.Left + 25, [int](($bounds.Top + $bounds.Bottom) / 2), $false)
+    $bounds = [WtmTrayDragProbe]::Bounds($status)
+    [WtmTrayDragProbe]::DragAndCheck($window, $bounds.Right - 30, [int](($bounds.Top + $bounds.Bottom) / 2), $false)
+    $bounds = [WtmTrayDragProbe]::Bounds($window)
+    if ([WtmTrayDragProbe]::SendMessage($window, 0x84, [IntPtr]::Zero, [WtmTrayDragProbe]::Position($bounds.Right - 2, $bounds.Bottom - 2)).ToInt64() -ne 17) { throw 'Resize corner no longer has its resize hit test' }
+    [WtmTrayDragProbe]::DragAndCheck($window, $bounds.Right - 2, $bounds.Bottom - 2, $true)
+    $toggle = [WtmTrayDragProbe]::GetDlgItem($window, 1004)
+    $bounds = [WtmTrayDragProbe]::Bounds($status)
+    [void][WtmTrayDragProbe]::SetCursorPos($bounds.Left + 25, [int](($bounds.Top + $bounds.Bottom) / 2))
+    Wait-For { [WtmTrayDragProbe]::IsWindowVisible($toggle) } 'Show all on hover'
+    $bounds = [WtmTrayDragProbe]::Bounds($toggle)
+    $point = [WtmTrayDragProbe]::Position([int](($bounds.Left + $bounds.Right) / 2), [int](($bounds.Top + $bounds.Bottom) / 2))
+    if ([WtmTrayDragProbe]::SendMessage($window, 0x84, [IntPtr]::Zero, $point).ToInt64() -ne 1) { throw 'Show all is treated as a window drag region' }
     Write-Host 'PASS. Real mouse drags on the read text and empty status row move the window. Real corner drag still resizes it.'
-    [WtsTrayDragProbe]::Menu($window, $false)
-    Wait-For { -not [WtsTrayDragProbe]::IsWindowVisible($window) } 'tray Hide action'
-    if (-not [WtsTrayDragProbe]::HasIcon($window, 1)) { throw 'Hiding window removed its notification icon' }
-    [WtsTrayDragProbe]::CheckOutsideDismissal($window, $work.Left + 10, $work.Top + 10)
+    [WtmTrayDragProbe]::Menu($window, $false)
+    Wait-For { -not [WtmTrayDragProbe]::IsWindowVisible($window) } 'tray Hide action'
+    if (-not [WtmTrayDragProbe]::HasIcon($window, 1)) { throw 'Hiding window removed its notification icon' }
+    [WtmTrayDragProbe]::CheckOutsideDismissal($window, $work.Left + 10, $work.Top + 10)
     Write-Host 'PASS. A real outside click on an owned backdrop dismisses the tray menu while the app is hidden.'
-    [void][WtsTrayDragProbe]::PostMessage($window, 32811, [IntPtr]::Zero, [IntPtr]((1 -shl 16) -bor 1024))
-    Wait-For { [WtsTrayDragProbe]::IsWindowVisible($window) } 'tray selection to restore window'
-    [WtsTrayDragProbe]::Menu($window, $false)
-    Wait-For { -not [WtsTrayDragProbe]::IsWindowVisible($window) } 'second tray Hide action'
-    [WtsTrayDragProbe]::Menu($window, $false)
-    Wait-For { [WtsTrayDragProbe]::IsWindowVisible($window) } 'tray Show action'
-    [WtsTrayDragProbe]::Menu($window, $true)
+    [void][WtmTrayDragProbe]::PostMessage($window, 32811, [IntPtr]::Zero, [IntPtr]((1 -shl 16) -bor 1024))
+    Wait-For { [WtmTrayDragProbe]::IsWindowVisible($window) } 'tray selection to restore window'
+    [WtmTrayDragProbe]::Menu($window, $false)
+    Wait-For { -not [WtmTrayDragProbe]::IsWindowVisible($window) } 'second tray Hide action'
+    [WtmTrayDragProbe]::Menu($window, $false)
+    Wait-For { [WtmTrayDragProbe]::IsWindowVisible($window) } 'tray Show action'
+    [WtmTrayDragProbe]::Menu($window, $true)
     if (-not $process.WaitForExit(5000) -or $process.ExitCode -ne 0) { throw 'Tray Exit did not close cleanly' }
-    if ([WtsTrayDragProbe]::HasIcon($window, 1)) { throw 'Notification icon remains after Exit' }
+    if ([WtmTrayDragProbe]::HasIcon($window, 1)) { throw 'Notification icon remains after Exit' }
     Write-Host 'PASS. Tray callback opens a real mouse-operated menu. Hide, Show, selection restore, and Exit work. Exit removes the icon.'
 } finally {
     if ($null -ne $process -and -not $process.HasExited) {
-        if ($window -ne [IntPtr]::Zero) { [void][WtsTrayDragProbe]::PostMessage($window, 0x10, [IntPtr]::Zero, [IntPtr]::Zero) }
+        if ($window -ne [IntPtr]::Zero) { [void][WtmTrayDragProbe]::PostMessage($window, 0x10, [IntPtr]::Zero, [IntPtr]::Zero) }
         if (-not $process.WaitForExit(5000)) { $process.Kill(); $process.WaitForExit() }
     }
-    [void][WtsTrayDragProbe]::SetCursorPos($savedCursor.X, $savedCursor.Y)
-    if ($previousDpi -ne [IntPtr]::Zero) { [void][WtsTrayDragProbe]::SetThreadDpiAwarenessContext($previousDpi) }
+    [void][WtmTrayDragProbe]::SetCursorPos($savedCursor.X, $savedCursor.Y)
+    if ($previousDpi -ne [IntPtr]::Zero) { [void][WtmTrayDragProbe]::SetThreadDpiAwarenessContext($previousDpi) }
     if ($null -ne $process) { $process.Dispose() }
 }

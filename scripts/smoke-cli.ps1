@@ -62,9 +62,9 @@ function Get-Numstat {
     return @{ Add = $add; Del = $del }
 }
 
-function Invoke-Wts {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$WtsArgs)
-    if ($null -eq $WtsArgs) { $WtsArgs = @() }
+function Invoke-Wtm {
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$WtmArgs)
+    if ($null -eq $WtmArgs) { $WtmArgs = @() }
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $resolvedBinary
     $psi.WorkingDirectory = $isolatedHome
@@ -75,7 +75,7 @@ function Invoke-Wts {
     $psi.CreateNoWindow = $true
     $psi.StandardOutputEncoding = $utf8
     $psi.StandardErrorEncoding = $utf8
-    foreach ($arg in $WtsArgs) {
+    foreach ($arg in $WtmArgs) {
         [void]$psi.ArgumentList.Add($arg)
     }
     $psi.Environment["USERPROFILE"] = $isolatedHome
@@ -89,7 +89,7 @@ function Invoke-Wts {
         $errTask = $proc.StandardError.ReadToEndAsync()
         if (-not $proc.WaitForExit(60000)) {
             try { $proc.Kill($true) } catch { try { $proc.Kill() } catch {} }
-            throw "FAIL timeout: wts $($WtsArgs -join ' ')"
+            throw "FAIL timeout: wtm $($WtmArgs -join ' ')"
         }
         [void]$proc.WaitForExit()
         $result = [pscustomobject]@{
@@ -97,7 +97,7 @@ function Invoke-Wts {
             Stdout = $outTask.GetAwaiter().GetResult()
             Stderr = $errTask.GetAwaiter().GetResult()
         }
-        Add-Transcript ("wts " + ($WtsArgs -join " ")) $result
+        Add-Transcript ("wtm " + ($WtmArgs -join " ")) $result
         return $result
     } finally {
         $proc.Dispose()
@@ -212,7 +212,7 @@ function Assert-Help {
 try {
     $repoRoot = Split-Path -Parent $PSScriptRoot
     if ([string]::IsNullOrWhiteSpace($Binary)) {
-        $resolvedBinary = Join-Path $repoRoot "target\debug\wts.exe"
+        $resolvedBinary = Join-Path $repoRoot "target\debug\wtm.exe"
     } elseif (-not [System.IO.Path]::IsPathRooted($Binary)) {
         $resolvedBinary = Join-Path $repoRoot $Binary
     } else {
@@ -224,14 +224,14 @@ try {
     }
 
     $parentProfile = [Environment]::GetEnvironmentVariable("USERPROFILE")
-    $parentConfig = Join-Path $parentProfile ".config\wts\config.json"
+    $parentConfig = Join-Path $parentProfile ".config\wtm\config.json"
     $parentExisted = Test-Path -LiteralPath $parentConfig
     $parentHash = $null
     if ($parentExisted) {
         $parentHash = (Get-FileHash -LiteralPath $parentConfig -Algorithm SHA256).Hash
     }
 
-    $artifact = Join-Path (Join-Path $env:LOCALAPPDATA 'Temp/opencode') ("wts-smoke-" + [guid]::NewGuid().ToString("n"))
+    $artifact = Join-Path (Join-Path $env:LOCALAPPDATA 'Temp/opencode') ("wtm-smoke-" + [guid]::NewGuid().ToString("n"))
     $isolatedHome = Join-Path $artifact "home"
     $repoPath = Join-Path $artifact "repo"
     New-Item -ItemType Directory -Path $isolatedHome | Out-Null
@@ -241,12 +241,12 @@ try {
     if ($isolatedHome -eq $parentProfile) {
         throw "isolated home matches parent profile"
     }
-    $configPath = Join-Path $isolatedHome ".config\wts\config.json"
+    $configPath = Join-Path $isolatedHome ".config\wtm\config.json"
     [System.IO.File]::WriteAllText((Join-Path $artifact "transcript.txt"), "binary: $resolvedBinary`r`nhome: $isolatedHome`r`nconfig: $configPath`r`n", $utf8)
 
     $empty = "No registered repositories.`n"
-    Assert-Help (Invoke-Wts help)
-    Assert-Result "empty" (Invoke-Wts) 0 $empty ""
+    Assert-Help (Invoke-Wtm help)
+    Assert-Result "empty" (Invoke-Wtm) 0 $empty ""
     Assert-Unregistered "empty"
 
     [void](Invoke-Git -GitArgs @("init", "-q"))
@@ -255,8 +255,8 @@ try {
     Write-Text (Join-Path $repoPath "tracked.txt") "alpha`nbravo`ncharlie`ndelta`n"
     [void](Invoke-Git -GitArgs @("add", "--", ".gitignore", "tracked.txt"))
     [void](Invoke-Git -GitArgs @(
-        "-c", "user.name=wts-smoke",
-        "-c", "user.email=wts-smoke@example.com",
+        "-c", "user.name=wtm-smoke",
+        "-c", "user.email=wtm-smoke@example.com",
         "-c", "commit.gpgsign=false",
         "-c", "core.hooksPath=$artifact",
         "commit", "-q", "-m", "baseline"
@@ -292,11 +292,11 @@ try {
         throw "fixture not clean: $($cleanListed -join ', ')"
     }
 
-    Assert-Result "add" (Invoke-Wts add $sub) 0 "Repository registered.`n" ""
+    Assert-Result "add" (Invoke-Wtm add $sub) 0 "Repository registered.`n" ""
     Assert-Registered "add" @($common)
-    Assert-Result "duplicate-add" (Invoke-Wts add $sub) 0 "Repository already registered.`n" ""
+    Assert-Result "duplicate-add" (Invoke-Wtm add $sub) 0 "Repository already registered.`n" ""
     Assert-Registered "duplicate-add" @($common)
-    Assert-Snapshot (Invoke-Wts) 0 0
+    Assert-Snapshot (Invoke-Wtm) 0 0
 
     Write-Text (Join-Path $repoPath "tracked.txt") "alpha`nBRAVO`ncharlie`ndelta`n"
     [void](Invoke-Git -GitArgs @("add", "--", "tracked.txt"))
@@ -320,18 +320,18 @@ try {
     if ($listed.Count -ne 1 -or [string]$listed[0] -ne "notes.txt") {
         throw "fixture untracked [$($listed -join ', ')]"
     }
-    Assert-Snapshot (Invoke-Wts) 4 1
+    Assert-Snapshot (Invoke-Wtm) 4 1
 
-    Assert-Result "remove" (Invoke-Wts remove $sub) 0 "Repository removed.`n" ""
+    Assert-Result "remove" (Invoke-Wtm remove $sub) 0 "Repository removed.`n" ""
     Assert-Unregistered "remove"
-    Assert-Result "duplicate-remove" (Invoke-Wts remove $sub) 0 "Repository is not registered.`n" ""
+    Assert-Result "duplicate-remove" (Invoke-Wtm remove $sub) 0 "Repository is not registered.`n" ""
     Assert-Unregistered "duplicate-remove"
-    Assert-Result "add-plain" (Invoke-Wts add $plain) 1 "" "Error: fatal: not a git repository (or any of the parent directories): .git`n"
+    Assert-Result "add-plain" (Invoke-Wtm add $plain) 1 "" "Error: fatal: not a git repository (or any of the parent directories): .git`n"
     Assert-Unregistered "add-plain"
-    Assert-Result "empty-after-remove" (Invoke-Wts) 0 $empty ""
+    Assert-Result "empty-after-remove" (Invoke-Wtm) 0 $empty ""
 
     Write-Text $configPath '{broken'
-    $malformed = Invoke-Wts add $sub
+    $malformed = Invoke-Wtm add $sub
     if ($malformed.ExitCode -ne 1 -or [string]::IsNullOrWhiteSpace($malformed.Stderr)) { throw 'malformed configuration was accepted' }
     if ([IO.File]::ReadAllText($configPath) -cne '{broken') { throw 'malformed configuration was overwritten' }
 

@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][int]$ProcessId,
-    [string]$Output = "$env:LOCALAPPDATA/Temp/wts-worktree-spacing",
+    [string]$Output = "$env:LOCALAPPDATA/Temp/wtm-worktree-spacing",
     [switch]$Startup
 )
 
@@ -12,7 +12,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
-public static class WtsSpacingProbe {
+public static class WtmSpacingProbe {
     public struct Rect { public int Left, Top, Right, Bottom; }
     public sealed class Row { public IntPtr Handle; public Rect Bounds; public string Text; }
     public delegate bool EnumProc(IntPtr window, IntPtr data);
@@ -50,8 +50,8 @@ function Is-Worktree($Row) {
 }
 
 function Assert-WindowBounds($Window, $Original) {
-    $bounds = [WtsSpacingProbe+Rect]::new()
-    if (-not [WtsSpacingProbe]::GetWindowRect($Window, [ref]$bounds)) { throw 'Monitor bounds unavailable' }
+    $bounds = [WtmSpacingProbe+Rect]::new()
+    if (-not [WtmSpacingProbe]::GetWindowRect($Window, [ref]$bounds)) { throw 'Monitor bounds unavailable' }
     if ($bounds.Left -ne $Original.Left -or $bounds.Top -ne $Original.Top -or $bounds.Right -ne $Original.Right -or $bounds.Bottom -ne $Original.Bottom) {
         throw "Monitor bounds changed from ($($Original.Left), $($Original.Top), $($Original.Right), $($Original.Bottom)) to ($($bounds.Left), $($bounds.Top), $($bounds.Right), $($bounds.Bottom))"
     }
@@ -67,16 +67,16 @@ do {
     Start-Sleep -Milliseconds 50
 } while ([DateTime]::UtcNow -lt $deadline)
 if ($window -eq [IntPtr]::Zero) { throw 'Monitor window unavailable' }
-$previousDpi = [WtsSpacingProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
-$original = [WtsSpacingProbe+Rect]::new()
-if (-not [WtsSpacingProbe]::GetWindowRect($window, [ref]$original)) { throw 'Monitor bounds unavailable' }
+$previousDpi = [WtmSpacingProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
+$original = [WtmSpacingProbe+Rect]::new()
+if (-not [WtmSpacingProbe]::GetWindowRect($window, [ref]$original)) { throw 'Monitor bounds unavailable' }
 $checks = [Collections.Generic.List[object]]::new()
 try {
-    $viewport = [WtsSpacingProbe]::GetDlgItem($window, 1001)
+    $viewport = [WtmSpacingProbe]::GetDlgItem($window, 1001)
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
     do {
         $null = Assert-WindowBounds $window $original
-        $rows = [WtsSpacingProbe]::Rows($viewport)
+        $rows = [WtmSpacingProbe]::Rows($viewport)
         $pairs = 0
         for ($index = 1; $index -lt $rows.Count; $index++) {
             if ((Is-Worktree $rows[$index - 1]) -and (Is-Worktree $rows[$index])) { $pairs++ }
@@ -90,7 +90,7 @@ try {
             $deadline = [DateTime]::UtcNow.AddSeconds(90)
             do {
                 $null = Assert-WindowBounds $window $original
-                $rows = [WtsSpacingProbe]::Rows($viewport)
+                $rows = [WtmSpacingProbe]::Rows($viewport)
                 $pending = @($rows | Where-Object {
                     $_.Text -match '\r?\nRefreshing$' -or ((Is-Worktree $_) -and $_.Text -notmatch '\r?\nS\s+\+\d+/-\d+|\r?\nCounts unavailable')
                 })
@@ -106,11 +106,11 @@ try {
         $graphics = [Drawing.Graphics]::FromImage($bitmap)
         $dc = $graphics.GetHdc()
         try {
-            if (-not [WtsSpacingProbe]::PrintWindow($window, $dc, 0)) { throw 'Monitor capture failed' }
+            if (-not [WtmSpacingProbe]::PrintWindow($window, $dc, 0)) { throw 'Monitor capture failed' }
         } finally { $graphics.ReleaseHdc($dc); $graphics.Dispose() }
         try { $bitmap.Save((Join-Path $Output "$phase-width-$width-height-$height.png")) } finally { $bitmap.Dispose() }
         $null = Assert-WindowBounds $window $original
-        $rows = [WtsSpacingProbe]::Rows($viewport)
+        $rows = [WtmSpacingProbe]::Rows($viewport)
         $pairs = 0
         for ($index = 1; $index -lt $rows.Count; $index++) {
             $previous = $rows[$index - 1]
@@ -128,5 +128,5 @@ try {
     $checks | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $Output 'proof.json')
     Write-Host "PASS. Adjacent worktree bounds touch and monitor bounds are unchanged. Evidence: $Output"
 } finally {
-    [void][WtsSpacingProbe]::SetThreadDpiAwarenessContext($previousDpi)
+    [void][WtmSpacingProbe]::SetThreadDpiAwarenessContext($previousDpi)
 }

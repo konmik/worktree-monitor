@@ -717,7 +717,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "windows-sys 0.61.2",
- "wts-core",
+ "wtm-core",
  "yoga-sys",
 ]
 
@@ -827,7 +827,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "wts"
+name = "wtm"
 version = "0.1.0"
 dependencies = [
  "clap",
@@ -835,11 +835,11 @@ dependencies = [
  "tempfile",
  "window-win",
  "windows-sys 0.61.2",
- "wts-core",
+ "wtm-core",
 ]
 
 [[package]]
-name = "wts-core"
+name = "wtm-core"
 version = "0.1.0"
 dependencies = [
  "dunce",

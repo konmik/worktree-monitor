@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use window_win::dashboard::{DashboardView, DisplayItem, Health, ItemKey, RefreshTracker};
 use window_win::order::identity;
-use wts_core::{Counts, Error, ErrorKind, Head, LineCounts, RepoEntry, ScanActivity, ScanTarget, Snapshot, WorktreeEntry, WorktreeStats};
+use wtm_core::{Counts, Error, ErrorKind, Head, LineCounts, RepoEntry, ScanActivity, ScanTarget, Snapshot, WorktreeEntry, WorktreeStats};
 
 fn tree(path: &str, head: Head, additions: u64, deletions: u64, binaries: u64) -> WorktreeEntry {
     WorktreeEntry { path: path.into(), result: Ok(WorktreeStats { head,

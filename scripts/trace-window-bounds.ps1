@@ -1,7 +1,7 @@
 param(
-    [string]$Binary = "$env:USERPROFILE/.cargo/bin/wts-ui.exe",
+    [string]$Binary = "$env:USERPROFILE/.cargo/bin/wtm-ui.exe",
     [int]$DurationSeconds = 35,
-    [string]$Output = "$env:LOCALAPPDATA/Temp/wts-window-trace-$([Guid]::NewGuid().ToString('N'))",
+    [string]$Output = "$env:LOCALAPPDATA/Temp/wtm-window-trace-$([Guid]::NewGuid().ToString('N'))",
     [switch]$Restart
 )
 
@@ -15,7 +15,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
-public static class WtsBoundsTrace {
+public static class WtmBoundsTrace {
     public struct Rect { public int Left, Top, Right, Bottom; public override string ToString() { return Left + "," + Top + "," + Right + "," + Bottom; } }
     public struct Point { public int X, Y; }
     public struct Message { public IntPtr Window; public uint Id; public UIntPtr Wparam; public IntPtr Lparam; public uint Time; public Point Point; public uint Private; }
@@ -56,7 +56,7 @@ public static class WtsBoundsTrace {
         if (window == IntPtr.Zero) return;
         var type = new StringBuilder(64);
         GetClassName(window, type, type.Capacity);
-        if (type.ToString() != "WtsStatusWindow") return;
+        if (type.ToString() != "WtmStatusWindow") return;
         Rect bounds, client, viewport, frame;
         if (!GetWindowRect(window, out bounds)) return;
         GetClientRect(window, out client);
@@ -117,13 +117,13 @@ public static class WtsBoundsTrace {
 }
 '@
 
-$existing = @(Get-Process wts-ui -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $Binary })
+$existing = @(Get-Process wtm-ui -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $Binary })
 $existing | Select-Object Id, Path, StartTime | ConvertTo-Json | Set-Content (Join-Path $Output 'initial-processes.json')
-$config = Join-Path $env:USERPROFILE '.config/wts'
+$config = Join-Path $env:USERPROFILE '.config/wtm'
 Copy-Item -LiteralPath (Join-Path $config 'config.json'), (Join-Path $config 'config.placement.json') -Destination $Output
-[WtsBoundsTrace]::Start()
+[WtmBoundsTrace]::Start()
 try {
-    [WtsBoundsTrace]::Poll()
+    [WtmBoundsTrace]::Poll()
     if ($Restart) {
         if ($existing.Count -gt 1) { throw 'Multiple installed monitor instances are running' }
         foreach ($app in $existing) {
@@ -135,11 +135,11 @@ try {
     }
     $clock = [Diagnostics.Stopwatch]::StartNew()
     while ($clock.Elapsed.TotalSeconds -lt $DurationSeconds) {
-        [WtsBoundsTrace]::Poll()
+        [WtmBoundsTrace]::Poll()
         Start-Sleep -Milliseconds 10
     }
 } finally {
-    $entries = [WtsBoundsTrace]::Stop()
+    $entries = [WtmBoundsTrace]::Stop()
     $entries | Sort-Object Milliseconds | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $Output 'events.json')
     $visible = @($entries | Where-Object Visible)
     $visible | Group-Object ProcessId, Bounds | Select-Object Name, Count | Format-Table | Out-String | Write-Host

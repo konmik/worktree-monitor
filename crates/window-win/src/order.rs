@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use wts_core::{ScanTarget, Snapshot};
+use wtm_core::{ScanTarget, Snapshot};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OrderMove {

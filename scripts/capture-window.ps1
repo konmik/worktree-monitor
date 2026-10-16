@@ -1,6 +1,6 @@
 param(
-    [string]$Binary = "$PSScriptRoot/../target/debug/wts-ui.exe",
-    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wts-dashboard.png",
+    [string]$Binary = "$PSScriptRoot/../target/debug/wtm-ui.exe",
+    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wtm-dashboard.png",
     [switch]$Screen = $true,
     [int]$Height = 0,
     [switch]$Client,
@@ -13,14 +13,14 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
-$CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wts.exe')).Path
+$CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wtm.exe')).Path
 $Output = [IO.Path]::GetFullPath($Output)
 Add-Type -AssemblyName System.Drawing
 Add-Type -TypeDefinition @'
 using System;
 using System.Text;
 using System.Runtime.InteropServices;
-public static class WtsCapture {
+public static class WtmCapture {
     public struct Rect { public int Left, Top, Right, Bottom; }
     public struct Point { public int X, Y; }
     public struct GuiInfo { public uint Size, Flags; public IntPtr Active, Focus, Capture, MenuOwner, MoveSize, Caret; public Rect CaretRect; }
@@ -59,7 +59,7 @@ public static class WtsCapture {
             if (owner != pid || !IsWindowVisible(handle)) { return true; }
             var text = new StringBuilder(256);
             GetWindowText(handle, text, text.Capacity);
-            if (!text.ToString().StartsWith("WTS", StringComparison.OrdinalIgnoreCase)) { return true; }
+            if (!text.ToString().StartsWith("WTM", StringComparison.OrdinalIgnoreCase)) { return true; }
             found = handle;
             return false;
         }, IntPtr.Zero);
@@ -93,7 +93,7 @@ function Has-FixtureData([string]$Text) {
     return $true
 }
 
-$fixture = Join-Path $env:LOCALAPPDATA "Temp/opencode/wts-dashboard-$([Guid]::NewGuid().ToString('N'))"
+$fixture = Join-Path $env:LOCALAPPDATA "Temp/opencode/wtm-dashboard-$([Guid]::NewGuid().ToString('N'))"
 $fixtureHome = Join-Path $fixture 'home'
 New-Item -ItemType Directory -Path $fixtureHome -Force | Out-Null
 $oldHome = $env:HOME
@@ -102,7 +102,7 @@ $process = $null
 $bitmap = $null
 $graphics = $null
 $script:expectedRows = @()
-$previousDpiContext = [WtsCapture]::SetThreadDpiAwarenessContext([IntPtr](-4))
+$previousDpiContext = [WtmCapture]::SetThreadDpiAwarenessContext([IntPtr](-4))
 try {
     $env:HOME = Join-Path $fixture 'unix-home'
     $env:USERPROFILE = $fixtureHome
@@ -117,7 +117,7 @@ try {
         $before = @(1..100 | ForEach-Object { "original line $_" })
         [IO.File]::WriteAllLines((Join-Path $repo 'source.txt'), $before)
         Invoke-FixtureGit $repo @('add', '.')
-        Invoke-FixtureGit $repo @('-c', 'user.name=Wts Visual Test', '-c', 'user.email=wts@example.invalid', 'commit', '--quiet', '-m', 'Fixture')
+        Invoke-FixtureGit $repo @('-c', 'user.name=Wtm Visual Test', '-c', 'user.email=wtm@example.invalid', 'commit', '--quiet', '-m', 'Fixture')
         for ($index = 0; $index -lt $DirectoryCount; $index++) {
             [void][IO.Directory]::CreateDirectory((Join-Path $repo "folder-$index/source"))
         }
@@ -139,9 +139,9 @@ try {
     $handle = [IntPtr]::Zero
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
     do {
-        $handle = [WtsCapture]::Find([uint32]$process.Id)
+        $handle = [WtmCapture]::Find([uint32]$process.Id)
         if ($handle -ne [IntPtr]::Zero) {
-            $text = [WtsCapture]::Text($handle)
+            $text = [WtmCapture]::Text($handle)
             if (Has-FixtureData $text) { break }
         }
         Start-Sleep -Milliseconds 100
@@ -154,7 +154,7 @@ try {
         }
         $deadline = [DateTime]::UtcNow.AddSeconds(30)
         do {
-            $text = [WtsCapture]::Text($handle)
+            $text = [WtmCapture]::Text($handle)
             if (Has-FixtureData $text) { break }
             Start-Sleep -Milliseconds 100
         } while ([DateTime]::UtcNow -lt $deadline)
@@ -174,56 +174,56 @@ foreach (`$item in `$items) { `$item.Current.Name }
     [IO.File]::WriteAllText((Join-Path $fixture 'accessibility.txt'), $names)
     if (-not (Has-FixtureData $names)) { throw 'Dashboard data has no accessible names' }
     if ($ShowAll) {
-        $toggle = [WtsCapture]::GetDlgItem($handle, 1004)
+        $toggle = [WtmCapture]::GetDlgItem($handle, 1004)
         if ($toggle -eq [IntPtr]::Zero) { throw 'Show all control is unavailable' }
-        [void][WtsCapture]::SendMessageW($toggle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
+        [void][WtmCapture]::SendMessageW($toggle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
     }
-    $bounds = New-Object WtsCapture+Rect
-    if (-not [WtsCapture]::GetWindowRect($handle, [ref]$bounds)) { throw 'Window bounds unavailable' }
+    $bounds = New-Object WtmCapture+Rect
+    if (-not [WtmCapture]::GetWindowRect($handle, [ref]$bounds)) { throw 'Window bounds unavailable' }
     if ($Height -gt 0) {
-        $area = New-Object WtsCapture+Rect
-        if (-not [WtsCapture]::SystemParametersInfo(0x0030, 0, [ref]$area, 0)) { throw 'Monitor work area unavailable' }
+        $area = New-Object WtmCapture+Rect
+        if (-not [WtmCapture]::SystemParametersInfo(0x0030, 0, [ref]$area, 0)) { throw 'Monitor work area unavailable' }
         $height = [Math]::Min($Height, $area.Bottom - $area.Top - 32)
-        if (-not [WtsCapture]::SetWindowPos($handle, [IntPtr]::Zero, $area.Left + 16, $area.Top + 16, $bounds.Right - $bounds.Left, $height, 20)) { throw 'Capture layout resize failed' }
-        if (-not [WtsCapture]::GetWindowRect($handle, [ref]$bounds)) { throw 'Resized window bounds unavailable' }
+        if (-not [WtmCapture]::SetWindowPos($handle, [IntPtr]::Zero, $area.Left + 16, $area.Top + 16, $bounds.Right - $bounds.Left, $height, 20)) { throw 'Capture layout resize failed' }
+        if (-not [WtmCapture]::GetWindowRect($handle, [ref]$bounds)) { throw 'Resized window bounds unavailable' }
     }
     if ($Client) {
         if (-not $Screen) { throw 'Client capture requires screen capture' }
-        $clientBounds = New-Object WtsCapture+Rect
-        $origin = New-Object WtsCapture+Point
-        if (-not [WtsCapture]::GetClientRect($handle, [ref]$clientBounds) -or -not [WtsCapture]::ClientToScreen($handle, [ref]$origin)) { throw 'Client capture bounds unavailable' }
+        $clientBounds = New-Object WtmCapture+Rect
+        $origin = New-Object WtmCapture+Point
+        if (-not [WtmCapture]::GetClientRect($handle, [ref]$clientBounds) -or -not [WtmCapture]::ClientToScreen($handle, [ref]$origin)) { throw 'Client capture bounds unavailable' }
         $bounds.Left = $origin.X
         $bounds.Top = $origin.Y
         $bounds.Right = $origin.X + $clientBounds.Right
         $bounds.Bottom = $origin.Y + $clientBounds.Bottom
     }
     $bitmap = [Drawing.Bitmap]::new($bounds.Right - $bounds.Left, $bounds.Bottom - $bounds.Top)
-    if (-not [WtsCapture]::RedrawWindow($handle, [IntPtr]::Zero, [IntPtr]::Zero, 0x0181)) { throw 'Capture repaint failed' }
+    if (-not [WtmCapture]::RedrawWindow($handle, [IntPtr]::Zero, [IntPtr]::Zero, 0x0181)) { throw 'Capture repaint failed' }
     $graphics = [Drawing.Graphics]::FromImage($bitmap)
     if ($Screen) {
-        [void][WtsCapture]::DwmFlush()
+        [void][WtmCapture]::DwmFlush()
         $graphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bitmap.Size)
     } else {
         $dc = $graphics.GetHdc()
         try {
-            if (-not [WtsCapture]::PrintWindow($handle, $dc, 2)) { throw 'Native window capture failed' }
+            if (-not [WtmCapture]::PrintWindow($handle, $dc, 2)) { throw 'Native window capture failed' }
         } finally { $graphics.ReleaseHdc($dc) }
     }
     [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($Output)) | Out-Null
     $bitmap.Save($Output, [Drawing.Imaging.ImageFormat]::Png)
     if ($VerifyScrollbar) {
-        $viewport = [WtsCapture]::GetDlgItem($handle, 1001)
-        $scrollbar = [WtsCapture]::GetDlgItem($handle, 1003)
+        $viewport = [WtmCapture]::GetDlgItem($handle, 1001)
+        $scrollbar = [WtmCapture]::GetDlgItem($handle, 1003)
         if ($viewport -eq [IntPtr]::Zero) { throw 'Dashboard viewport control 1001 is missing' }
         if ($scrollbar -eq [IntPtr]::Zero) { throw 'Scrollbar control 1003 is missing' }
-        if (-not [WtsCapture]::IsWindowVisible($scrollbar)) { throw 'Scrollbar control 1003 is not visible' }
-        $windowBounds = New-Object WtsCapture+Rect
-        $viewportBounds = New-Object WtsCapture+Rect
-        $scrollbarBounds = New-Object WtsCapture+Rect
-        if (-not [WtsCapture]::GetWindowRect($handle, [ref]$windowBounds)) { throw 'Scrollbar verification window bounds unavailable' }
-        if (-not [WtsCapture]::GetWindowRect($viewport, [ref]$viewportBounds)) { throw 'Scrollbar verification viewport bounds unavailable' }
-        if (-not [WtsCapture]::GetWindowRect($scrollbar, [ref]$scrollbarBounds)) { throw 'Scrollbar verification bounds unavailable' }
-        $dpi = [Math]::Max(96, [int][WtsCapture]::GetDpiForWindow($handle))
+        if (-not [WtmCapture]::IsWindowVisible($scrollbar)) { throw 'Scrollbar control 1003 is not visible' }
+        $windowBounds = New-Object WtmCapture+Rect
+        $viewportBounds = New-Object WtmCapture+Rect
+        $scrollbarBounds = New-Object WtmCapture+Rect
+        if (-not [WtmCapture]::GetWindowRect($handle, [ref]$windowBounds)) { throw 'Scrollbar verification window bounds unavailable' }
+        if (-not [WtmCapture]::GetWindowRect($viewport, [ref]$viewportBounds)) { throw 'Scrollbar verification viewport bounds unavailable' }
+        if (-not [WtmCapture]::GetWindowRect($scrollbar, [ref]$scrollbarBounds)) { throw 'Scrollbar verification bounds unavailable' }
+        $dpi = [Math]::Max(96, [int][WtmCapture]::GetDpiForWindow($handle))
         $scrollbarWidth = $scrollbarBounds.Right - $scrollbarBounds.Left
         $scrollbarLogicalWidth = $scrollbarWidth * 96.0 / $dpi
         if ($scrollbarBounds.Right -le $scrollbarBounds.Left -or $scrollbarBounds.Bottom -le $scrollbarBounds.Top) { throw 'Scrollbar has empty bounds' }
@@ -289,74 +289,74 @@ foreach (`$item in `$items) { `$item.Current.Name }
         $thumbBottom = $initialThumb.Bottom
         $trackTop = $scrollbarBounds.Top
         $trackBottom = $scrollbarBounds.Bottom
-        $beforeInfo = New-Object WtsCapture+SCROLLINFO
-        $beforeInfo.cbSize = [uint32][Runtime.InteropServices.Marshal]::SizeOf([type][WtsCapture+SCROLLINFO])
+        $beforeInfo = New-Object WtmCapture+SCROLLINFO
+        $beforeInfo.cbSize = [uint32][Runtime.InteropServices.Marshal]::SizeOf([type][WtmCapture+SCROLLINFO])
         $beforeInfo.fMask = 0x17
-        if (-not [WtsCapture]::GetScrollInfo($scrollbar, 2, [ref]$beforeInfo)) { throw 'Native scrollbar state unavailable' }
+        if (-not [WtmCapture]::GetScrollInfo($scrollbar, 2, [ref]$beforeInfo)) { throw 'Native scrollbar state unavailable' }
         $draggingOutput = [IO.Path]::Combine([IO.Path]::GetDirectoryName($Output), [IO.Path]::GetFileNameWithoutExtension($Output) + '-dragging.png')
-        $savedCursor = New-Object WtsCapture+Point
-        if (-not [WtsCapture]::GetCursorPos([ref]$savedCursor)) { throw 'Cursor position unavailable' }
+        $savedCursor = New-Object WtmCapture+Point
+        if (-not [WtmCapture]::GetCursorPos([ref]$savedCursor)) { throw 'Cursor position unavailable' }
         $mouseDown = $false
         $draggingBitmap = $null
         $draggingGraphics = $null
         try {
-            $thumbPoint = New-Object WtsCapture+Point
+            $thumbPoint = New-Object WtmCapture+Point
             $thumbPoint.X = [int](($scrollbarBounds.Left + $scrollbarBounds.Right) / 2)
             $thumbPoint.Y = [int](($thumbTop + $thumbBottom) / 2)
-            if (-not [WtsCapture]::SetCursorPos($thumbPoint.X, $thumbPoint.Y) -or [WtsCapture]::WindowFromPoint($thumbPoint) -ne $scrollbar) { throw 'Native scrollbar thumb is not the mouse target' }
-            [WtsCapture]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+            if (-not [WtmCapture]::SetCursorPos($thumbPoint.X, $thumbPoint.Y) -or [WtmCapture]::WindowFromPoint($thumbPoint) -ne $scrollbar) { throw 'Native scrollbar thumb is not the mouse target' }
+            [WtmCapture]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
             $mouseDown = $true
             [uint32]$owner = 0
-            $thread = [WtsCapture]::GetWindowThreadProcessId($scrollbar, [ref]$owner)
+            $thread = [WtmCapture]::GetWindowThreadProcessId($scrollbar, [ref]$owner)
             $deadline = [DateTime]::UtcNow.AddSeconds(3)
             do {
-                $gui = New-Object WtsCapture+GuiInfo
-                $gui.Size = [uint32][Runtime.InteropServices.Marshal]::SizeOf([type][WtsCapture+GuiInfo])
-                if ([WtsCapture]::GetGUIThreadInfo($thread, [ref]$gui) -and $gui.Capture -eq $scrollbar) { break }
+                $gui = New-Object WtmCapture+GuiInfo
+                $gui.Size = [uint32][Runtime.InteropServices.Marshal]::SizeOf([type][WtmCapture+GuiInfo])
+                if ([WtmCapture]::GetGUIThreadInfo($thread, [ref]$gui) -and $gui.Capture -eq $scrollbar) { break }
                 Start-Sleep -Milliseconds 20
             } while ([DateTime]::UtcNow -lt $deadline)
             if ($gui.Capture -ne $scrollbar) { throw 'Native scrollbar did not capture the mouse for dragging' }
-            $dragPoint = New-Object WtsCapture+Point
+            $dragPoint = New-Object WtmCapture+Point
             $dragPoint.X = $thumbPoint.X
             $dragPoint.Y = [Math]::Min($trackBottom - 1, $thumbPoint.Y + 36)
             $dragPoint.Y = [Math]::Max($trackTop, $dragPoint.Y)
             if ($dragPoint.Y -le $thumbPoint.Y) { throw 'Native scrollbar thumb has no downward drag room' }
-            if (-not [WtsCapture]::SetCursorPos($dragPoint.X, $dragPoint.Y)) { throw 'Native scrollbar drag failed' }
+            if (-not [WtmCapture]::SetCursorPos($dragPoint.X, $dragPoint.Y)) { throw 'Native scrollbar drag failed' }
             $changed = $false
             $deadline = [DateTime]::UtcNow.AddSeconds(3)
             do {
-                $duringInfo = New-Object WtsCapture+SCROLLINFO
+                $duringInfo = New-Object WtmCapture+SCROLLINFO
                 $duringInfo.cbSize = $beforeInfo.cbSize
                 $duringInfo.fMask = 0x17
-                if (-not [WtsCapture]::GetScrollInfo($scrollbar, 2, [ref]$duringInfo)) { throw 'Native scrollbar state polling failed' }
+                if (-not [WtmCapture]::GetScrollInfo($scrollbar, 2, [ref]$duringInfo)) { throw 'Native scrollbar state polling failed' }
                 if ($duringInfo.nPos -gt $beforeInfo.nPos) { $changed = $true; break }
                 Start-Sleep -Milliseconds 20
             } while ([DateTime]::UtcNow -lt $deadline)
             if (-not $changed) { throw 'Native scrollbar thumb drag did not change the position' }
-            $duringWindowBounds = New-Object WtsCapture+Rect
-            if (-not [WtsCapture]::GetWindowRect($handle, [ref]$duringWindowBounds)) { throw 'Scrollbar dragging window bounds unavailable' }
+            $duringWindowBounds = New-Object WtmCapture+Rect
+            if (-not [WtmCapture]::GetWindowRect($handle, [ref]$duringWindowBounds)) { throw 'Scrollbar dragging window bounds unavailable' }
             if ($duringWindowBounds.Left -ne $windowBounds.Left -or $duringWindowBounds.Top -ne $windowBounds.Top -or $duringWindowBounds.Right -ne $windowBounds.Right -or $duringWindowBounds.Bottom -ne $windowBounds.Bottom) { throw 'Scrollbar dragging changed the window bounds' }
             Start-Sleep -Milliseconds 50
             $draggingBitmap = [Drawing.Bitmap]::new($bounds.Right - $bounds.Left, $bounds.Bottom - $bounds.Top)
             $draggingGraphics = [Drawing.Graphics]::FromImage($draggingBitmap)
             if ($Screen) {
-                [void][WtsCapture]::DwmFlush()
+                [void][WtmCapture]::DwmFlush()
                 $draggingGraphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $draggingBitmap.Size)
             } else {
                 $draggingDc = $draggingGraphics.GetHdc()
                 try {
-                    if (-not [WtsCapture]::PrintWindow($handle, $draggingDc, 2)) { throw 'Native dragging window capture failed' }
+                    if (-not [WtmCapture]::PrintWindow($handle, $draggingDc, 2)) { throw 'Native dragging window capture failed' }
                 } finally { $draggingGraphics.ReleaseHdc($draggingDc) }
             }
             $draggingBitmap.Save($draggingOutput, [Drawing.Imaging.ImageFormat]::Png)
             $duringThumb = Verify-ScrollbarPixels $draggingBitmap $bounds $scrollbarBounds 'Dragging'
-            $gui = New-Object WtsCapture+GuiInfo
-            $gui.Size = [uint32][Runtime.InteropServices.Marshal]::SizeOf([type][WtsCapture+GuiInfo])
-            if (-not [WtsCapture]::GetGUIThreadInfo($thread, [ref]$gui) -or $gui.Capture -ne $scrollbar) { throw 'Scrollbar lost capture before the dragging screenshot' }
+            $gui = New-Object WtmCapture+GuiInfo
+            $gui.Size = [uint32][Runtime.InteropServices.Marshal]::SizeOf([type][WtmCapture+GuiInfo])
+            if (-not [WtmCapture]::GetGUIThreadInfo($thread, [ref]$gui) -or $gui.Capture -ne $scrollbar) { throw 'Scrollbar lost capture before the dragging screenshot' }
             if ($duringThumb.Top -le $initialThumb.Top) { throw 'The visible scrollbar thumb did not move down while dragging' }
         } finally {
-            if ($mouseDown) { [WtsCapture]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero) }
-            if (-not [WtsCapture]::SetCursorPos($savedCursor.X, $savedCursor.Y)) { throw 'Cursor restoration failed' }
+            if ($mouseDown) { [WtmCapture]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero) }
+            if (-not [WtmCapture]::SetCursorPos($savedCursor.X, $savedCursor.Y)) { throw 'Cursor restoration failed' }
             if ($null -ne $draggingGraphics) { $draggingGraphics.Dispose() }
             if ($null -ne $draggingBitmap) { $draggingBitmap.Dispose() }
         }
@@ -364,7 +364,7 @@ foreach (`$item in `$items) { `$item.Current.Name }
     }
     Write-Output "Captured $Output"
     Write-Output "Real Git fixture and visible text at $fixture"
-    if (-not [WtsCapture]::PostMessage($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'Close failed' }
+    if (-not [WtmCapture]::PostMessage($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'Close failed' }
     if (-not $process.WaitForExit(10000)) { throw 'Captured window did not close' }
     if ($process.ExitCode -ne 0) { throw 'Captured app exited unsuccessfully' }
     if ($VerifySerialGit) {
@@ -390,5 +390,5 @@ foreach (`$item in `$items) { `$item.Current.Name }
     if ($null -ne $process -and -not $process.HasExited) { $process.Kill($true); $process.WaitForExit() }
     if ($null -ne $graphics) { $graphics.Dispose() }
     if ($null -ne $bitmap) { $bitmap.Dispose() }
-    if ($previousDpiContext -ne [IntPtr]::Zero) { [void][WtsCapture]::SetThreadDpiAwarenessContext($previousDpiContext) }
+    if ($previousDpiContext -ne [IntPtr]::Zero) { [void][WtmCapture]::SetThreadDpiAwarenessContext($previousDpiContext) }
 }

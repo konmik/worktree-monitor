@@ -1,6 +1,6 @@
 param(
-    [string]$Binary = "$PSScriptRoot/../target/debug/wts-ui.exe",
-    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wts-ui-$([Guid]::NewGuid().ToString('N'))"
+    [string]$Binary = "$PSScriptRoot/../target/debug/wtm-ui.exe",
+    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wtm-ui-$([Guid]::NewGuid().ToString('N'))"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -52,7 +52,7 @@ try {
 using System;
 using System.Text;
 using System.Runtime.InteropServices;
-public static class WtsUiProbe {
+public static class WtmUiProbe {
     public delegate bool EnumProc(IntPtr handle, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumProc callback, IntPtr data);
@@ -79,7 +79,7 @@ public static class WtsUiProbe {
         EnumWindows((handle, data) => {
             uint owner;
             GetWindowThreadProcessId(handle, out owner);
-            if (owner == pid && IsWindowVisible(handle) && Text(handle).StartsWith("WTS", StringComparison.OrdinalIgnoreCase)) {
+            if (owner == pid && IsWindowVisible(handle) && Text(handle).StartsWith("WTM", StringComparison.OrdinalIgnoreCase)) {
                 found = handle;
                 return false;
             }
@@ -106,9 +106,9 @@ public static class WtsUiProbe {
             $ancestor = $ancestor.Parent
         }
     }
-    $proof['launcher_in_console'] = [WtsUiProbe]::SharesConsole([uint32]$PID)
+    $proof['launcher_in_console'] = [WtmUiProbe]::SharesConsole([uint32]$PID)
     if (-not $proof.launcher_in_console) { throw 'Launching process is not in the console process list' }
-    $proof['launcher_console_hwnd'] = [WtsUiProbe]::GetConsoleWindow().ToInt64()
+    $proof['launcher_console_hwnd'] = [WtmUiProbe]::GetConsoleWindow().ToInt64()
     $start = [Diagnostics.ProcessStartInfo]::new($Binary)
     $start.WorkingDirectory = $proof.working_directory
     $start.UseShellExecute = $false
@@ -121,27 +121,27 @@ public static class WtsUiProbe {
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
     do {
         if ($process.HasExited) { throw "UI exited before showing a window with code $($process.ExitCode)" }
-        $handle = [WtsUiProbe]::Find([uint32]$process.Id)
+        $handle = [WtmUiProbe]::Find([uint32]$process.Id)
         if ($handle -ne [IntPtr]::Zero) { break }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
-    if ($handle -eq [IntPtr]::Zero) { throw 'No visible WTS window belonging to the directly launched UI process' }
+    if ($handle -eq [IntPtr]::Zero) { throw 'No visible WTM window belonging to the directly launched UI process' }
     $proof.instance.hwnd = $handle.ToInt64()
-    $proof['window_title'] = [WtsUiProbe]::Text($handle)
-    $proof['window_visible'] = [WtsUiProbe]::IsWindowVisible($handle)
+    $proof['window_title'] = [WtmUiProbe]::Text($handle)
+    $proof['window_visible'] = [WtmUiProbe]::IsWindowVisible($handle)
     [uint32]$owner = 0
-    [void][WtsUiProbe]::GetWindowThreadProcessId($handle, [ref]$owner)
+    [void][WtmUiProbe]::GetWindowThreadProcessId($handle, [ref]$owner)
     $proof['window_owner_pid'] = $owner
     $proof['process_binary'] = $process.MainModule.FileName
-    $proof['console_detached'] = -not [WtsUiProbe]::SharesConsole([uint32]$process.Id)
+    $proof['console_detached'] = -not [WtmUiProbe]::SharesConsole([uint32]$process.Id)
     $proof['distinct_from_launcher'] = $process.Id -ne $PID -and $handle.ToInt64() -ne $proof.launcher_console_hwnd
     if ($owner -ne $process.Id -or -not $proof.window_visible -or -not $proof.console_detached -or -not $proof.distinct_from_launcher) { throw 'UI is not a separate visible window outside the launching console' }
     if ($proof.process_binary -ne $Binary) { throw 'UI process does not match the tested binary path' }
     if ((Get-FileHash -LiteralPath $Binary -Algorithm SHA256).Hash -ne $proof.instance.sha256) { throw 'UI binary changed during the check' }
-    if (-not [WtsUiProbe]::PostMessage($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'UI window close failed' }
+    if (-not [WtmUiProbe]::PostMessage($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'UI window close failed' }
     if (-not $process.WaitForExit(10000)) { throw 'UI did not close within 10 seconds' }
     $proof['window_exit_code'] = $process.ExitCode
-    $proof['window_destroyed'] = -not [WtsUiProbe]::IsWindow($handle)
+    $proof['window_destroyed'] = -not [WtmUiProbe]::IsWindow($handle)
     if ($process.ExitCode -ne 0 -or -not $proof.window_destroyed) { throw 'UI did not close cleanly' }
     $process.Dispose()
     $process = $null
@@ -151,20 +151,20 @@ public static class WtsUiProbe {
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
     do {
         if ($process.HasExited) { throw 'UI startup failure exited without a visible error dialog' }
-        $handle = [WtsUiProbe]::Find([uint32]$process.Id)
+        $handle = [WtmUiProbe]::Find([uint32]$process.Id)
         if ($handle -ne [IntPtr]::Zero) { break }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
-    if ($handle -eq [IntPtr]::Zero -or [WtsUiProbe]::Text($handle) -ne 'wts-ui') { throw 'UI startup failure did not show its error dialog' }
-    $proof['startup_error_text'] = [WtsUiProbe]::ChildText($handle)
+    if ($handle -eq [IntPtr]::Zero -or [WtmUiProbe]::Text($handle) -ne 'wtm-ui') { throw 'UI startup failure did not show its error dialog' }
+    $proof['startup_error_text'] = [WtmUiProbe]::ChildText($handle)
     if ($proof.startup_error_text -notmatch 'USERPROFILE is not set') { throw 'UI error dialog did not explain the startup failure' }
-    if (-not [WtsUiProbe]::PostMessage($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'UI error dialog dismissal failed' }
+    if (-not [WtmUiProbe]::PostMessage($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'UI error dialog dismissal failed' }
     $closed = $process.WaitForExit(10000)
     $proof['startup_error_exit_code'] = if ($closed) { $process.ExitCode } else { $null }
     if (-not $closed -or $process.ExitCode -ne 1) { throw "UI startup failure did not exit with code 1. closed=$closed exit=$($proof.startup_error_exit_code)" }
     $proof['startup_error_visible'] = $true
     $proof.result = 'PASS'
-    Write-Host 'PASS. Direct Windows GUI launch owns a separate visible WTS window and closes cleanly.'
+    Write-Host 'PASS. Direct Windows GUI launch owns a separate visible WTM window and closes cleanly.'
     Write-Host 'PASS. Fatal startup failure shows a native error dialog and exits with code 1.'
 } catch {
     $proof['failure'] = $_.Exception.Message
@@ -172,7 +172,7 @@ public static class WtsUiProbe {
 } finally {
     if ($null -ne $process -and -not $process.HasExited) {
         if ($handle -ne [IntPtr]::Zero) {
-            [void][WtsUiProbe]::PostMessage($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
+            [void][WtmUiProbe]::PostMessage($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
             [void]$process.WaitForExit(10000)
         }
         if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit() }

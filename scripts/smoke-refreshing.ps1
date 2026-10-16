@@ -1,6 +1,6 @@
 param(
-    [string]$Binary = "$PSScriptRoot/../target/debug/wts-ui.exe",
-    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wts-refreshing-$([Guid]::NewGuid().ToString('N'))",
+    [string]$Binary = "$PSScriptRoot/../target/debug/wtm-ui.exe",
+    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wtm-refreshing-$([Guid]::NewGuid().ToString('N'))",
     [switch]$SavedOrder,
     [switch]$MainOnly,
     [string]$Placement,
@@ -9,7 +9,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
-$CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wts.exe')).Path
+$CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wtm.exe')).Path
 $Output = [IO.Path]::GetFullPath($Output)
 New-Item -ItemType Directory -Path $Output -Force | Out-Null
 $fixture = Join-Path $Output "fixture-$([Guid]::NewGuid().ToString('N'))"
@@ -21,13 +21,13 @@ $git = (Get-Command git.exe -CommandType Application | Select-Object -First 1).S
 Add-Type -AssemblyName System.Drawing
 $compiler = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
 if (-not (Test-Path -LiteralPath $compiler)) { throw 'The isolated Git delay fixture requires the Windows .NET Framework C# compiler.' }
-if ($null -eq ('WtsRefreshingProbe' -as [type])) {
+if ($null -eq ('WtmRefreshingProbe' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
-public static class WtsRefreshingProbe {
+public static class WtmRefreshingProbe {
     public struct Rect { public int Left, Top, Right, Bottom; }
     public struct Point { public int X, Y; }
     public struct MonitorInfo { public uint Size; public Rect Monitor, Work; public uint Flags; }
@@ -159,7 +159,7 @@ public static class WtsRefreshingProbe {
         EnumWindows((window, data) => {
             uint owner;
             GetWindowThreadProcessId(window, out owner);
-            if (owner != pid || !IsWindowVisible(window) || !Text(window).StartsWith("WTS")) return true;
+            if (owner != pid || !IsWindowVisible(window) || !Text(window).StartsWith("WTM")) return true;
             found = window;
             return false;
         }, IntPtr.Zero);
@@ -211,7 +211,7 @@ public static class GitDelay {
             else if (args[i] == "--git-dir" && i + 1 < args.Length) { cwd = Path.GetDirectoryName(args[++i]); repository = true; }
             else if (args[i] == "status" || args[i] == "diff") scan = true;
         }
-        string gate = Path.Combine(Environment.GetEnvironmentVariable("WTS_REFRESH_GATES"), new DirectoryInfo(cwd).Name + (repository ? ".repository" : ""));
+        string gate = Path.Combine(Environment.GetEnvironmentVariable("WTM_REFRESH_GATES"), new DirectoryInfo(cwd).Name + (repository ? ".repository" : ""));
         bool claimed = false;
         if (scan || repository) {
             try { File.Move(gate + ".gate", gate + ".active"); claimed = true; }
@@ -221,7 +221,7 @@ public static class GitDelay {
             if (claimed) Thread.Sleep(1800);
             var command = new StringBuilder();
             foreach (string arg in args) { if (command.Length != 0) command.Append(' '); command.Append(Quote(arg)); }
-            var start = new ProcessStartInfo(Environment.GetEnvironmentVariable("WTS_REFRESH_REAL_GIT"), command.ToString());
+            var start = new ProcessStartInfo(Environment.GetEnvironmentVariable("WTM_REFRESH_REAL_GIT"), command.ToString());
             start.UseShellExecute = false;
             using (var child = Process.Start(start)) { child.WaitForExit(); return child.ExitCode; }
         } finally {
@@ -248,37 +248,37 @@ function Is-Refreshing([string]$Caption) {
 }
 
 function Capture-Refreshing([string]$Name = 'refreshing') {
-    $bounds = [WtsRefreshingProbe+Rect]::new()
-    $origin = [WtsRefreshingProbe+Point]::new()
-    if (-not [WtsRefreshingProbe]::GetClientRect($script:window, [ref]$bounds) -or
-        -not [WtsRefreshingProbe]::ClientToScreen($script:window, [ref]$origin)) { throw 'Refreshing capture bounds unavailable.' }
+    $bounds = [WtmRefreshingProbe+Rect]::new()
+    $origin = [WtmRefreshingProbe+Point]::new()
+    if (-not [WtmRefreshingProbe]::GetClientRect($script:window, [ref]$bounds) -or
+        -not [WtmRefreshingProbe]::ClientToScreen($script:window, [ref]$origin)) { throw 'Refreshing capture bounds unavailable.' }
     $image = [Drawing.Bitmap]::new($bounds.Right, $bounds.Bottom)
     $graphics = [Drawing.Graphics]::FromImage($image)
     try {
-        [void][WtsRefreshingProbe]::DwmFlush()
+        [void][WtmRefreshingProbe]::DwmFlush()
         $graphics.CopyFromScreen($origin.X, $origin.Y, 0, 0, $image.Size)
         $image.Save((Join-Path $Output "$Name.png"))
     } finally { $graphics.Dispose(); $image.Dispose() }
 }
 
 function Set-FixtureSize([int]$Width) {
-    if (-not [WtsRefreshingProbe]::SetWindowPos($script:window, [IntPtr]::Zero, 32, 32, $Width, 720, 20)) { throw 'Fixture resize failed' }
+    if (-not [WtmRefreshingProbe]::SetWindowPos($script:window, [IntPtr]::Zero, 32, 32, $Width, 720, 20)) { throw 'Fixture resize failed' }
     $script:expectedBounds = "32,32,$(32 + $Width),752"
-    if ([WtsRefreshingProbe]::Bounds($script:window) -ne $script:expectedBounds) { throw 'Manual resize did not apply the requested bounds' }
-    [void][WtsRefreshingProbe]::RedrawWindow($script:window, [IntPtr]::Zero, [IntPtr]::Zero, 0x0180)
-    [void][WtsRefreshingProbe]::DwmFlush()
+    if ([WtmRefreshingProbe]::Bounds($script:window) -ne $script:expectedBounds) { throw 'Manual resize did not apply the requested bounds' }
+    [void][WtmRefreshingProbe]::RedrawWindow($script:window, [IntPtr]::Zero, [IntPtr]::Zero, 0x0180)
+    [void][WtmRefreshingProbe]::DwmFlush()
 }
 
 function Sample {
     if ($script:process.HasExited) { throw 'The isolated dashboard exited during observation.' }
-    if ($script:window -eq [IntPtr]::Zero) { $script:window = [WtsRefreshingProbe]::Find([uint32]$script:process.Id) }
+    if ($script:window -eq [IntPtr]::Zero) { $script:window = [WtmRefreshingProbe]::Find([uint32]$script:process.Id) }
     $bounds = $null
     if ($script:window -ne [IntPtr]::Zero) {
-        $bounds = [WtsRefreshingProbe]::Bounds($script:window)
+        $bounds = [WtmRefreshingProbe]::Bounds($script:window)
         if ($null -eq $script:expectedBounds) {
             if ($Placement) {
                 if ($bounds -ne $script:savedBounds) { throw "First visible window has bounds $bounds instead of saved bounds $script:savedBounds" }
-            } else { [WtsRefreshingProbe]::AssertDefaultSize($script:window) }
+            } else { [WtmRefreshingProbe]::AssertDefaultSize($script:window) }
             $script:expectedBounds = $bounds
             $proof.first_visible_bounds = $bounds
         }
@@ -289,7 +289,7 @@ function Sample {
     foreach ($row in $expected) {
         if ($row.gate -and (Test-Path -LiteralPath (Join-Path $gates "$($row.gate).active"))) { $activeGates[$row.gate] = $true }
     }
-    $captions = if ($script:window -ne [IntPtr]::Zero) { @([WtsRefreshingProbe]::Captions($script:window)) } else { @() }
+    $captions = if ($script:window -ne [IntPtr]::Zero) { @([WtmRefreshingProbe]::Captions($script:window)) } else { @() }
     $rows = @{}
     foreach ($row in $expected) {
         if ($row.gate) {
@@ -360,7 +360,7 @@ function Assert-Holds([hashtable]$Tracks, [string[]]$Keys) {
     }
 }
 
-$names = @('HOME', 'USERPROFILE', 'PATH', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'WTS_REFRESH_GATES', 'WTS_REFRESH_REAL_GIT')
+$names = @('HOME', 'USERPROFILE', 'PATH', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'WTM_REFRESH_GATES', 'WTM_REFRESH_REAL_GIT')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 $script:process = $null
@@ -370,7 +370,7 @@ $samples = [Collections.Generic.List[object]]::new()
 $expected = [Collections.Generic.List[object]]::new()
 $pollMs = 50
 $clock = [Diagnostics.Stopwatch]::new()
-$previousDpi = [WtsRefreshingProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
+$previousDpi = [WtmRefreshingProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
 $proof = [ordered]@{ result = 'FAIL'; binary = $Binary; sha256 = (Get-FileHash $Binary).Hash; fixture = $fixture; poll_ms = $pollMs; timing = 'Require first-present to first-absent >= 1000 ms minus one polling interval. First/last present samples also give a conservative visible lower bound. Appearance is bracketed by previous absent and first present observations.'; initial = $null; refresh = $null; fast_refresh = $null }
 $proof.marker_placement = [Collections.Generic.List[object]]::new()
 try {
@@ -387,7 +387,7 @@ try {
         Run-Git $repo @('init', '--quiet', '-b', "$name-main")
         [IO.File]::WriteAllText((Join-Path $repo 'source.rs'), "before`n")
         Run-Git $repo @('add', '.')
-        Run-Git $repo @('-c', 'user.name=Wts Test', '-c', 'user.email=wts@example.invalid', 'commit', '--quiet', '-m', 'Fixture')
+        Run-Git $repo @('-c', 'user.name=Wtm Test', '-c', 'user.email=wtm@example.invalid', 'commit', '--quiet', '-m', 'Fixture')
         if (-not $MainOnly) { Run-Git $repo @('worktree', 'add', '--quiet', '-b', "$name-topic", $tree) }
         $expected.Add(@{ key = "repo:$name"; pattern = '^' + [regex]::Escape($name) + '$' })
         if ($MainOnly) { [IO.File]::WriteAllText((Join-Path $gates "$name.repository.gate"), '') }
@@ -407,17 +407,17 @@ try {
             @{ repository = Join-Path $fixture 'beta/.git'; paths = @((Join-Path $fixture 'beta-tree'), (Join-Path $fixture 'beta')) },
             @{ repository = Join-Path $fixture 'alpha/.git'; paths = @((Join-Path $fixture 'alpha-tree'), (Join-Path $fixture 'alpha')) }
         ) }
-        $preferences | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $fixtureHome '.config/wts/config.order.json') -Encoding utf8NoBOM
+        $preferences | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $fixtureHome '.config/wtm/config.order.json') -Encoding utf8NoBOM
     }
     if ($Placement) {
         $saved = Get-Content $Placement -Raw | ConvertFrom-Json
         if ($PlacementWidth -gt 0) { $saved.normal.right = $saved.normal.left + $PlacementWidth }
         $saved.state = 'normal'
         $script:savedBounds = "$($saved.normal.left),$($saved.normal.top),$($saved.normal.right),$($saved.normal.bottom)"
-        $saved | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $fixtureHome '.config/wts/config.placement.json') -Encoding utf8NoBOM
+        $saved | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $fixtureHome '.config/wtm/config.placement.json') -Encoding utf8NoBOM
     }
-    $env:WTS_REFRESH_GATES = $gates
-    $env:WTS_REFRESH_REAL_GIT = $git
+    $env:WTM_REFRESH_GATES = $gates
+    $env:WTM_REFRESH_REAL_GIT = $git
     $env:PATH = "$shim;$($previous.PATH)"
     $start = [Diagnostics.ProcessStartInfo]::new($Binary)
     $start.WorkingDirectory = $fixtureHome
@@ -444,8 +444,8 @@ try {
                     $sample.rows.ContainsKey("repo:$name") -and (Is-Refreshing $sample.rows["repo:$name"])) {
                     foreach ($width in @(800, 380)) {
                         Set-FixtureSize $width
-                        [WtsRefreshingProbe]::VerifyMarker($script:window, $name, $true, $true)
-                        $proof.marker_placement.Add(@{ name = $name; width = $width; dpi = [WtsRefreshingProbe]::GetDpiForWindow($script:window); character_space_gap = 1 })
+                        [WtmRefreshingProbe]::VerifyMarker($script:window, $name, $true, $true)
+                        $proof.marker_placement.Add(@{ name = $name; width = $width; dpi = [WtmRefreshingProbe]::GetDpiForWindow($script:window); character_space_gap = 1 })
                         Capture-Refreshing "repository-$name-$width"
                     }
                     $repositoryMarkers[$name] = $true
@@ -462,7 +462,7 @@ try {
                 if ($content.Contains("`n")) { throw "Startup worktree contains an extra line: $content" }
                 if ($caption -match '\bS\s+\+0/-0\b') { throw "Initial pending $($row.key) fabricated zero source counts." }
                 if ((Counts $caption) -ne '') { throw "Initial pending $($row.key) published counts before its first delayed Git scan completed." }
-                $pendingHeights[$row.key] = [WtsRefreshingProbe]::RowHeight($script:window, ($caption -split '\r?\n')[0])
+                $pendingHeights[$row.key] = [WtmRefreshingProbe]::RowHeight($script:window, ($caption -split '\r?\n')[0])
                 $pendingSeen[$row.key] = $true
             }
         }
@@ -499,7 +499,7 @@ try {
     foreach ($row in $expected | Where-Object { $_.gate }) {
         if (-not $pendingSeen.ContainsKey($row.key)) { throw "No initial pending observation for $($row.key). Native integration must expose pending rows before the delayed first scan completes; integration may be pending." }
         if (-not $initialActiveSeen.ContainsKey($row.key)) { throw "No initial active-scan observation for $($row.key)." }
-        $loadedHeight = [WtsRefreshingProbe]::RowHeight($script:window, ($sample.rows[$row.key] -split '\r?\n')[0])
+        $loadedHeight = [WtmRefreshingProbe]::RowHeight($script:window, ($sample.rows[$row.key] -split '\r?\n')[0])
         if ($loadedHeight -ne $pendingHeights[$row.key]) { throw "Count arrival changed the height of $($row.key) from $($pendingHeights[$row.key]) to $loadedHeight" }
     }
     Assert-Holds $initial $keys
@@ -538,8 +538,8 @@ try {
                 if ($MainOnly) {
                     foreach ($width in @(800, 380)) {
                         Set-FixtureSize $width
-                        [WtsRefreshingProbe]::VerifyMarker($script:window, 'alpha-main', $false, $true)
-                        $proof.marker_placement.Add(@{ name = 'alpha-main'; width = $width; dpi = [WtsRefreshingProbe]::GetDpiForWindow($script:window); character_space_gap = 1 })
+                        [WtmRefreshingProbe]::VerifyMarker($script:window, 'alpha-main', $false, $true)
+                        $proof.marker_placement.Add(@{ name = 'alpha-main'; width = $width; dpi = [WtmRefreshingProbe]::GetDpiForWindow($script:window); character_space_gap = 1 })
                         Capture-Refreshing "worktree-$width"
                     }
                 } else { Capture-Refreshing }
@@ -578,14 +578,14 @@ try {
     if (-not $ready) { throw 'Undelayed scan did not expose latched Refreshing captions and updated counts within 35 seconds.' }
     Assert-Holds $fast $affected
     if ($MainOnly) {
-        [void][WtsRefreshingProbe]::RedrawWindow($script:window, [IntPtr]::Zero, [IntPtr]::Zero, 0x0180)
-        [void][WtsRefreshingProbe]::DwmFlush()
+        [void][WtmRefreshingProbe]::RedrawWindow($script:window, [IntPtr]::Zero, [IntPtr]::Zero, 0x0180)
+        [void][WtmRefreshingProbe]::DwmFlush()
         foreach ($name in @('alpha', 'beta')) {
-            [WtsRefreshingProbe]::VerifyMarker($script:window, $name, $true, $false)
-            [WtsRefreshingProbe]::VerifyMarker($script:window, "$name-main", $false, $false)
+            [WtmRefreshingProbe]::VerifyMarker($script:window, $name, $true, $false)
+            [WtmRefreshingProbe]::VerifyMarker($script:window, "$name-main", $false, $false)
         }
     }
-    if (-not [WtsRefreshingProbe]::PostMessage($script:window, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'Isolated dashboard close failed.' }
+    if (-not [WtmRefreshingProbe]::PostMessage($script:window, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'Isolated dashboard close failed.' }
     if (-not $script:process.WaitForExit(10000) -or $script:process.ExitCode -ne 0) { throw 'Isolated dashboard did not exit cleanly.' }
     $proof.result = 'PASS'
     $proof.window_bounds_stable = $true
@@ -613,7 +613,7 @@ try {
     if ($null -ne $script:process) {
         try {
             if (-not $script:process.HasExited) {
-                if ($script:window -ne [IntPtr]::Zero) { [void][WtsRefreshingProbe]::PostMessage($script:window, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) }
+                if ($script:window -ne [IntPtr]::Zero) { [void][WtmRefreshingProbe]::PostMessage($script:window, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) }
                 if (-not $script:process.WaitForExit(3000)) { $script:process.Kill($true); $script:process.WaitForExit() }
             }
         } catch [InvalidOperationException] {
@@ -629,7 +629,7 @@ try {
         if ($null -eq $previous[$name]) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
         else { [Environment]::SetEnvironmentVariable($name, $previous[$name], 'Process') }
     }
-    if ($previousDpi -ne [IntPtr]::Zero) { [void][WtsRefreshingProbe]::SetThreadDpiAwarenessContext($previousDpi) }
+    if ($previousDpi -ne [IntPtr]::Zero) { [void][WtmRefreshingProbe]::SetThreadDpiAwarenessContext($previousDpi) }
     $proof | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $Output 'proof.json') -Encoding utf8NoBOM
     $samples | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $Output 'samples.json') -Encoding utf8NoBOM
 }

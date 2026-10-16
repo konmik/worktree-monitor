@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use crate::order::identity;
 use crate::visibility::Visibility;
-use wts_core::{Error, Head, ScanActivity, ScanTarget, Snapshot, WorktreeStats};
+use wtm_core::{Error, Head, ScanActivity, ScanTarget, Snapshot, WorktreeStats};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

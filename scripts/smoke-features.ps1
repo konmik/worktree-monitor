@@ -1,11 +1,11 @@
 param(
-    [string]$Binary = "$PSScriptRoot/../target/debug/wts-ui.exe",
-    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wts-features-$([Guid]::NewGuid().ToString('N'))"
+    [string]$Binary = "$PSScriptRoot/../target/debug/wtm-ui.exe",
+    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wtm-features-$([Guid]::NewGuid().ToString('N'))"
 )
 
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
-$CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wts.exe')).Path
+$CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wtm.exe')).Path
 $Output = [IO.Path]::GetFullPath($Output)
 $repo = Join-Path $Output 'repo'
 $fixtureHome = Join-Path $Output 'home'
@@ -16,7 +16,7 @@ using System;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Text;
-public static class WtsFeatureProbe {
+public static class WtmFeatureProbe {
     public struct Rect { public int Left, Top, Right, Bottom; }
     public struct Size { public int Width, Height; }
     public struct Point { public int X, Y; }
@@ -103,7 +103,7 @@ public static class WtsFeatureProbe {
         EnumWindows((window, data) => {
             uint owner;
             GetWindowThreadProcessId(window, out owner);
-            if (owner != pid || !IsWindowVisible(window) || !Text(window).StartsWith("WTS")) return true;
+            if (owner != pid || !IsWindowVisible(window) || !Text(window).StartsWith("WTM")) return true;
             found = window;
             return false;
         }, IntPtr.Zero);
@@ -330,8 +330,8 @@ function Write-Lines([string]$Path, [string[]]$Lines) {
 }
 
 function Bounds([IntPtr]$Window) {
-    $rect = [WtsFeatureProbe+Rect]::new()
-    if (-not [WtsFeatureProbe]::GetWindowRect($Window, [ref]$rect)) { throw 'Window bounds unavailable' }
+    $rect = [WtmFeatureProbe+Rect]::new()
+    if (-not [WtmFeatureProbe]::GetWindowRect($Window, [ref]$rect)) { throw 'Window bounds unavailable' }
     return $rect
 }
 
@@ -348,23 +348,23 @@ function Fits($Rect) {
 }
 
 function Start-Window([string]$Name) {
-    $foreground = [WtsFeatureProbe]::GetForegroundWindow()
+    $foreground = [WtmFeatureProbe]::GetForegroundWindow()
     $script:process = Start-Process -FilePath $Binary -WorkingDirectory $repo -NoNewWindow -PassThru
     $script:window = [IntPtr]::Zero
     Wait-For {
         if ($script:process.HasExited) { throw 'Feature window exited before showing counts' }
-        $script:window = [WtsFeatureProbe]::Find([uint32]$script:process.Id)
+        $script:window = [WtmFeatureProbe]::Find([uint32]$script:process.Id)
         if ($script:window -eq [IntPtr]::Zero) { return $false }
-        $script:card = [WtsFeatureProbe]::FindCount($script:window, $expectedCaption)
+        $script:card = [WtmFeatureProbe]::FindCount($script:window, $expectedCaption)
         return $script:window -ne [IntPtr]::Zero -and $script:card -ne [IntPtr]::Zero
     } "$Name window and exact S/T/X caption"
-    if ([WtsFeatureProbe]::IsIconic($script:window)) { throw 'Startup restored a minimized window' }
-    if ($foreground -ne [IntPtr]::Zero -and [WtsFeatureProbe]::GetForegroundWindow() -eq $script:window) { throw "$Name startup stole focus" }
-    $proof.runs += [ordered]@{ name = $Name; pid = $script:process.Id; caption = [WtsFeatureProbe]::Text($script:card) }
+    if ([WtmFeatureProbe]::IsIconic($script:window)) { throw 'Startup restored a minimized window' }
+    if ($foreground -ne [IntPtr]::Zero -and [WtmFeatureProbe]::GetForegroundWindow() -eq $script:window) { throw "$Name startup stole focus" }
+    $proof.runs += [ordered]@{ name = $Name; pid = $script:process.Id; caption = [WtmFeatureProbe]::Text($script:card) }
 }
 
 function Close-Window {
-    if (-not [WtsFeatureProbe]::PostMessage($script:window, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'Window close failed' }
+    if (-not [WtmFeatureProbe]::PostMessage($script:window, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'Window close failed' }
     if (-not $script:process.WaitForExit(10000) -or $script:process.ExitCode -ne 0) { throw 'Window did not close cleanly' }
     $script:process.Dispose()
     $script:process = $null
@@ -387,58 +387,58 @@ function Write-Placement($Value) {
 }
 
 function Move-Pointer([int]$X, [int]$Y) {
-    Wait-For { [WtsFeatureProbe]::SetCursorPos($X, $Y) } 'pointer move'
+    Wait-For { [WtmFeatureProbe]::SetCursorPos($X, $Y) } 'pointer move'
 }
 
 function Click-Control([IntPtr]$Control) {
     $rect = Bounds $Control
     Move-Pointer ([int](($rect.Left + $rect.Right) / 2)) ([int](($rect.Top + $rect.Bottom) / 2))
-    [WtsFeatureProbe]::Click($Control)
+    [WtmFeatureProbe]::Click($Control)
 }
 
 function Assert-Hover {
-    $cursor = [WtsFeatureProbe+Point]::new()
-    [void][WtsFeatureProbe]::GetCursorPos([ref]$cursor)
-    $toggle = [WtsFeatureProbe]::GetDlgItem($script:window, 1004)
+    $cursor = [WtmFeatureProbe+Point]::new()
+    [void][WtmFeatureProbe]::GetCursorPos([ref]$cursor)
+    $toggle = [WtmFeatureProbe]::GetDlgItem($script:window, 1004)
     try {
         foreach ($width in @(380, 760)) {
-            [void][WtsFeatureProbe]::SetWindowPos($script:window, [IntPtr]::Zero, $target.Left, $target.Top, $width, 540, 20)
-            $button = [WtsFeatureProbe]::FindCount($script:window, 'Hide')
+            [void][WtmFeatureProbe]::SetWindowPos($script:window, [IntPtr]::Zero, $target.Left, $target.Top, $width, 540, 20)
+            $button = [WtmFeatureProbe]::FindCount($script:window, 'Hide')
             $cardBounds = Bounds $script:card
             Move-Pointer ($target.Left - 20) ($target.Top - 20)
-            Wait-For { -not [WtsFeatureProbe]::IsWindowVisible($toggle) -and -not [WtsFeatureProbe]::IsWindowVisible($button) } 'controls hidden outside window'
-            $status = [WtsFeatureProbe]::GetDlgItem($script:window, 1002)
+            Wait-For { -not [WtmFeatureProbe]::IsWindowVisible($toggle) -and -not [WtmFeatureProbe]::IsWindowVisible($button) } 'controls hidden outside window'
+            $status = [WtmFeatureProbe]::GetDlgItem($script:window, 1002)
             $outsideStatus = Bounds $status
-            [WtsFeatureProbe]::AssertNameWidth($script:window, $script:card, $false)
+            [WtmFeatureProbe]::AssertNameWidth($script:window, $script:card, $false)
             Move-Pointer ($target.Left + 20) ($target.Top + 400)
-            Wait-For { [WtsFeatureProbe]::IsWindowVisible($toggle) -and [WtsFeatureProbe]::IsWindowVisible($button) } 'controls visible inside window'
+            Wait-For { [WtmFeatureProbe]::IsWindowVisible($toggle) -and [WtmFeatureProbe]::IsWindowVisible($button) } 'controls visible inside window'
             $insideStatus = Bounds $status
             if (-not (Same-Bounds $cardBounds (Bounds $script:card)) -or $outsideStatus.Top -ne $insideStatus.Top -or
                 $outsideStatus.Bottom -ne $insideStatus.Bottom) { throw 'Hover changed vertical layout' }
             if ($outsideStatus.Right -le $insideStatus.Right) { throw 'Hidden Show all still reserves header width' }
-            [WtsFeatureProbe]::AssertNameWidth($script:window, $script:card, $true)
-            foreach ($control in @($script:card, $toggle, $button, [WtsFeatureProbe]::GetDlgItem($script:window, 1002))) {
+            [WtmFeatureProbe]::AssertNameWidth($script:window, $script:card, $true)
+            foreach ($control in @($script:card, $toggle, $button, [WtmFeatureProbe]::GetDlgItem($script:window, 1002))) {
                 $rect = Bounds $control
                 Move-Pointer ([int](($rect.Left + $rect.Right) / 2)) ([int](($rect.Top + $rect.Bottom) / 2))
                 $sample = 0
                 $deadline = [DateTime]::UtcNow.AddSeconds(20)
                 while ($sample -lt 10 -and [DateTime]::UtcNow -lt $deadline) {
-                    $position = [WtsFeatureProbe+Point]::new()
-                    [void][WtsFeatureProbe]::GetCursorPos([ref]$position)
-                    $under = [WtsFeatureProbe]::WindowFromPoint($position)
-                    if ([WtsFeatureProbe]::GetAncestor($under, 2) -ne $script:window -or
+                    $position = [WtmFeatureProbe+Point]::new()
+                    [void][WtmFeatureProbe]::GetCursorPos([ref]$position)
+                    $under = [WtmFeatureProbe]::WindowFromPoint($position)
+                    if ([WtmFeatureProbe]::GetAncestor($under, 2) -ne $script:window -or
                         $position.X -ne [int](($rect.Left + $rect.Right) / 2) -or $position.Y -ne [int](($rect.Top + $rect.Bottom) / 2)) {
                         Move-Pointer ([int](($rect.Left + $rect.Right) / 2)) ([int](($rect.Top + $rect.Bottom) / 2))
                         Wait-For {
-                            if ([WtsFeatureProbe]::IsWindowVisible($toggle) -and [WtsFeatureProbe]::IsWindowVisible($button)) { return $true }
+                            if ([WtmFeatureProbe]::IsWindowVisible($toggle) -and [WtmFeatureProbe]::IsWindowVisible($button)) { return $true }
                             Move-Pointer ([int](($rect.Left + $rect.Right) / 2)) ([int](($rect.Top + $rect.Bottom) / 2))
                             return $false
                         } 'controls after pointer return'
                         continue
                     }
-                    if (-not [WtsFeatureProbe]::IsWindowVisible($toggle) -or -not [WtsFeatureProbe]::IsWindowVisible($button)) {
-                        $currentPosition = [WtsFeatureProbe+Point]::new()
-                        [void][WtsFeatureProbe]::GetCursorPos([ref]$currentPosition)
+                    if (-not [WtmFeatureProbe]::IsWindowVisible($toggle) -or -not [WtmFeatureProbe]::IsWindowVisible($button)) {
+                        $currentPosition = [WtmFeatureProbe+Point]::new()
+                        [void][WtmFeatureProbe]::GetCursorPos([ref]$currentPosition)
                         if ($currentPosition.X -ne $position.X -or $currentPosition.Y -ne $position.Y) { continue }
                         throw 'Child transition hid controls while pointer remained inside window'
                     }
@@ -448,87 +448,87 @@ function Assert-Hover {
                 if ($sample -ne 10) { throw 'Pointer did not remain inside the test window' }
             }
             Click-Control $button
-            Wait-For { [WtsFeatureProbe]::FindCount($script:window, $expectedCaption) -eq [IntPtr]::Zero } 'Hide click'
+            Wait-For { [WtmFeatureProbe]::FindCount($script:window, $expectedCaption) -eq [IntPtr]::Zero } 'Hide click'
             Click-Control $toggle
             Wait-For {
-                $script:card = [WtsFeatureProbe]::FindCount($script:window, $expectedCaption)
+                $script:card = [WtmFeatureProbe]::FindCount($script:window, $expectedCaption)
                 $script:card -ne [IntPtr]::Zero
             } 'Show all click'
             Move-Pointer ($target.Left - 20) ($target.Top - 20)
-            Wait-For { -not [WtsFeatureProbe]::IsWindowVisible($toggle) } 'checked toggle hidden'
-            $thread = [WtsFeatureProbe]::GetWindowThreadProcessId($script:window, [ref]([uint32]0))
-            $focus = [WtsFeatureProbe+GuiInfo]::new()
+            Wait-For { -not [WtmFeatureProbe]::IsWindowVisible($toggle) } 'checked toggle hidden'
+            $thread = [WtmFeatureProbe]::GetWindowThreadProcessId($script:window, [ref]([uint32]0))
+            $focus = [WtmFeatureProbe+GuiInfo]::new()
             $focus.Size = [Runtime.InteropServices.Marshal]::SizeOf($focus)
-            if (-not [WtsFeatureProbe]::GetGUIThreadInfo($thread, [ref]$focus) -or
-                $focus.Focus -eq $toggle -or -not [WtsFeatureProbe]::IsWindowVisible($focus.Focus)) { throw 'Focus remained on a hidden control' }
-            if ([WtsFeatureProbe]::SendMessage($toggle, 0x00f0, [IntPtr]::Zero, [IntPtr]::Zero) -ne [IntPtr]1) { throw 'Hover reset checkbox state' }
+            if (-not [WtmFeatureProbe]::GetGUIThreadInfo($thread, [ref]$focus) -or
+                $focus.Focus -eq $toggle -or -not [WtmFeatureProbe]::IsWindowVisible($focus.Focus)) { throw 'Focus remained on a hidden control' }
+            if ([WtmFeatureProbe]::SendMessage($toggle, 0x00f0, [IntPtr]::Zero, [IntPtr]::Zero) -ne [IntPtr]1) { throw 'Hover reset checkbox state' }
             Move-Pointer ($target.Left + 20) ($target.Top + 400)
-            Wait-For { [WtsFeatureProbe]::IsWindowVisible($toggle) } 'checked toggle restored'
-            $unhide = [WtsFeatureProbe]::FindCount($script:window, 'Unhide')
-            [WtsFeatureProbe]::AssertActionWidth($script:window, 'Unhide')
+            Wait-For { [WtmFeatureProbe]::IsWindowVisible($toggle) } 'checked toggle restored'
+            $unhide = [WtmFeatureProbe]::FindCount($script:window, 'Unhide')
+            [WtmFeatureProbe]::AssertActionWidth($script:window, 'Unhide')
             Click-Control $unhide
-            Wait-For { [WtsFeatureProbe]::FindCount($script:window, 'Hide') -ne [IntPtr]::Zero } 'Unhide click'
-            [WtsFeatureProbe]::AssertActionWidth($script:window, 'Hide')
+            Wait-For { [WtmFeatureProbe]::FindCount($script:window, 'Hide') -ne [IntPtr]::Zero } 'Unhide click'
+            [WtmFeatureProbe]::AssertActionWidth($script:window, 'Hide')
             Click-Control $toggle
-            Wait-For { [WtsFeatureProbe]::SendMessage($toggle, 0x00f0, [IntPtr]::Zero, [IntPtr]::Zero) -eq [IntPtr]::Zero } 'Show all unchecked'
-            [void][WtsFeatureProbe]::SetWindowPos($script:window, [IntPtr]::Zero, $target.Left, $target.Top, $width, 100, 20)
-            $scrollbar = [WtsFeatureProbe]::GetDlgItem($script:window, 1003)
-            Wait-For { [WtsFeatureProbe]::IsWindowVisible($scrollbar) } 'scrollbar visible'
+            Wait-For { [WtmFeatureProbe]::SendMessage($toggle, 0x00f0, [IntPtr]::Zero, [IntPtr]::Zero) -eq [IntPtr]::Zero } 'Show all unchecked'
+            [void][WtmFeatureProbe]::SetWindowPos($script:window, [IntPtr]::Zero, $target.Left, $target.Top, $width, 100, 20)
+            $scrollbar = [WtmFeatureProbe]::GetDlgItem($script:window, 1003)
+            Wait-For { [WtmFeatureProbe]::IsWindowVisible($scrollbar) } 'scrollbar visible'
             $rect = Bounds $scrollbar
             Move-Pointer ([int](($rect.Left + $rect.Right) / 2)) ([int](($rect.Top + $rect.Bottom) / 2))
             for ($sample = 0; $sample -lt 10; $sample++) {
-                if (-not [WtsFeatureProbe]::IsWindowVisible($toggle)) { throw 'Scrollbar transition hid controls' }
+                if (-not [WtmFeatureProbe]::IsWindowVisible($toggle)) { throw 'Scrollbar transition hid controls' }
                 Start-Sleep -Milliseconds 20
             }
             $proof.checks += [ordered]@{ name = 'whole-window hover'; width = $width; stable_layout = $true; child_transitions = $true; clicks = $true; checkbox_preserved = $true }
         }
     } finally {
-        [void][WtsFeatureProbe]::SetWindowPos($script:window, [IntPtr]::Zero, $target.Left, $target.Top, 760, 540, 20)
-        [void][WtsFeatureProbe]::SetCursorPos($cursor.X, $cursor.Y)
+        [void][WtmFeatureProbe]::SetWindowPos($script:window, [IntPtr]::Zero, $target.Left, $target.Top, 760, 540, 20)
+        [void][WtmFeatureProbe]::SetCursorPos($cursor.X, $cursor.Y)
     }
 }
 
 function Assert-Colors {
     $outer = Bounds $script:window
     $card = Bounds $script:card
-    $dpi = [WtsFeatureProbe]::GetDpiForWindow($script:card)
+    $dpi = [WtmFeatureProbe]::GetDpiForWindow($script:card)
     $x = $card.Left - $outer.Left + [int][Math]::Floor(14 * $dpi / 96)
     $top = $card.Top - $outer.Top + [int][Math]::Round(12 * 1.2 * $dpi / 96)
     $bottom = $card.Bottom - $outer.Top - [int][Math]::Floor(8 * $dpi / 96)
     $image = [Drawing.Bitmap]::new($outer.Right - $outer.Left, $outer.Bottom - $outer.Top)
     $graphics = [Drawing.Graphics]::FromImage($image)
     try {
-        [void][WtsFeatureProbe]::RedrawWindow($script:window, [IntPtr]::Zero, [IntPtr]::Zero, 0x0181)
-        [void][WtsFeatureProbe]::DwmFlush()
+        [void][WtmFeatureProbe]::RedrawWindow($script:window, [IntPtr]::Zero, [IntPtr]::Zero, 0x0181)
+        [void][WtmFeatureProbe]::DwmFlush()
         $graphics.CopyFromScreen($outer.Left, $outer.Top, 0, 0, $image.Size)
         $image.Save((Join-Path $Output 'counts.png'))
-        $button = [WtsFeatureProbe]::FindCount($script:card, 'Hide')
+        $button = [WtmFeatureProbe]::FindCount($script:card, 'Hide')
         if ($button -eq [IntPtr]::Zero) { throw 'Hide button unavailable' }
         $buttonBounds = Bounds $button
         $corner = $image.GetPixel($buttonBounds.Left - $outer.Left, $buttonBounds.Top - $outer.Top)
         if ($corner.R -ne 11 -or $corner.G -ne 16 -or $corner.B -ne 18) { throw "Hide corner differs from terminal background" }
         $headingTop = $card.Top - $outer.Top
-        $proof.rendered_font = [WtsFeatureProbe]::AssertFont($script:window, $script:card, $image, $x, $headingTop)
+        $proof.rendered_font = [WtmFeatureProbe]::AssertFont($script:window, $script:card, $image, $x, $headingTop)
         $rejectedShift = $false
-        try { [void][WtsFeatureProbe]::AssertFont($script:window, $script:card, $image, $x, $headingTop, 1) }
+        try { [void][WtmFeatureProbe]::AssertFont($script:window, $script:card, $image, $x, $headingTop, 1) }
         catch {
             if ($_.Exception.Message -notmatch 'shared line origin on line 1') { throw }
             $rejectedShift = $true
         }
         if (-not $rejectedShift) { throw 'Text position proof accepted a one-pixel second-line shift' }
         $proof.line_origin_shift_rejected = $true
-        [WtsFeatureProbe]::ButtonStates($button, $Output)
+        [WtmFeatureProbe]::ButtonStates($button, $Output)
         $proof.button_corners_match_card = $true
         $proof.button_states = @('normal', 'hover', 'pressed', 'disabled')
         $proof.colors = @()
         foreach ($part in @('S +4/-1', 'T +5/-1', 'X +6/-1')) {
-            $width = [WtsFeatureProbe]::Measure($script:card, $part)
-            $pixels = [WtsFeatureProbe]::Pixels($image, $x, $x + $width, $top, $bottom)
+            $width = [WtmFeatureProbe]::Measure($script:card, $part)
+            $pixels = [WtmFeatureProbe]::Pixels($image, $x, $x + $width, $top, $bottom)
             $proof.colors += [ordered]@{ text = $part; left = $x; width = $width; top = $top; bottom = $bottom; green = $pixels[0]; red = $pixels[1]; muted = $pixels[2] }
             if ($part.StartsWith('S')) {
                 if ($pixels[0] -eq 0 -or $pixels[1] -eq 0) { throw 'Source additions and deletions are not colored' }
             } elseif ($pixels[0] -ne 0 -or $pixels[1] -ne 0 -or $pixels[2] -eq 0) { throw "$part is not muted" }
-            $x += $width + [WtsFeatureProbe]::Measure($script:card, ' · ')
+            $x += $width + [WtmFeatureProbe]::Measure($script:card, ' · ')
         }
     } finally { $graphics.Dispose(); $image.Dispose() }
 }
@@ -536,7 +536,7 @@ function Assert-Colors {
 $names = @('HOME', 'USERPROFILE', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
-$dpiContext = [WtsFeatureProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
+$dpiContext = [WtmFeatureProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
 $script:process = $null
 $proof = [ordered]@{ result = 'FAIL'; binary = $Binary; sha256 = (Get-FileHash $Binary).Hash; checks = @(); runs = @() }
 try {
@@ -549,7 +549,7 @@ try {
     Run-Git @('init', '--quiet', '--initial-branch=km/wna-2067-document-the-agreement-and-usage')
     foreach ($path in @('source.txt', 'tests/unit.test.js', 'scripts/tool.ps1')) { Write-Lines $path @('keep', 'old') }
     Run-Git @('add', '.')
-    Run-Git @('-c', 'user.name=Wts Test', '-c', 'user.email=wts@example.invalid', 'commit', '--quiet', '-m', 'Fixture')
+    Run-Git @('-c', 'user.name=Wtm Test', '-c', 'user.email=wtm@example.invalid', 'commit', '--quiet', '-m', 'Fixture')
     foreach ($path in @('source.txt', 'tests/unit.test.js', 'scripts/tool.ps1')) { Write-Lines $path @('keep', 'staged') }
     Run-Git @('add', '.')
     foreach ($path in @('source.txt', 'tests/unit.test.js', 'scripts/tool.ps1')) { Write-Lines $path @('keep', 'staged', 'unstaged') }
@@ -559,10 +559,10 @@ try {
     & $CliBinary add $repo
     if ($LASTEXITCODE -ne 0) { throw 'Fixture registration failed' }
     $expectedCaption = "km/wna-2067-document-the-agreement-and-usage`nS +4/-1 · T +5/-1 · X +6/-1"
-    $placementPath = Join-Path $fixtureHome '.config/wts/config.placement.json'
-    $area = [WtsFeatureProbe+Rect]::new()
-    if (-not [WtsFeatureProbe]::SystemParametersInfo(0x0030, 0, [ref]$area, 0)) { throw 'Work area unavailable' }
-    $target = [WtsFeatureProbe+Rect]::new()
+    $placementPath = Join-Path $fixtureHome '.config/wtm/config.placement.json'
+    $area = [WtmFeatureProbe+Rect]::new()
+    if (-not [WtmFeatureProbe]::SystemParametersInfo(0x0030, 0, [ref]$area, 0)) { throw 'Work area unavailable' }
+    $target = [WtmFeatureProbe+Rect]::new()
     $target.Left = $area.Left + 37
     $target.Top = $area.Top + 43
     $target.Right = $target.Left + 760
@@ -571,20 +571,20 @@ try {
     $proof.work_area = Bounds-Record $area
     $proof.expected_bounds = Bounds-Record $target
     Start-Window 'initial'
-    if (-not [WtsFeatureProbe]::SetWindowPos($script:window, [IntPtr]::Zero, $target.Left, $target.Top, 760, 540, 0x14)) { throw 'Fixture resize failed' }
+    if (-not [WtmFeatureProbe]::SetWindowPos($script:window, [IntPtr]::Zero, $target.Left, $target.Top, 760, 540, 0x14)) { throw 'Fixture resize failed' }
     Wait-For { Same-Bounds $target (Bounds $script:window) } 'fixture bounds'
-    [void][WtsFeatureProbe]::SendMessage($script:window, 0x0232, [IntPtr]::Zero, [IntPtr]::Zero)
+    [void][WtmFeatureProbe]::SendMessage($script:window, 0x0232, [IntPtr]::Zero, [IntPtr]::Zero)
     $savedMove = Get-Content $placementPath -Raw | ConvertFrom-Json
     if (-not (Same-Bounds $target $savedMove.normal)) { throw 'Completed move did not save its bounds' }
-    [WtsFeatureProbe]::AssertRepeatedDpiKeepsBounds($script:window)
+    [WtmFeatureProbe]::AssertRepeatedDpiKeepsBounds($script:window)
     $proof.checks += [ordered]@{ name = 'repeated DPI notification'; bounds_unchanged = $true }
     Assert-Hover
     Assert-Colors
     Close-Window
     Start-Window 'normal restart'
     Assert-Restored 'normal restart'
-    [void][WtsFeatureProbe]::ShowWindow($script:window, 6)
-    Wait-For { [WtsFeatureProbe]::IsIconic($script:window) } 'minimization'
+    [void][WtmFeatureProbe]::ShowWindow($script:window, 6)
+    Wait-For { [WtmFeatureProbe]::IsIconic($script:window) } 'minimization'
     Close-Window
     Start-Window 'minimized restart'
     Assert-Restored 'minimized restart'
@@ -611,31 +611,31 @@ try {
     Close-Window
     Write-Placement ($original | ConvertFrom-Json)
     Start-Window 'maximize'
-    [void][WtsFeatureProbe]::ShowWindow($script:window, 3)
-    Wait-For { [WtsFeatureProbe]::IsZoomed($script:window) } 'maximization'
+    [void][WtmFeatureProbe]::ShowWindow($script:window, 3)
+    Wait-For { [WtmFeatureProbe]::IsZoomed($script:window) } 'maximization'
     if (-not (Same-Bounds $area (Bounds $script:window))) { throw 'Maximized frameless window does not fit the work area' }
     Close-Window
     Start-Window 'maximized restart'
-    if (-not [WtsFeatureProbe]::IsZoomed($script:window)) { throw 'Maximized state was lost' }
-    $proof.checks += [ordered]@{ name = 'maximized restart'; maximized = [WtsFeatureProbe]::IsZoomed($script:window) }
-    [void][WtsFeatureProbe]::ShowWindow($script:window, 6)
-    Wait-For { [WtsFeatureProbe]::IsIconic($script:window) } 'maximized minimization'
+    if (-not [WtmFeatureProbe]::IsZoomed($script:window)) { throw 'Maximized state was lost' }
+    $proof.checks += [ordered]@{ name = 'maximized restart'; maximized = [WtmFeatureProbe]::IsZoomed($script:window) }
+    [void][WtmFeatureProbe]::ShowWindow($script:window, 6)
+    Wait-For { [WtmFeatureProbe]::IsIconic($script:window) } 'maximized minimization'
     Close-Window
     Start-Window 'maximized then minimized restart'
-    if (-not [WtsFeatureProbe]::IsZoomed($script:window)) { throw 'Minimizing lost the maximized state' }
-    $proof.checks += [ordered]@{ name = 'maximized then minimized restart'; maximized = [WtsFeatureProbe]::IsZoomed($script:window) }
-    [void][WtsFeatureProbe]::ShowWindow($script:window, 9)
+    if (-not [WtmFeatureProbe]::IsZoomed($script:window)) { throw 'Minimizing lost the maximized state' }
+    $proof.checks += [ordered]@{ name = 'maximized then minimized restart'; maximized = [WtmFeatureProbe]::IsZoomed($script:window) }
+    [void][WtmFeatureProbe]::ShowWindow($script:window, 9)
     Assert-Restored 'normal bounds after maximization'
     Close-Window
     $proof.result = 'PASS'
     Write-Host "PASS. Counts, source-only colors, and window placement. Evidence at $Output"
 } catch { $proof.failure = $_.Exception.Message; throw } finally {
     if ($null -ne $script:process) {
-        [void][WtsFeatureProbe]::PostMessage($script:window, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
+        [void][WtmFeatureProbe]::PostMessage($script:window, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
         if (-not $script:process.WaitForExit(10000)) { $script:process.Kill($true); $script:process.WaitForExit() }
         $script:process.Dispose()
     }
     $proof | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $Output 'proof.json') -Encoding utf8NoBOM
     foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $previous[$name], 'Process') }
-    [void][WtsFeatureProbe]::SetThreadDpiAwarenessContext($dpiContext)
+    [void][WtmFeatureProbe]::SetThreadDpiAwarenessContext($dpiContext)
 }

@@ -1,13 +1,13 @@
 param(
-    [string]$Binary = "$PSScriptRoot/../target/debug/wts-ui.exe",
-    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wts-visibility-$([Guid]::NewGuid().ToString('N'))",
+    [string]$Binary = "$PSScriptRoot/../target/debug/wtm-ui.exe",
+    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wtm-visibility-$([Guid]::NewGuid().ToString('N'))",
     [switch]$Baseline,
     [switch]$VisibilityOnly
 )
 
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
-$CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wts.exe')).Path
+$CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wtm.exe')).Path
 $Output = [IO.Path]::GetFullPath($Output)
 New-Item -ItemType Directory -Path $Output -Force | Out-Null
 
@@ -18,7 +18,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 
-public static class WtsVisibilityNativeProbe {
+public static class WtmVisibilityNativeProbe {
     public struct Point { public int X, Y; }
     [StructLayout(LayoutKind.Sequential)] public struct MouseInput {
         public int X, Y;
@@ -150,7 +150,7 @@ public static class WtsVisibilityNativeProbe {
         EnumWindows((handle, data) => {
             uint owner;
             GetWindowThreadProcessId(handle, out owner);
-            if (owner == processId && IsWindowVisible(handle) && Text(handle).StartsWith("WTS", StringComparison.OrdinalIgnoreCase)) {
+            if (owner == processId && IsWindowVisible(handle) && Text(handle).StartsWith("WTM", StringComparison.OrdinalIgnoreCase)) {
                 found = handle;
                 return false;
             }
@@ -378,7 +378,7 @@ function New-Repository([string]$Name) {
     Run-Git $repo @('init', '--quiet')
     Write-Utf8 (Join-Path $repo 'lines.txt') "before`n"
     Run-Git $repo @('add', '.')
-    Run-Git $repo @('-c', 'user.name=Wts Visibility Test', '-c', 'user.email=wts-visibility@example.invalid', 'commit', '--quiet', '-m', 'Fixture')
+    Run-Git $repo @('-c', 'user.name=Wtm Visibility Test', '-c', 'user.email=wtm-visibility@example.invalid', 'commit', '--quiet', '-m', 'Fixture')
     $commit = Get-GitText $repo @('rev-parse', 'HEAD')
     if ($commit.Length -eq 0) { throw 'Fixture commit lookup failed' }
     $branch = "${Name}-topic"
@@ -429,8 +429,8 @@ function New-RowKey([string]$Repository, [string]$Worktree) {
 }
 
 function Get-Cards {
-    $children = @([WtsVisibilityNativeProbe]::Children($script:viewport) | Where-Object {
-        $_.Parent -eq $script:viewport -and $_.Class -ieq 'STATIC' -and $_.Text.Length -gt 0 -and [WtsVisibilityNativeProbe]::IsWindowVisible($_.Handle)
+    $children = @([WtmVisibilityNativeProbe]::Children($script:viewport) | Where-Object {
+        $_.Parent -eq $script:viewport -and $_.Class -ieq 'STATIC' -and $_.Text.Length -gt 0 -and [WtmVisibilityNativeProbe]::IsWindowVisible($_.Handle)
     })
     @($children | ForEach-Object {
         [pscustomobject]@{ Handle = $_.Handle; Text = $_.Text -replace '\r?\nRefreshing$', ''; Class = $_.Class; Bounds = $_.Bounds; Top = $_.Bounds.Top }
@@ -593,8 +593,8 @@ function Wait-For-ExpectedRows([array]$Expected, [string]$Label, [int]$Seconds =
 }
 
 function Get-NativeButtons {
-    @([WtsVisibilityNativeProbe]::Children($script:handle) | Where-Object {
-        $_.Class -ieq 'Button' -and [WtsVisibilityNativeProbe]::IsWindowVisible($_.Handle)
+    @([WtmVisibilityNativeProbe]::Children($script:handle) | Where-Object {
+        $_.Class -ieq 'Button' -and [WtmVisibilityNativeProbe]::IsWindowVisible($_.Handle)
     } | ForEach-Object {
         [pscustomobject]@{ Handle = $_.Handle; Parent = $_.Parent; Text = $_.Text; Class = $_.Class; Bounds = $_.Bounds }
     })
@@ -607,7 +607,7 @@ function Find-VisibilityButton($Card, [string]$Caption) {
 }
 
 function Find-VisibilityTopButton([string]$Caption) {
-    $viewportBounds = [WtsVisibilityNativeProbe]::WindowBounds($script:viewport)
+    $viewportBounds = [WtmVisibilityNativeProbe]::WindowBounds($script:viewport)
     @((Get-NativeButtons) | Where-Object {
         $_.Parent -eq $script:handle -and $_.Text -ceq $Caption -and $_.Bounds.Top -lt $viewportBounds.Top
     })
@@ -620,12 +620,12 @@ function Assert-NativeVisibilitySurface([array]$Rows, [string]$HiddenKey, [bool]
     $top = @(Find-VisibilityTopButton 'Show all')
     if ($top.Count -ne 1) { throw "Expected one Show all checkbox, found $($top.Count)" }
     if (@(Find-VisibilityTopButton 'Hide hidden').Count -ne 0) { throw 'Show all label changed when toggled' }
-    $actualChecked = [WtsVisibilityNativeProbe]::Send($top[0].Handle, 0x00F0, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64()
+    $actualChecked = [WtmVisibilityNativeProbe]::Send($top[0].Handle, 0x00F0, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64()
     if ($actualChecked -ne [int]$Checked) { throw "Expected Show all checked state $Checked, found $actualChecked" }
-    if (([WtsVisibilityNativeProbe]::GetWindowLong($top[0].Handle, -16) -band 15) -ne 3) {
+    if (([WtmVisibilityNativeProbe]::GetWindowLong($top[0].Handle, -16) -band 15) -ne 3) {
         throw 'Show all is not a native automatic checkbox'
     }
-    $dpi = [WtsVisibilityNativeProbe]::GetDpiForWindow($script:handle)
+    $dpi = [WtmVisibilityNativeProbe]::GetDpiForWindow($script:handle)
     if (($top[0].Bounds.Bottom - $top[0].Bounds.Top) -gt [int](28 * $dpi / 96)) {
         throw 'Show all is taller than a compact toggle'
     }
@@ -640,7 +640,7 @@ function Assert-NativeVisibilitySurface([array]$Rows, [string]$HiddenKey, [bool]
     $visibilityButtons = @($buttons | Where-Object { $_.Text -match '^(Hide|Unhide|Show all|Hide hidden)$' })
     if ($visibilityButtons.Count -ne ($worktrees.Count + 1)) { throw "Expected $($worktrees.Count + 1) native visibility buttons, found $($visibilityButtons.Count)" }
     foreach ($button in @($visibilityButtons | Where-Object { $_.Handle -ne $top[0].Handle })) {
-        if (([WtsVisibilityNativeProbe]::GetWindowLong($button.Handle, -16) -band 15) -ne 11) {
+        if (([WtmVisibilityNativeProbe]::GetWindowLong($button.Handle, -16) -band 15) -ne 11) {
             throw "Visibility button $($button.Text) does not use the app's shared owner-drawn style"
         }
     }
@@ -711,10 +711,10 @@ function Assert-StableConfiguration {
 }
 
 function Focus-Button($Button) {
-    if (-not [WtsVisibilityNativeProbe]::IsWindow($Button.Handle) -or -not [WtsVisibilityNativeProbe]::IsWindowEnabled($Button.Handle)) { throw "Button $($Button.Text) is not focusable" }
-    if (-not [WtsVisibilityNativeProbe]::FocusWindow($Button.Handle, $script:handle)) { throw "Could not focus native button $($Button.Text)" }
-    Wait-For { [WtsVisibilityNativeProbe]::Focused($script:handle) -eq $Button.Handle } "focus on $($Button.Text)" 5
-    [WtsVisibilityNativeProbe]::Focused($script:handle)
+    if (-not [WtmVisibilityNativeProbe]::IsWindow($Button.Handle) -or -not [WtmVisibilityNativeProbe]::IsWindowEnabled($Button.Handle)) { throw "Button $($Button.Text) is not focusable" }
+    if (-not [WtmVisibilityNativeProbe]::FocusWindow($Button.Handle, $script:handle)) { throw "Could not focus native button $($Button.Text)" }
+    Wait-For { [WtmVisibilityNativeProbe]::Focused($script:handle) -eq $Button.Handle } "focus on $($Button.Text)" 5
+    [WtmVisibilityNativeProbe]::Focused($script:handle)
 }
 
 function Invoke-KeyboardButton($Button) {
@@ -727,8 +727,8 @@ function Invoke-KeyboardButton($Button) {
             key = 'SPACE'
         }
     }
-    [void][WtsVisibilityNativeProbe]::Send($Button.Handle, 0x0100, [IntPtr]0x20, [IntPtr]1)
-    [void][WtsVisibilityNativeProbe]::Send($Button.Handle, 0x0101, [IntPtr]0x20, [IntPtr](-1073741823))
+    [void][WtmVisibilityNativeProbe]::Send($Button.Handle, 0x0100, [IntPtr]0x20, [IntPtr]1)
+    [void][WtmVisibilityNativeProbe]::Send($Button.Handle, 0x0101, [IntPtr]0x20, [IntPtr](-1073741823))
     [ordered]@{
         result = 'PASS'
         handle = $Button.Handle.ToInt64()
@@ -748,10 +748,10 @@ function Invoke-TabProbe($Button) {
             reason = 'Could not observe focus on the native button'
         }
     }
-    if (-not [WtsVisibilityNativeProbe]::PostMessage($Button.Handle, 0x0100, [IntPtr]9, [IntPtr]1)) { throw 'Tab key could not be posted' }
-    if (-not [WtsVisibilityNativeProbe]::PostMessage($Button.Handle, 0x0101, [IntPtr]9, [IntPtr](-1073741815))) { throw 'Tab release could not be posted' }
+    if (-not [WtmVisibilityNativeProbe]::PostMessage($Button.Handle, 0x0100, [IntPtr]9, [IntPtr]1)) { throw 'Tab key could not be posted' }
+    if (-not [WtmVisibilityNativeProbe]::PostMessage($Button.Handle, 0x0101, [IntPtr]9, [IntPtr](-1073741815))) { throw 'Tab release could not be posted' }
     Start-Sleep -Milliseconds 100
-    $after = [WtsVisibilityNativeProbe]::Focused($script:handle)
+    $after = [WtmVisibilityNativeProbe]::Focused($script:handle)
     $native = @(Get-NativeButtons | Where-Object { $_.Handle -eq $after })
     [ordered]@{
         result = if ($after -ne [IntPtr]::Zero -and $after -ne $before -and $native.Count -eq 1) { 'PASS' } else { 'NOT_FEASIBLE' }
@@ -762,42 +762,42 @@ function Invoke-TabProbe($Button) {
 }
 
 function Invoke-ButtonClick($Button) {
-    $bounds = [WtsVisibilityNativeProbe]::WindowBounds($Button.Handle)
-    $point = [WtsVisibilityNativeProbe+Point]::new()
+    $bounds = [WtmVisibilityNativeProbe]::WindowBounds($Button.Handle)
+    $point = [WtmVisibilityNativeProbe+Point]::new()
     $point.X = [int](($bounds.Left + $bounds.Right) / 2)
     $point.Y = [int](($bounds.Top + $bounds.Bottom) / 2)
-    [void][WtsVisibilityNativeProbe]::SetForegroundWindow($script:handle)
+    [void][WtmVisibilityNativeProbe]::SetForegroundWindow($script:handle)
     Start-Sleep -Milliseconds 50
-    if (-not [WtsVisibilityNativeProbe]::SetCursorPos($point.X, $point.Y)) { throw 'Could not position the mouse over the button' }
-    $hit = [WtsVisibilityNativeProbe]::WindowFromPoint($point)
+    if (-not [WtmVisibilityNativeProbe]::SetCursorPos($point.X, $point.Y)) { throw 'Could not position the mouse over the button' }
+    $hit = [WtmVisibilityNativeProbe]::WindowFromPoint($point)
     [uint32]$owner = 0
-    [void][WtsVisibilityNativeProbe]::GetWindowThreadProcessId($hit, [ref]$owner)
+    [void][WtmVisibilityNativeProbe]::GetWindowThreadProcessId($hit, [ref]$owner)
     if ($owner -ne $script:process.Id) { throw 'Mouse target is outside the test window' }
-    [WtsVisibilityNativeProbe]::Click()
+    [WtmVisibilityNativeProbe]::Click()
     if ($hit -ne $Button.Handle) {
-        throw "Mouse click on $($Button.Text) reaches $([WtsVisibilityNativeProbe]::Class($hit)) instead of the button"
+        throw "Mouse click on $($Button.Text) reaches $([WtmVisibilityNativeProbe]::Class($hit)) instead of the button"
     }
 }
 
 function Invoke-VisibilityActivation($Button, [bool]$Keyboard) {
-    $caption = [WtsVisibilityNativeProbe]::Text($Button.Handle)
-    $checked = [WtsVisibilityNativeProbe]::Send($Button.Handle, 0x00F0, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64()
+    $caption = [WtmVisibilityNativeProbe]::Text($Button.Handle)
+    $checked = [WtmVisibilityNativeProbe]::Send($Button.Handle, 0x00F0, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64()
     if ($Keyboard) {
         $result = Invoke-KeyboardButton $Button
         if ($result.result -cne 'PASS') { throw "Could not verify keyboard activation of $($Button.Text)" }
     } else { Invoke-ButtonClick $Button }
     Wait-For {
         if ($caption -ceq 'Show all') {
-            [WtsVisibilityNativeProbe]::Send($Button.Handle, 0x00F0, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64() -ne $checked
+            [WtmVisibilityNativeProbe]::Send($Button.Handle, 0x00F0, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64() -ne $checked
         } else {
-            -not [WtsVisibilityNativeProbe]::IsWindow($Button.Handle) -or [WtsVisibilityNativeProbe]::Text($Button.Handle) -cne $caption
+            -not [WtmVisibilityNativeProbe]::IsWindow($Button.Handle) -or [WtmVisibilityNativeProbe]::Text($Button.Handle) -cne $caption
         }
     } "activation of $caption" 10
 }
 
 function Get-ButtonScreenSamplePoint($Button) {
-    $bounds = [WtsVisibilityNativeProbe]::WindowBounds($Button.Handle)
-    $dpi = [Math]::Max(96, [int][WtsVisibilityNativeProbe]::GetDpiForWindow($script:handle))
+    $bounds = [WtmVisibilityNativeProbe]::WindowBounds($Button.Handle)
+    $dpi = [Math]::Max(96, [int][WtmVisibilityNativeProbe]::GetDpiForWindow($script:handle))
     $inset = [Math]::Max(1, [int][Math]::Ceiling(4 * $dpi / 96))
     $x = $bounds.Left + $inset
     $y = [int](($bounds.Top + $bounds.Bottom) / 2)
@@ -814,16 +814,16 @@ function Get-ButtonScreenSamplePoint($Button) {
 
 function Invoke-VisibilityFrameProbe($Button, [bool]$BaselineMode) {
     $handle = $Button.Handle
-    $initialCaption = [WtsVisibilityNativeProbe]::Text($handle)
+    $initialCaption = [WtmVisibilityNativeProbe]::Text($handle)
     if ($initialCaption -cne 'Unhide') { throw "Live frame probe started with $initialCaption instead of Unhide" }
-    $initialBounds = [WtsVisibilityNativeProbe]::WindowBounds($handle)
+    $initialBounds = [WtmVisibilityNativeProbe]::WindowBounds($handle)
     $point = Get-ButtonScreenSamplePoint $Button
-    [void][WtsVisibilityNativeProbe]::SetForegroundWindow($script:handle)
+    [void][WtmVisibilityNativeProbe]::SetForegroundWindow($script:handle)
     Start-Sleep -Milliseconds 100
-    $screenPoint = [WtsVisibilityNativeProbe+Point]::new()
+    $screenPoint = [WtmVisibilityNativeProbe+Point]::new()
     $screenPoint.X = $point.X
     $screenPoint.Y = $point.Y
-    $hit = [WtsVisibilityNativeProbe]::WindowFromPoint($screenPoint)
+    $hit = [WtmVisibilityNativeProbe]::WindowFromPoint($screenPoint)
     if ($hit -ne $handle) { throw 'Visibility button background sample point is not visible on screen' }
     $sampler = $null
     $measurement = $null
@@ -832,15 +832,15 @@ function Invoke-VisibilityFrameProbe($Button, [bool]$BaselineMode) {
     $captions = [Collections.Generic.List[string]]::new()
     $cleanupError = $null
     try {
-        $sampler = [WtsVisibilityNativeProbe+ScreenSampler]::new($point.X, $point.Y, 1)
+        $sampler = [WtmVisibilityNativeProbe+ScreenSampler]::new($point.X, $point.Y, 1)
         $sampler.Start()
         foreach ($index in 1..$cycles) {
             $expected = if (($index % 2) -eq 1) { 'Hide' } else { 'Unhide' }
-            [void][WtsVisibilityNativeProbe]::Send($handle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
+            [void][WtmVisibilityNativeProbe]::Send($handle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
             Wait-For {
-                [WtsVisibilityNativeProbe]::IsWindow($handle) -and [WtsVisibilityNativeProbe]::Text($handle) -ceq $expected
+                [WtmVisibilityNativeProbe]::IsWindow($handle) -and [WtmVisibilityNativeProbe]::Text($handle) -ceq $expected
             } "BM_CLICK caption $expected" 10
-            if (-not (Rect-Same $initialBounds ([WtsVisibilityNativeProbe]::WindowBounds($handle)))) {
+            if (-not (Rect-Same $initialBounds ([WtmVisibilityNativeProbe]::WindowBounds($handle)))) {
                 throw 'Visibility button bounds changed while Show all was enabled'
             }
             [void]$captions.Add($expected)
@@ -855,10 +855,10 @@ function Invoke-VisibilityFrameProbe($Button, [bool]$BaselineMode) {
             $cleanupError = $_
         }
         try {
-            if ([WtsVisibilityNativeProbe]::IsWindow($handle) -and [WtsVisibilityNativeProbe]::Text($handle) -cne $initialCaption) {
-                [void][WtsVisibilityNativeProbe]::Send($handle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
+            if ([WtmVisibilityNativeProbe]::IsWindow($handle) -and [WtmVisibilityNativeProbe]::Text($handle) -cne $initialCaption) {
+                [void][WtmVisibilityNativeProbe]::Send($handle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)
                 Wait-For {
-                    [WtsVisibilityNativeProbe]::IsWindow($handle) -and [WtsVisibilityNativeProbe]::Text($handle) -ceq $initialCaption
+                    [WtmVisibilityNativeProbe]::IsWindow($handle) -and [WtmVisibilityNativeProbe]::Text($handle) -ceq $initialCaption
                 } 'restoration of Unhide after live frame probe' 10
             }
         } catch {
@@ -869,7 +869,7 @@ function Invoke-VisibilityFrameProbe($Button, [bool]$BaselineMode) {
     if ($null -eq $measurement -or -not $measurement.DcReleased) { throw 'Live frame sampler did not release its screen DC' }
     if ($measurement.Frames -le 0) { throw 'Live frame sampler captured no screen frames' }
     if ($measurement.InvalidFrames -ne 0) { throw 'Live frame sampler could not read every screen sample' }
-    if (-not [WtsVisibilityNativeProbe]::IsWindow($handle) -or [WtsVisibilityNativeProbe]::Text($handle) -cne $initialCaption) {
+    if (-not [WtmVisibilityNativeProbe]::IsWindow($handle) -or [WtmVisibilityNativeProbe]::Text($handle) -cne $initialCaption) {
         throw 'Live frame probe did not leave the original Unhide caption'
     }
     $brightFrames = [int]$measurement.BrightFrames
@@ -886,10 +886,10 @@ function Invoke-VisibilityFrameProbe($Button, [bool]$BaselineMode) {
         cycles = $cycles
         completed_cycles = $completed
         initial_caption = $initialCaption
-        final_caption = [WtsVisibilityNativeProbe]::Text($handle)
+        final_caption = [WtmVisibilityNativeProbe]::Text($handle)
         captions = @($captions.ToArray())
         handle = $handle.ToInt64()
-        handle_stable = [WtsVisibilityNativeProbe]::IsWindow($handle)
+        handle_stable = [WtmVisibilityNativeProbe]::IsWindow($handle)
         bounds = Rect-Record $initialBounds
         sample_point = [ordered]@{
             x = $point.X
@@ -912,8 +912,8 @@ function Invoke-VisibilityFrameProbe($Button, [bool]$BaselineMode) {
 }
 
 function Get-PointsForCard($Card) {
-    $viewportBounds = [WtsVisibilityNativeProbe]::ClientBounds($script:viewport)
-    $scale = [Math]::Max(96, [int][WtsVisibilityNativeProbe]::GetDpiForWindow($script:handle))
+    $viewportBounds = [WtmVisibilityNativeProbe]::ClientBounds($script:viewport)
+    $scale = [Math]::Max(96, [int][WtmVisibilityNativeProbe]::GetDpiForWindow($script:handle))
     $x = $Card.Bounds.Left + [Math]::Max(8, [int](12 * $scale / 96))
     $offset = [Math]::Max(12, [int](14 * $scale / 96))
     $ys = @(
@@ -924,7 +924,7 @@ function Get-PointsForCard($Card) {
     $margin = [Math]::Max(24, [int](28 * $scale / 96))
     $points = @()
     foreach ($screenY in $ys) {
-        $point = [WtsVisibilityNativeProbe]::ClientPoint($script:viewport, $x, $screenY)
+        $point = [WtmVisibilityNativeProbe]::ClientPoint($script:viewport, $x, $screenY)
         $clientX = [int]($point.ToInt64() -band 0xffff)
         $clientY = [int](($point.ToInt64() -shr 16) -band 0xffff)
         if ($clientY -lt $margin -or $clientY -gt ($viewportBounds.Bottom - $margin)) { throw "Card $($Card.Text) is too close to a viewport scroll edge" }
@@ -939,9 +939,9 @@ function Get-PaintWindows([array]$Cards) {
 
 function Clear-Paint([array]$Cards) {
     $windows = @(Get-PaintWindows $Cards)
-    foreach ($window in $windows) { [void][WtsVisibilityNativeProbe]::ValidateRect($window, [IntPtr]::Zero) }
-    foreach ($window in $windows) { [void][WtsVisibilityNativeProbe]::UpdateWindow($window) }
-    foreach ($window in $windows) { [void][WtsVisibilityNativeProbe]::ValidateRect($window, [IntPtr]::Zero) }
+    foreach ($window in $windows) { [void][WtmVisibilityNativeProbe]::ValidateRect($window, [IntPtr]::Zero) }
+    foreach ($window in $windows) { [void][WtmVisibilityNativeProbe]::UpdateWindow($window) }
+    foreach ($window in $windows) { [void][WtmVisibilityNativeProbe]::ValidateRect($window, [IntPtr]::Zero) }
 }
 
 function Settle-Paint([array]$Cards) {
@@ -970,30 +970,30 @@ function Is-BroadCardUpdate($Update, $Client, [int]$Scale) {
 }
 
 function Start-Drag($Card) {
-    $scale = [Math]::Max(96, [int][WtsVisibilityNativeProbe]::GetDpiForWindow($Card.Handle))
+    $scale = [Math]::Max(96, [int][WtmVisibilityNativeProbe]::GetDpiForWindow($Card.Handle))
     $x = [Math]::Max(2, [int](12 * $scale / 96))
-    $bounds = [WtsVisibilityNativeProbe]::ClientBounds($Card.Handle)
+    $bounds = [WtmVisibilityNativeProbe]::ClientBounds($Card.Handle)
     $y = [int][Math]::Floor(($bounds.Bottom - $bounds.Top) / 2)
-    [void][WtsVisibilityNativeProbe]::Send($Card.Handle, 0x0201, [IntPtr]1, [WtsVisibilityNativeProbe]::Position($x, $y))
-    Wait-For { [WtsVisibilityNativeProbe]::Capture($script:handle) -eq $script:viewport } 'drag capture' 5
+    [void][WtmVisibilityNativeProbe]::Send($Card.Handle, 0x0201, [IntPtr]1, [WtmVisibilityNativeProbe]::Position($x, $y))
+    Wait-For { [WtmVisibilityNativeProbe]::Capture($script:handle) -eq $script:viewport } 'drag capture' 5
 }
 
 function Stop-Drag {
-    if ([WtsVisibilityNativeProbe]::Capture($script:handle) -ne [IntPtr]::Zero) {
-        [void][WtsVisibilityNativeProbe]::Send($script:viewport, 0x0100, [IntPtr]0x1b, [IntPtr]::Zero)
-        [void][WtsVisibilityNativeProbe]::Send($script:viewport, 0x0101, [IntPtr]0x1b, [IntPtr]::Zero)
-        Wait-For { [WtsVisibilityNativeProbe]::Capture($script:handle) -eq [IntPtr]::Zero } 'drag cancellation' 5
+    if ([WtmVisibilityNativeProbe]::Capture($script:handle) -ne [IntPtr]::Zero) {
+        [void][WtmVisibilityNativeProbe]::Send($script:viewport, 0x0100, [IntPtr]0x1b, [IntPtr]::Zero)
+        [void][WtmVisibilityNativeProbe]::Send($script:viewport, 0x0101, [IntPtr]0x1b, [IntPtr]::Zero)
+        Wait-For { [WtmVisibilityNativeProbe]::Capture($script:handle) -eq [IntPtr]::Zero } 'drag cancellation' 5
     }
 }
 
 function Measure-DragMove([string]$Name, $Point, $Cards, $Source, $Target) {
-    [void][WtsVisibilityNativeProbe]::Send($script:viewport, 0x0200, [IntPtr]1, [WtsVisibilityNativeProbe]::Position($Point.X, $Point.Y))
-    $viewportUpdate = [WtsVisibilityNativeProbe]::Update($script:viewport)
-    $scale = [Math]::Max(96, [int][WtsVisibilityNativeProbe]::GetDpiForWindow($script:handle))
+    [void][WtmVisibilityNativeProbe]::Send($script:viewport, 0x0200, [IntPtr]1, [WtmVisibilityNativeProbe]::Position($Point.X, $Point.Y))
+    $viewportUpdate = [WtmVisibilityNativeProbe]::Update($script:viewport)
+    $scale = [Math]::Max(96, [int][WtmVisibilityNativeProbe]::GetDpiForWindow($script:handle))
     $records = [Collections.Generic.List[object]]::new()
     foreach ($Card in @($Cards)) {
-        $update = [WtsVisibilityNativeProbe]::Update($Card.Handle)
-        $client = [WtsVisibilityNativeProbe]::ClientBounds($Card.Handle)
+        $update = [WtmVisibilityNativeProbe]::Update($Card.Handle)
+        $client = [WtmVisibilityNativeProbe]::ClientBounds($Card.Handle)
         $marker = Is-NarrowEdgeStrip $update $client $scale
         $record = [ordered]@{
             handle = $Card.Handle.ToInt64()
@@ -1011,7 +1011,7 @@ function Measure-DragMove([string]$Name, $Point, $Cards, $Source, $Target) {
         }
         [void]$records.Add([pscustomobject]$record)
     }
-    $viewportClient = [WtsVisibilityNativeProbe]::ClientBounds($script:viewport)
+    $viewportClient = [WtmVisibilityNativeProbe]::ClientBounds($script:viewport)
     $viewportNarrow = Is-NarrowStrip $viewportUpdate $viewportClient $scale
     $viewportRecord = [pscustomobject][ordered]@{
         pending = [bool]$viewportUpdate.Pending
@@ -1025,13 +1025,13 @@ function Measure-DragMove([string]$Name, $Point, $Cards, $Source, $Target) {
     }
     foreach ($record in @($records | Where-Object pending)) {
         $recordWindow = [IntPtr]::new([long]$record.handle)
-        $record.flush_return = [bool][WtsVisibilityNativeProbe]::UpdateWindow($recordWindow)
-        $after = [WtsVisibilityNativeProbe]::Update($recordWindow)
+        $record.flush_return = [bool][WtmVisibilityNativeProbe]::UpdateWindow($recordWindow)
+        $after = [WtmVisibilityNativeProbe]::Update($recordWindow)
         $record.paint_cleared = -not $after.Pending
     }
     if ($viewportUpdate.Pending) {
-        $viewportRecord.flush_return = [bool][WtsVisibilityNativeProbe]::UpdateWindow($script:viewport)
-        $afterViewport = [WtsVisibilityNativeProbe]::Update($script:viewport)
+        $viewportRecord.flush_return = [bool][WtmVisibilityNativeProbe]::UpdateWindow($script:viewport)
+        $afterViewport = [WtmVisibilityNativeProbe]::Update($script:viewport)
         $viewportRecord.paint_cleared = -not $afterViewport.Pending
     }
     $sourceHandle = $Source.Handle.ToInt64()
@@ -1088,46 +1088,46 @@ function Invoke-DragProbe([string]$Name, $Source, $Target) {
 }
 
 function Invoke-EdgeScrollTest {
-    $original = [WtsVisibilityNativeProbe]::WindowBounds($script:handle)
+    $original = [WtmVisibilityNativeProbe]::WindowBounds($script:handle)
     $edgeTrace = [Collections.Generic.List[object]]::new()
-    $scale = [int][WtsVisibilityNativeProbe]::GetDpiForWindow($script:handle)
-    if (-not [WtsVisibilityNativeProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, [int](760 * $scale / 96), [int](400 * $scale / 96), 0x16)) { throw 'Edge-scroll fixture resize failed' }
+    $scale = [int][WtmVisibilityNativeProbe]::GetDpiForWindow($script:handle)
+    if (-not [WtmVisibilityNativeProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, [int](760 * $scale / 96), [int](400 * $scale / 96), 0x16)) { throw 'Edge-scroll fixture resize failed' }
     try {
-        [void][WtsVisibilityNativeProbe]::Send($script:viewport, 0x0115, [IntPtr]6, [IntPtr]::Zero)
+        [void][WtmVisibilityNativeProbe]::Send($script:viewport, 0x0115, [IntPtr]6, [IntPtr]::Zero)
         $cards = @(Get-Cards)
         $source = @((Get-RowSnapshot $cards) | Where-Object Kind -eq 'worktree')[0].Card
         Start-Drag $source
-        $viewportBounds = [WtsVisibilityNativeProbe]::ClientBounds($script:viewport)
+        $viewportBounds = [WtmVisibilityNativeProbe]::ClientBounds($script:viewport)
         $x = [int](12 * $scale / 96)
         $bottom = [pscustomobject]@{ X = $x; Y = $viewportBounds.Bottom - [int](8 * $scale / 96) }
-        [WtsVisibilityNativeProbe]::MoveDragPointer($script:viewport, $bottom.X, $bottom.Y)
+        [WtmVisibilityNativeProbe]::MoveDragPointer($script:viewport, $bottom.X, $bottom.Y)
         Wait-For {
-            $scroll = [WtsVisibilityNativeProbe]::Scroll($script:viewport)
-            $edgeTrace.Add([ordered]@{ position = $scroll.Position; max = $scroll.Max; page = $scroll.Page; capture = [WtsVisibilityNativeProbe]::Capture($script:handle).ToInt64(); viewport = $script:viewport.ToInt64(); point_x = $bottom.X; point_y = $bottom.Y; card_top = [WtsVisibilityNativeProbe]::WindowBounds($source.Handle).Top; viewport_top = [WtsVisibilityNativeProbe]::WindowBounds($script:viewport).Top })
+            $scroll = [WtmVisibilityNativeProbe]::Scroll($script:viewport)
+            $edgeTrace.Add([ordered]@{ position = $scroll.Position; max = $scroll.Max; page = $scroll.Page; capture = [WtmVisibilityNativeProbe]::Capture($script:handle).ToInt64(); viewport = $script:viewport.ToInt64(); point_x = $bottom.X; point_y = $bottom.Y; card_top = [WtmVisibilityNativeProbe]::WindowBounds($source.Handle).Top; viewport_top = [WtmVisibilityNativeProbe]::WindowBounds($script:viewport).Top })
             $scroll.Position -gt 0 -and $scroll.Position -eq ($scroll.Max - [int]$scroll.Page + 1)
         } 'drag auto-scroll to the bottom' 10
-        $bottomPosition = [WtsVisibilityNativeProbe]::Scroll($script:viewport).Position
-        if ([WtsVisibilityNativeProbe]::Capture($script:handle) -ne $script:viewport) { throw 'Edge scrolling lost drag capture' }
+        $bottomPosition = [WtmVisibilityNativeProbe]::Scroll($script:viewport).Position
+        if ([WtmVisibilityNativeProbe]::Capture($script:handle) -ne $script:viewport) { throw 'Edge scrolling lost drag capture' }
         $cards = @(Get-Cards)
         $target = @((Get-RowSnapshot $cards) | Where-Object Kind -eq 'worktree')[-1].Card
         Settle-Paint $cards
         $stationary = Measure-DragMove 'edge-bottom-stationary' $bottom $cards $source $target
         if ($stationary.viewport.broad -or $stationary.unrelated_broad_invalidated_count -gt 0) { throw 'A clamped edge drag redrew unrelated rows' }
-        [WtsVisibilityNativeProbe]::MoveDragPointer($script:viewport, $x, [int](8 * $scale / 96))
-        Wait-For { [WtsVisibilityNativeProbe]::Scroll($script:viewport).Position -eq 0 } 'drag auto-scroll to the top' 10
-        if ([WtsVisibilityNativeProbe]::Capture($script:handle) -ne $script:viewport) { throw 'Reverse edge scrolling lost drag capture' }
+        [WtmVisibilityNativeProbe]::MoveDragPointer($script:viewport, $x, [int](8 * $scale / 96))
+        Wait-For { [WtmVisibilityNativeProbe]::Scroll($script:viewport).Position -eq 0 } 'drag auto-scroll to the top' 10
+        if ([WtmVisibilityNativeProbe]::Capture($script:handle) -ne $script:viewport) { throw 'Reverse edge scrolling lost drag capture' }
         [ordered]@{ result = 'PASS'; bottom_position = $bottomPosition; returned_to_top = $true; capture_preserved = $true; stationary_edge_broad_repaints = 0 }
     } finally {
         $edgeTrace | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Output 'edge-scroll.json') -Encoding utf8NoBOM
         Stop-Drag
-        if (-not [WtsVisibilityNativeProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0,
+        if (-not [WtmVisibilityNativeProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0,
             $original.Right - $original.Left, $original.Bottom - $original.Top, 0x16)) { throw 'Edge-scroll fixture restoration failed' }
-        [void][WtsVisibilityNativeProbe]::Send($script:viewport, 0x0115, [IntPtr]6, [IntPtr]::Zero)
+        [void][WtmVisibilityNativeProbe]::Send($script:viewport, 0x0115, [IntPtr]6, [IntPtr]::Zero)
     }
 }
 
 function Get-StatusText {
-    $status = @([WtsVisibilityNativeProbe]::Children($script:handle) | Where-Object {
+    $status = @([WtmVisibilityNativeProbe]::Children($script:handle) | Where-Object {
         $_.Parent -eq $script:handle -and $_.Class -ieq 'STATIC' -and $_.Text -match '^\[read: (100|[0-9]{1,2})%\]$'
     })
     if ($status.Count -ne 1) { throw "Expected one read indicator, found $($status.Count)" }
@@ -1137,8 +1137,8 @@ function Get-StatusText {
 function Invoke-MetricPaintTest([array]$Cards, [string]$Path) {
     $repo = Split-Path -Parent $Path
     $attributes = Join-Path $repo '.git/info/attributes'
-    Run-Git $repo @('config', 'filter.wts-metric.clean', 'sleep 1; cat')
-    [IO.File]::WriteAllText($attributes, "lines.txt filter=wts-metric`n")
+    Run-Git $repo @('config', 'filter.wtm-metric.clean', 'sleep 1; cat')
+    [IO.File]::WriteAllText($attributes, "lines.txt filter=wtm-metric`n")
     try {
     Clear-Paint $Cards
     $statusBefore = Get-StatusText
@@ -1160,16 +1160,16 @@ function Invoke-MetricPaintTest([array]$Cards, [string]$Path) {
             $nextChange = [DateTime]::UtcNow.AddMilliseconds(600)
             $minimumDeadline = [DateTime]::UtcNow.AddMilliseconds(1400)
         }
-        $scale = [Math]::Max(96, [int][WtsVisibilityNativeProbe]::GetDpiForWindow($script:handle))
-        $viewportUpdate = [WtsVisibilityNativeProbe]::Update($script:viewport)
-        $viewportClient = [WtsVisibilityNativeProbe]::ClientBounds($script:viewport)
+        $scale = [Math]::Max(96, [int][WtmVisibilityNativeProbe]::GetDpiForWindow($script:handle))
+        $viewportUpdate = [WtmVisibilityNativeProbe]::Update($script:viewport)
+        $viewportClient = [WtmVisibilityNativeProbe]::ClientBounds($script:viewport)
         if ($viewportUpdate.Pending -and -not (Is-NarrowStrip $viewportUpdate $viewportClient $scale)) { $badViewport++ }
-        if ($viewportUpdate.Pending) { [void][WtsVisibilityNativeProbe]::UpdateWindow($script:viewport) }
+        if ($viewportUpdate.Pending) { [void][WtmVisibilityNativeProbe]::UpdateWindow($script:viewport) }
         foreach ($Card in @($Cards)) {
-            $update = [WtsVisibilityNativeProbe]::Update($Card.Handle)
-            $client = [WtsVisibilityNativeProbe]::ClientBounds($Card.Handle)
+            $update = [WtmVisibilityNativeProbe]::Update($Card.Handle)
+            $client = [WtmVisibilityNativeProbe]::ClientBounds($Card.Handle)
             if (Is-BroadCardUpdate $update $client $scale) { $badCards++ }
-            if ($update.Pending) { [void][WtsVisibilityNativeProbe]::UpdateWindow($Card.Handle) }
+            if ($update.Pending) { [void][WtmVisibilityNativeProbe]::UpdateWindow($Card.Handle) }
         }
         $status = Get-StatusText
         $metric = [regex]::Match($status, '\[read: (100|[0-9]{1,2})%\]')
@@ -1195,7 +1195,7 @@ function Invoke-MetricPaintTest([array]$Cards, [string]$Path) {
     }
     } finally {
         Remove-Item -LiteralPath $attributes
-        Run-Git $repo @('config', '--unset', 'filter.wts-metric.clean')
+        Run-Git $repo @('config', '--unset', 'filter.wtm-metric.clean')
     }
 }
 
@@ -1215,14 +1215,14 @@ function Start-Ui {
     if ($null -eq $script:process) { throw 'Could not start visibility UI' }
     Wait-For {
         if ($script:process.HasExited) { throw "UI exited before showing a window with code $($script:process.ExitCode)" }
-        $script:handle = [WtsVisibilityNativeProbe]::Find([uint32]$script:process.Id)
+        $script:handle = [WtmVisibilityNativeProbe]::Find([uint32]$script:process.Id)
         $script:handle -ne [IntPtr]::Zero
     } 'visibility window' 30
-    $viewportWindows = @([WtsVisibilityNativeProbe]::Children($script:handle) | Where-Object { $_.Class -eq 'WtsDashboardViewport' })
+    $viewportWindows = @([WtmVisibilityNativeProbe]::Children($script:handle) | Where-Object { $_.Class -eq 'WtmDashboardViewport' })
     if ($viewportWindows.Count -ne 1) { throw "Expected one dashboard viewport, found $($viewportWindows.Count)" }
     $script:viewport = $viewportWindows[0].Handle
-    $dpi = [Math]::Max(96, [int][WtsVisibilityNativeProbe]::GetDpiForWindow($script:handle))
-    if (-not [WtsVisibilityNativeProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, [int](760 * $dpi / 96), [int](860 * $dpi / 96), 0x14)) { throw 'Visibility fixture resize failed' }
+    $dpi = [Math]::Max(96, [int][WtmVisibilityNativeProbe]::GetDpiForWindow($script:handle))
+    if (-not [WtmVisibilityNativeProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, [int](760 * $dpi / 96), [int](860 * $dpi / 96), 0x14)) { throw 'Visibility fixture resize failed' }
     Start-Sleep -Milliseconds 150
 }
 
@@ -1231,7 +1231,7 @@ function Stop-Ui {
     $process = $script:process
     try {
         if (-not $process.HasExited) {
-            if ($script:handle -ne [IntPtr]::Zero) { [void][WtsVisibilityNativeProbe]::PostMessage($script:handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) }
+            if ($script:handle -ne [IntPtr]::Zero) { [void][WtmVisibilityNativeProbe]::PostMessage($script:handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) }
             if (-not $process.WaitForExit(10000) -and -not $process.HasExited) {
                 $process.Kill()
                 [void]$process.WaitForExit()
@@ -1389,9 +1389,9 @@ $script:viewport = [IntPtr]::Zero
 $script:actions = [Collections.Generic.List[object]]::new()
 $script:expectedRows = @()
 $script:baselineCaptions = @{}
-$script:configPath = Join-Path $fixtureHome '.config/wts/config.json'
-$script:visibilityPath = Join-Path $fixtureHome '.config/wts/config.visibility.json'
-$script:orderPath = Join-Path $fixtureHome '.config/wts/config.order.json'
+$script:configPath = Join-Path $fixtureHome '.config/wtm/config.json'
+$script:visibilityPath = Join-Path $fixtureHome '.config/wtm/config.visibility.json'
+$script:orderPath = Join-Path $fixtureHome '.config/wtm/config.order.json'
 $proof = [ordered]@{
     result = 'FAIL'
     mode = if ($Baseline) { 'baseline' } else { 'regression' }
@@ -1404,15 +1404,15 @@ $proof = [ordered]@{
     assumptions = @('Fixture uses direct linked-worktree metadata and does not run git worktree add')
 }
 $dpiContext = [IntPtr]::Zero
-$cursor = [WtsVisibilityNativeProbe+Point]::new()
-$restoreCursor = [WtsVisibilityNativeProbe]::GetCursorPos([ref]$cursor)
+$cursor = [WtmVisibilityNativeProbe+Point]::new()
+$restoreCursor = [WtmVisibilityNativeProbe]::GetCursorPos([ref]$cursor)
 try {
     $env:HOME = Join-Path $Output 'unix-home'
     $env:USERPROFILE = $fixtureHome
     $env:GIT_CONFIG_GLOBAL = Join-Path $Output 'empty-gitconfig'
     $env:GIT_CONFIG_NOSYSTEM = '1'
     foreach ($name in @('GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE')) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
-    $dpiContext = [WtsVisibilityNativeProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
+    $dpiContext = [WtmVisibilityNativeProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
     $repositories = @('alpha', 'beta', 'gamma') | ForEach-Object { New-Repository $_ }
     $script:expectedRows = @(New-ExpectedRows $repositories)
     foreach ($entry in $repositories) {
@@ -1503,10 +1503,10 @@ try {
     throw
 } finally {
     try { Stop-Ui } catch { }
-    if ($restoreCursor) { [void][WtsVisibilityNativeProbe]::SetCursorPos($cursor.X, $cursor.Y) }
+    if ($restoreCursor) { [void][WtmVisibilityNativeProbe]::SetCursorPos($cursor.X, $cursor.Y) }
     $proof.actions = $script:actions.ToArray()
     $proof.actions | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $Output 'paint-trace.json') -Encoding utf8NoBOM
     $proof | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath (Join-Path $Output 'proof.json') -Encoding utf8NoBOM
     foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $previous[$name], 'Process') }
-    if ($dpiContext -ne [IntPtr]::Zero) { [void][WtsVisibilityNativeProbe]::SetThreadDpiAwarenessContext($dpiContext) }
+    if ($dpiContext -ne [IntPtr]::Zero) { [void][WtmVisibilityNativeProbe]::SetThreadDpiAwarenessContext($dpiContext) }
 }

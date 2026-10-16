@@ -24,7 +24,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetCapture, 
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass, Shell_NotifyIconW, NOTIFYICONDATAW, NIF_MESSAGE, NIF_ICON, NIF_TIP, NIF_SHOWTIP,
     NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NIN_SELECT, NINF_KEY, NOTIFYICON_VERSION_4};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
-use wts_core::{Counts, Monitor, MonitorUpdate, Service};
+use wtm_core::{Counts, Monitor, MonitorUpdate, Service};
 
 const BACKGROUND: COLORREF = rgb(11, 16, 18);
 const GREEN: COLORREF = rgb(194, 249, 112);
@@ -175,7 +175,7 @@ impl TrayIcon {
         data.hIcon = LoadImageW(GetModuleHandleW(null()), APP_ICON, IMAGE_ICON,
             GetSystemMetricsForDpi(SM_CXSMICON, dpi), GetSystemMetricsForDpi(SM_CYSMICON, dpi), 0).cast();
         if data.hIcon.is_null() { return Err(io::Error::last_os_error()); }
-        data.szTip[..4].copy_from_slice(&wide("WTS"));
+        data.szTip[..4].copy_from_slice(&wide("WTM"));
         let mut icon = Self { data, added: false };
         icon.add()?;
         Ok(icon)
@@ -184,12 +184,12 @@ impl TrayIcon {
     unsafe fn add(&mut self) -> Result<(), io::Error> {
         if self.added { return Ok(()); }
         if Shell_NotifyIconW(NIM_ADD, &self.data) == 0 && Shell_NotifyIconW(NIM_MODIFY, &self.data) == 0 {
-            return Err(io::Error::other("Cannot add the WTS notification icon"));
+            return Err(io::Error::other("Cannot add the WTM notification icon"));
         }
         self.added = true;
         self.data.Anonymous.uVersion = NOTIFYICON_VERSION_4;
         if Shell_NotifyIconW(NIM_SETVERSION, &self.data) == 0 {
-            return Err(io::Error::other("Cannot set the WTS notification icon version"));
+            return Err(io::Error::other("Cannot set the WTM notification icon version"));
         }
         Ok(())
     }
@@ -407,7 +407,7 @@ mod row_tests {
 
     #[test]
     fn line_change_groups_keep_count_text_and_nonzero_opacity() {
-        use wts_core::LineCounts;
+        use wtm_core::LineCounts;
         for source in [LineCounts::default(), LineCounts { additions: 3, deletions: 0 }, LineCounts { additions: 0, deletions: 4 }] {
             for test in [LineCounts::default(), LineCounts { additions: 5, deletions: 0 }] {
                 for extra in [LineCounts::default(), LineCounts { additions: 0, deletions: 6 }] {
@@ -431,7 +431,7 @@ mod row_tests {
 
     #[test]
     fn opaque_counts_leave_zero_source_and_binary_text_transparent() {
-        use wts_core::LineCounts;
+        use wtm_core::LineCounts;
         unsafe {
             let screen = GetDC(null_mut());
             for dpi in [96, 144, 192] {
@@ -545,7 +545,7 @@ mod row_tests {
 
     #[test]
     fn narrowing_only_adds_height_for_wrapped_text() {
-        use wts_core::{Counts, Error, ErrorKind, Head, WorktreeStats};
+        use wtm_core::{Counts, Error, ErrorKind, Head, WorktreeStats};
         let items = [
             DisplayItem::Repository { name: "repository".into(), bare: false },
             DisplayItem::Repository { name: "bare".into(), bare: true },
@@ -1955,7 +1955,7 @@ unsafe fn controls(window: HWND, state: &mut State) -> bool {
     if state.scrollbar.is_null() { return false; }
     if SetWindowSubclass(state.scrollbar, Some(scrollbar_procedure), 1, state as *const State as usize) == 0 { return false; }
     SetWindowTheme(state.scrollbar, wide("DarkMode_Explorer").as_ptr(), null());
-    state.viewport = CreateWindowExW(WS_EX_CONTROLPARENT, wide("WtsDashboardViewport").as_ptr(), wide("Repository worktrees").as_ptr(),
+    state.viewport = CreateWindowExW(WS_EX_CONTROLPARENT, wide("WtmDashboardViewport").as_ptr(), wide("Repository worktrees").as_ptr(),
         WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_TABSTOP,
         0, 0, 1, 1, window, 1001 as _, GetModuleHandleW(null()), (state as *mut State).cast());
     if state.viewport.is_null() || !reconcile(state) { return false; }
@@ -1992,9 +1992,9 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
         if instance.is_null() { return Err(io::Error::last_os_error()); }
         let icon = LoadIconW(instance, APP_ICON);
         if icon.is_null() { return Err(io::Error::last_os_error()); }
-        let class = wide("WtsStatusWindow");
-        let viewport_class = wide("WtsDashboardViewport");
-        let overlay_class = wide("WtsIndicatorOverlay");
+        let class = wide("WtmStatusWindow");
+        let viewport_class = wide("WtmDashboardViewport");
+        let overlay_class = wide("WtmIndicatorOverlay");
         let definition = WNDCLASSW { lpfnWndProc: Some(procedure), hInstance: instance,
             hCursor: LoadCursorW(null_mut(), IDC_ARROW), hIcon: icon, lpszClassName: class.as_ptr(), ..std::mem::zeroed() };
         if RegisterClassW(&definition) == 0 { return Err(io::Error::last_os_error()); }
@@ -2011,7 +2011,7 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
             UnregisterClassW(class.as_ptr(), instance);
             return Err(error);
         }
-        let window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TOOLWINDOW, class.as_ptr(), wide("WTS Worktree status").as_ptr(),
+        let window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TOOLWINDOW, class.as_ptr(), wide("WTM Worktree status").as_ptr(),
             WS_POPUP | WS_SYSMENU | WS_THICKFRAME | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, CW_USEDEFAULT, CW_USEDEFAULT, 640, 540, null_mut(), null_mut(), instance,
             (&mut *state as *mut State).cast());
         if window.is_null() {

@@ -3,7 +3,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 
-destination = Path(__file__).resolve().parents[1] / "crates" / "wts" / "assets"
+destination = Path(__file__).resolve().parents[1] / "crates" / "wtm" / "assets"
 destination.mkdir(parents=True, exist_ok=True)
 
 background = "#0b1012"
@@ -30,7 +30,7 @@ for path in paths:
 for x, y, color in nodes:
     svg.append(f'<circle cx="{x}" cy="{y}" r="18" fill="{color}"/>')
 svg.append('</svg>')
-(destination / "wts.svg").write_text("\n".join(svg) + "\n", encoding="utf-8")
+(destination / "wtm.svg").write_text("\n".join(svg) + "\n", encoding="utf-8")
 
 scale = 4
 image = Image.new("RGBA", (256 * scale, 256 * scale))
@@ -43,6 +43,6 @@ for path in paths:
         draw.ellipse(((x - 10) * scale, (y - 10) * scale, (x + 10) * scale, (y + 10) * scale), fill=teal)
 for x, y, color in nodes:
     draw.ellipse(((x - 18) * scale, (y - 18) * scale, (x + 18) * scale, (y + 18) * scale), fill=color)
-image.resize((256, 256), Image.Resampling.LANCZOS).save(destination / "wts.png")
+image.resize((256, 256), Image.Resampling.LANCZOS).save(destination / "wtm.png")
 sizes = [(size, size) for size in (16, 20, 24, 32, 40, 48, 64, 128, 256)]
-image.save(destination / "wts.ico", format="ICO", sizes=sizes)
+image.save(destination / "wtm.ico", format="ICO", sizes=sizes)

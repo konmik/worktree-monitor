@@ -1,4 +1,4 @@
-param([string]$Binary = "$PSScriptRoot/../target/debug/wts.exe")
+param([string]$Binary = "$PSScriptRoot/../target/debug/wtm.exe")
 
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
@@ -7,7 +7,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
-public static class WtsDragProbe {
+public static class WtmDragProbe {
     public struct Point { public int X, Y; }
     public struct Rect { public int Left, Top, Right, Bottom; }
     public struct GuiInfo {
@@ -65,7 +65,7 @@ public static class WtsDragProbe {
         EnumWindows((handle, data) => {
             uint owner;
             GetWindowThreadProcessId(handle, out owner);
-            if (owner == pid && IsWindowVisible(handle) && Text(handle).StartsWith("WTS")) {
+            if (owner == pid && IsWindowVisible(handle) && Text(handle).StartsWith("WTM")) {
                 found = handle;
                 return false;
             }
@@ -219,7 +219,7 @@ function Wait-For([scriptblock]$Condition, [string]$Label, [int]$Seconds = 25) {
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
     if ($null -ne $script:viewport -and $script:viewport -ne [IntPtr]::Zero) {
-        $cards = @([WtsDragProbe]::Cards($script:viewport))
+        $cards = @([WtmDragProbe]::Cards($script:viewport))
         $cards | Select-Object Top, Class, Text | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $fixture 'failed-cards.json') -Encoding utf8NoBOM
         Write-Host "Observed $($cards.Count) cards. Evidence at $fixture"
     }
@@ -237,7 +237,7 @@ function New-Repository([string]$Name, [switch]$Linked) {
     Run-Git $repo @('init', '--quiet')
     [IO.File]::WriteAllText((Join-Path $repo 'lines.txt'), "before`n")
     Run-Git $repo @('add', '.')
-    Run-Git $repo @('-c', 'user.name=Wts Test', '-c', 'user.email=wts@example.invalid', 'commit', '--quiet', '-m', 'Fixture')
+    Run-Git $repo @('-c', 'user.name=Wtm Test', '-c', 'user.email=wtm@example.invalid', 'commit', '--quiet', '-m', 'Fixture')
     if ($Linked) { Run-Git $repo @('worktree', 'add', '--quiet', '-b', 'topic', (Join-Path $fixture "$Name-tree")) }
     return $repo
 }
@@ -258,7 +258,7 @@ function Start-Dashboard([int]$ExpectedCards = 8) {
     $script:handle = [IntPtr]::Zero
     Wait-For {
         foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($script:launcher.Id)")) {
-            $script:handle = [WtsDragProbe]::Find([uint32]$child.ProcessId)
+            $script:handle = [WtmDragProbe]::Find([uint32]$child.ProcessId)
             if ($script:handle -ne [IntPtr]::Zero) {
                 $script:process = [Diagnostics.Process]::GetProcessById([int]$child.ProcessId)
                 [void]$script:process.Handle
@@ -269,22 +269,22 @@ function Start-Dashboard([int]$ExpectedCards = 8) {
     } 'dashboard child window'
     if (-not $script:launcher.WaitForExit(3000) -or $script:launcher.ExitCode -ne 0) { throw 'Dashboard launcher did not exit successfully' }
     if (-not $stdout.Wait(1000) -or -not $stderr.Wait(1000)) { throw 'Dashboard launcher did not release stdout and stderr' }
-    $dpi = [WtsDragProbe]::GetDpiForWindow($script:handle)
-    if (-not [WtsDragProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, (800 * $dpi / 96), (1400 * $dpi / 96), 20)) { throw 'Dashboard resize failed' }
-    $script:viewport = [WtsDragProbe]::GetDlgItem($script:handle, 1001)
+    $dpi = [WtmDragProbe]::GetDpiForWindow($script:handle)
+    if (-not [WtmDragProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, (800 * $dpi / 96), (1400 * $dpi / 96), 20)) { throw 'Dashboard resize failed' }
+    $script:viewport = [WtmDragProbe]::GetDlgItem($script:handle, 1001)
     Wait-For {
-        $cards = @([WtsDragProbe]::Cards($script:viewport))
+        $cards = @([WtmDragProbe]::Cards($script:viewport))
         $cards.Count -eq $ExpectedCards -and ($cards.Text -join "`n") -notmatch 'counts pending|Refreshing'
     } "$ExpectedCards repository and worktree cards"
 }
 
 function Close-Dashboard {
-    if (-not [WtsDragProbe]::PostMessage($script:handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'Window close failed' }
+    if (-not [WtmDragProbe]::PostMessage($script:handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'Window close failed' }
     if (-not $script:process.WaitForExit(10000) -or $script:process.ExitCode -ne 0) { throw 'Dashboard did not close cleanly' }
 }
 
 function Find-Card([string]$Name, [switch]$Repository, [switch]$Optional) {
-    $cards = @([WtsDragProbe]::Cards($script:viewport))
+    $cards = @([WtmDragProbe]::Cards($script:viewport))
     if ($Repository) {
         $cards = @($cards | Where-Object { ($_.Text -split "`r?`n")[0] -eq $Name -and $_.Text -notmatch 'S\s+\+' })
     } else {
@@ -314,7 +314,7 @@ function Path-Key([string]$Path) {
 function Card-Order {
     $repository = $null
     $order = [Collections.Generic.List[string]]::new()
-    foreach ($card in @([WtsDragProbe]::Cards($script:viewport))) {
+    foreach ($card in @([WtmDragProbe]::Cards($script:viewport))) {
         $lines = $card.Text -split "`r?`n"
         if ($lines[0] -in @('alpha', 'beta', 'current') -and $card.Text -notmatch 'S\s+\+') {
             $name = $lines[0]
@@ -335,7 +335,7 @@ function Assert-Order([string]$Expected, [string]$Label) {
     Write-Host "PASS. $Label."
 }
 
-$fixture = Join-Path $env:LOCALAPPDATA "Temp/opencode/wts-drag-$([Guid]::NewGuid().ToString('N'))"
+$fixture = Join-Path $env:LOCALAPPDATA "Temp/opencode/wtm-drag-$([Guid]::NewGuid().ToString('N'))"
 $fixtureHome = Join-Path $fixture 'home'
 New-Item -ItemType Directory -Path $fixtureHome | Out-Null
 $oldHome = $env:HOME
@@ -343,7 +343,7 @@ $oldProfile = $env:USERPROFILE
 $oldPath = $env:PATH
 $process = $null
 $launcher = $null
-$previousDpiContext = [WtsDragProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
+$previousDpiContext = [WtmDragProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
 try {
     $env:HOME = Join-Path $fixture 'unix-home'
     $env:USERPROFILE = $fixtureHome
@@ -369,14 +369,14 @@ try {
         & $Binary add $repo
         if ($LASTEXITCODE -ne 0) { throw 'Fixture registration failed' }
     }
-    $config = Join-Path $fixtureHome '.config/wts/config.json'
+    $config = Join-Path $fixtureHome '.config/wtm/config.json'
     $registrations = [IO.File]::ReadAllText($config)
-    $preferences = Join-Path $fixtureHome '.config/wts/config.order.json'
+    $preferences = Join-Path $fixtureHome '.config/wtm/config.order.json'
     $initialOrder = @("repo:alpha", "tree:$(Path-Key $alpha)", "tree:$(Path-Key $alphaTree)", "repo:beta", "tree:$(Path-Key $beta)", "tree:$(Path-Key $betaTree)", "repo:current", "tree:$(Path-Key $current)") -join ','
     $repositoryOrder = @("repo:beta", "tree:$(Path-Key $beta)", "tree:$(Path-Key $betaTree)", "repo:alpha", "tree:$(Path-Key $alpha)", "tree:$(Path-Key $alphaTree)", "repo:current", "tree:$(Path-Key $current)") -join ','
     $worktreeOrder = @("repo:beta", "tree:$(Path-Key $beta)", "tree:$(Path-Key $betaTree)", "repo:alpha", "tree:$(Path-Key $alphaTree)", "tree:$(Path-Key $alpha)", "repo:current", "tree:$(Path-Key $current)") -join ','
     Start-Dashboard
-    $text = [WtsDragProbe]::AllText($script:handle)
+    $text = [WtmDragProbe]::AllText($script:handle)
     if ($text -cmatch 'REPOSITORIES|WORKTREES|LINE CHANGES') { throw 'Dashboard still shows summary totals' }
     $currentCard = Find-Card $current
     $currentLines = @($currentCard.Text -split "`r?`n")
@@ -389,62 +389,62 @@ try {
     foreach ($repository in @($true, $false)) {
         $card = if ($repository) { Find-Card 'alpha' -Repository } else { Find-Card $alpha }
         foreach ($move in @($false, $true)) {
-            [WtsDragProbe]::ClickBody($card.Handle, $move)
+            [WtmDragProbe]::ClickBody($card.Handle, $move)
             Assert-Order $initial 'Click and below-threshold motion preserve order'
             if (Test-Path $preferences) { throw 'Click or below-threshold motion wrote presentation order' }
         }
     }
     $source = Find-Card 'beta' -Repository
     $target = Find-Card 'alpha' -Repository
-    [WtsDragProbe]::DragFrom($source.Handle, $target.Handle, 'right')
+    [WtmDragProbe]::DragFrom($source.Handle, $target.Handle, 'right')
     Assert-Order $repositoryOrder 'Repository right-side space moves its whole group'
     $source = Find-Card 'beta' -Repository
     $target = Find-Card $alphaTree
-    [WtsDragProbe]::DragBelow($source.Handle, $target.Handle)
+    [WtmDragProbe]::DragBelow($source.Handle, $target.Handle)
     Assert-Order $initial 'Repository body can move a group down past another group'
     $source = Find-Card 'beta' -Repository
     $target = Find-Card 'alpha' -Repository
-    [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
+    [WtmDragProbe]::Drag($source.Handle, $target.Handle, $false)
     Assert-Order $repositoryOrder 'Repository heading can move a group back up'
     $source = Find-Card $alphaTree
     $target = Find-Card $alpha
-    [WtsDragProbe]::DragFrom($source.Handle, $target.Handle, 'counts')
+    [WtmDragProbe]::DragFrom($source.Handle, $target.Handle, 'counts')
     Assert-Order $worktreeOrder 'Worktree counts reorder within its repository'
     $source = Find-Card $alphaTree
     $target = Find-Card $alpha
-    [WtsDragProbe]::DragBelow($source.Handle, $target.Handle)
+    [WtmDragProbe]::DragBelow($source.Handle, $target.Handle)
     Assert-Order $repositoryOrder 'Worktree right-side space can move a row down'
     $source = Find-Card $alphaTree
     $target = Find-Card $alpha
-    [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
+    [WtmDragProbe]::Drag($source.Handle, $target.Handle, $false)
     Assert-Order $worktreeOrder 'Worktree heading can move a row back up'
     $source = Find-Card $alpha
     $target = Find-Card $beta
-    [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
+    [WtmDragProbe]::Drag($source.Handle, $target.Handle, $false)
     Assert-Order $worktreeOrder 'Cross-repository worktree drop leaves groups unchanged'
     $source = Find-Card 'alpha' -Repository
     $target = Find-Card 'beta' -Repository
-    [WtsDragProbe]::Drag($source.Handle, $target.Handle, $true)
+    [WtmDragProbe]::Drag($source.Handle, $target.Handle, $true)
     Assert-Order $worktreeOrder 'Escape cancels a drag'
     $savedBeforeCancel = [IO.File]::ReadAllText($preferences)
-    $showAll = [WtsDragProbe]::GetDlgItem($script:handle, 1004)
-    [void][WtsDragProbe]::Send($showAll, 0x00f5, [IntPtr]::Zero, [IntPtr]::Zero)
-    [WtsDragProbe]::ClickAction((Find-Card $alpha).Handle)
-    Wait-For { [WtsDragProbe]::AllText($script:handle) -match 'Unhide' } 'native Hide action'
+    $showAll = [WtmDragProbe]::GetDlgItem($script:handle, 1004)
+    [void][WtmDragProbe]::Send($showAll, 0x00f5, [IntPtr]::Zero, [IntPtr]::Zero)
+    [WtmDragProbe]::ClickAction((Find-Card $alpha).Handle)
+    Wait-For { [WtmDragProbe]::AllText($script:handle) -match 'Unhide' } 'native Hide action'
     Assert-Order $worktreeOrder 'Hide button preserves order with Show all enabled'
-    [void][WtsDragProbe]::Send($showAll, 0x00f5, [IntPtr]::Zero, [IntPtr]::Zero)
+    [void][WtmDragProbe]::Send($showAll, 0x00f5, [IntPtr]::Zero, [IntPtr]::Zero)
     Wait-For { $null -eq (Find-Card $alpha -Optional) } 'hidden row removed'
-    [void][WtsDragProbe]::Send($showAll, 0x00f5, [IntPtr]::Zero, [IntPtr]::Zero)
+    [void][WtmDragProbe]::Send($showAll, 0x00f5, [IntPtr]::Zero, [IntPtr]::Zero)
     Wait-For { $null -ne (Find-Card $alpha -Optional) } 'hidden row revealed'
     if ((Find-Card $alpha).Text -match '\bRefreshing\b') { throw 'Revealing an idle row replayed its completed scan' }
-    [WtsDragProbe]::ClickAction((Find-Card $alpha).Handle)
-    Wait-For { [WtsDragProbe]::AllText($script:handle) -notmatch 'Unhide' } 'native Unhide action'
-    [void][WtsDragProbe]::Send($showAll, 0x00f5, [IntPtr]::Zero, [IntPtr]::Zero)
+    [WtmDragProbe]::ClickAction((Find-Card $alpha).Handle)
+    Wait-For { [WtmDragProbe]::AllText($script:handle) -notmatch 'Unhide' } 'native Unhide action'
+    [void][WtmDragProbe]::Send($showAll, 0x00f5, [IntPtr]::Zero, [IntPtr]::Zero)
     if ([IO.File]::ReadAllText($preferences) -ne $savedBeforeCancel) { throw 'Native buttons changed saved order' }
     foreach ($message in @(0x001f, 0x0215)) {
         $source = Find-Card 'alpha' -Repository
         $target = Find-Card 'beta' -Repository
-        [WtsDragProbe]::CancelDrag($source.Handle, $target.Handle, [uint32]$message)
+        [WtmDragProbe]::CancelDrag($source.Handle, $target.Handle, [uint32]$message)
         Assert-Order $worktreeOrder "Cancellation message $message preserves order"
         if ([IO.File]::ReadAllText($preferences) -ne $savedBeforeCancel) { throw 'Cancelled drag changed saved order' }
     }
@@ -460,7 +460,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Explicit registration of launch repository failed' }
     [IO.File]::WriteAllText((Join-Path $current 'lines.txt'), "before`nfirst`nsecond`n")
     Wait-For { (Find-Card $current).Text -match 'S\s+\+2/-0\b' } 'registered launch repository refresh' 40
-    Wait-For { @([WtsDragProbe]::Cards($script:viewport)).Count -eq 8 } 'deduplicated current repository'
+    Wait-For { @([WtmDragProbe]::Cards($script:viewport)).Count -eq 8 } 'deduplicated current repository'
     Assert-Order $worktreeOrder 'Registering the launch repository does not duplicate its worktree'
     [IO.File]::WriteAllText((Join-Path $fixture 'final-order.txt'), (Card-Order))
     & $Binary remove $current
@@ -479,27 +479,27 @@ try {
         [IO.File]::SetAttributes($preferences, ($attributes -bor [IO.FileAttributes]::ReadOnly))
         $source = Find-Card 'alpha' -Repository
         $target = Find-Card 'beta' -Repository
-        [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
-        Wait-For { [WtsDragProbe]::AllText($script:handle) -match 'Order was not saved' } 'visible failed-save warning'
+        [WtmDragProbe]::Drag($source.Handle, $target.Handle, $false)
+        Wait-For { [WtmDragProbe]::AllText($script:handle) -match 'Order was not saved' } 'visible failed-save warning'
         Assert-Order $outsideOrder 'Failed save keeps the previous visible order'
         if ([IO.File]::ReadAllText($preferences) -ne $savedOrder) { throw 'Failed save changed stored order' }
     } finally { [IO.File]::SetAttributes($preferences, $attributes) }
     [IO.File]::WriteAllText($preferences, 'broken')
-    Wait-For { [WtsDragProbe]::AllText($script:handle) -match 'Cannot load presentation order' } 'visible malformed-preference warning'
+    Wait-For { [WtmDragProbe]::AllText($script:handle) -match 'Cannot load presentation order' } 'visible malformed-preference warning'
     $source = Find-Card 'alpha' -Repository
     $target = Find-Card 'beta' -Repository
-    [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
+    [WtmDragProbe]::Drag($source.Handle, $target.Handle, $false)
     Assert-Order $outsideOrder 'Malformed preferences keep the last good visible order'
     if ([IO.File]::ReadAllText($preferences) -ne 'broken') { throw 'Drag overwrote malformed preferences' }
     [IO.File]::WriteAllText($preferences, $savedOrder)
     $source = Find-Card 'alpha' -Repository
     $target = Find-Card 'beta' -Repository
-    [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
+    [WtmDragProbe]::Drag($source.Handle, $target.Handle, $false)
     Assert-Order (@("repo:alpha", "tree:$(Path-Key $alphaTree)", "tree:$(Path-Key $alpha)", "repo:beta", "tree:$(Path-Key $beta)", "tree:$(Path-Key $betaTree)") -join ',') 'Saving recovers after preferences are repaired'
-    Wait-For { [WtsDragProbe]::AllText($script:handle) -notmatch 'Presentation order warning' } 'cleared save warning'
+    Wait-For { [WtmDragProbe]::AllText($script:handle) -notmatch 'Presentation order warning' } 'cleared save warning'
     $source = Find-Card 'beta' -Repository
     $target = Find-Card 'alpha' -Repository
-    [WtsDragProbe]::Drag($source.Handle, $target.Handle, $false)
+    [WtmDragProbe]::Drag($source.Handle, $target.Handle, $false)
     Assert-Order $outsideOrder 'Recovered preferences retain the selected final order'
     if ([IO.File]::ReadAllText($config) -ne $registrations) { throw 'Dashboard actions changed the final registration set' }
     Copy-Item -LiteralPath $config -Destination (Join-Path $fixture 'registrations.json')
@@ -511,9 +511,9 @@ try {
     $launchDirectory = $current
     $env:PATH = ''
     Start-Dashboard 2
-    $failureText = [WtsDragProbe]::AllText($script:handle)
+    $failureText = [WtmDragProbe]::AllText($script:handle)
     if ($failureText -notmatch '(?m)^ERROR\b' -or $failureText -notmatch 'Could not start Git') { throw 'Launch discovery failure is not visible as an error' }
-    if (Test-Path (Join-Path $missingGitHome '.config/wts/config.json')) { throw 'Failed launch discovery wrote registrations' }
+    if (Test-Path (Join-Path $missingGitHome '.config/wtm/config.json')) { throw 'Failed launch discovery wrote registrations' }
     Close-Dashboard
     $env:PATH = $oldPath
     Write-Host 'PASS. Missing Git is a visible launch discovery error without writing registrations.'
@@ -544,5 +544,5 @@ try {
         }
         if (-not $launcher.HasExited) { $launcher.Kill($true); $launcher.WaitForExit() }
     }
-    if ($previousDpiContext -ne [IntPtr]::Zero) { [void][WtsDragProbe]::SetThreadDpiAwarenessContext($previousDpiContext) }
+    if ($previousDpiContext -ne [IntPtr]::Zero) { [void][WtmDragProbe]::SetThreadDpiAwarenessContext($previousDpiContext) }
 }

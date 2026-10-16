@@ -1,11 +1,11 @@
 param(
-    [string]$Binary = "$PSScriptRoot/../target/debug/wts-ui.exe",
-    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wts-resize-$([Guid]::NewGuid().ToString('N'))"
+    [string]$Binary = "$PSScriptRoot/../target/debug/wtm-ui.exe",
+    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wtm-resize-$([Guid]::NewGuid().ToString('N'))"
 )
 
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
-$CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wts.exe')).Path
+$CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wtm.exe')).Path
 New-Item -ItemType Directory -Path $Output -Force | Out-Null
 Add-Type -AssemblyName System.Drawing
 Add-Type -TypeDefinition @'
@@ -14,7 +14,7 @@ using System.Text;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Collections.Generic;
-public static class WtsResizeProbe {
+public static class WtmResizeProbe {
     public struct Rect { public int Left, Top, Right, Bottom; }
     public struct Point { public int X, Y; }
     public delegate bool EnumProc(IntPtr handle, IntPtr data);
@@ -61,7 +61,7 @@ public static class WtsResizeProbe {
         EnumWindows((handle, data) => {
             uint owner;
             GetWindowThreadProcessId(handle, out owner);
-            if (owner == pid && IsWindowVisible(handle) && Text(handle).StartsWith("WTS")) { found = handle; return false; }
+            if (owner == pid && IsWindowVisible(handle) && Text(handle).StartsWith("WTM")) { found = handle; return false; }
             return true;
         }, IntPtr.Zero);
         return found;
@@ -232,33 +232,33 @@ function Run-Git([string[]]$Arguments) {
 }
 
 function Compare-Repaint([string]$Name) {
-    [void][WtsResizeProbe]::RedrawWindow($script:handle, [IntPtr]::Zero, [IntPtr]::Zero, 0x0180)
-    [void][WtsResizeProbe]::DwmFlush()
-    $status = [WtsResizeProbe]::GetDlgItem($script:handle, 1002)
-    $statusBefore = [WtsResizeProbe]::Text($status)
-    $before = [WtsResizeProbe]::Capture($script:handle)
+    [void][WtmResizeProbe]::RedrawWindow($script:handle, [IntPtr]::Zero, [IntPtr]::Zero, 0x0180)
+    [void][WtmResizeProbe]::DwmFlush()
+    $status = [WtmResizeProbe]::GetDlgItem($script:handle, 1002)
+    $statusBefore = [WtmResizeProbe]::Text($status)
+    $before = [WtmResizeProbe]::Capture($script:handle)
     try {
         $before.Save((Join-Path $Output "$Name-normal.png"))
-        $geometry = [WtsResizeProbe]::Geometry($script:handle, $false)
-        [IO.File]::WriteAllText((Join-Path $Output "$Name-geometry.txt"), [WtsResizeProbe]::Geometry($script:handle))
-        if (-not [WtsResizeProbe]::RedrawWindow($script:handle, [IntPtr]::Zero, [IntPtr]::Zero, 0x0181)) { throw 'Full repaint failed' }
-        [void][WtsResizeProbe]::DwmFlush()
-        $after = [WtsResizeProbe]::Capture($script:handle)
+        $geometry = [WtmResizeProbe]::Geometry($script:handle, $false)
+        [IO.File]::WriteAllText((Join-Path $Output "$Name-geometry.txt"), [WtmResizeProbe]::Geometry($script:handle))
+        if (-not [WtmResizeProbe]::RedrawWindow($script:handle, [IntPtr]::Zero, [IntPtr]::Zero, 0x0181)) { throw 'Full repaint failed' }
+        [void][WtmResizeProbe]::DwmFlush()
+        $after = [WtmResizeProbe]::Capture($script:handle)
         try {
             $after.Save((Join-Path $Output "$Name-repaint.png"))
-            $statusAfter = [WtsResizeProbe]::Text($status)
-            $excluded = [WtsResizeProbe+Rect]::new()
+            $statusAfter = [WtmResizeProbe]::Text($status)
+            $excluded = [WtmResizeProbe+Rect]::new()
             if ($statusBefore -ne $statusAfter) {
-                if (-not [WtsResizeProbe]::GetWindowRect($status, [ref]$excluded)) { throw 'Status bounds unavailable' }
-                $origin = [WtsResizeProbe+Point]::new()
-                if (-not [WtsResizeProbe]::ClientToScreen($script:handle, [ref]$origin)) { throw 'Client origin unavailable' }
+                if (-not [WtmResizeProbe]::GetWindowRect($status, [ref]$excluded)) { throw 'Status bounds unavailable' }
+                $origin = [WtmResizeProbe+Point]::new()
+                if (-not [WtmResizeProbe]::ClientToScreen($script:handle, [ref]$origin)) { throw 'Client origin unavailable' }
                 $excluded.Left -= $origin.X
                 $excluded.Right -= $origin.X
                 $excluded.Top -= $origin.Y
                 $excluded.Bottom -= $origin.Y
             }
-            $difference = [WtsResizeProbe]::Difference($before, $after, $excluded)
-            $script:results.Add([ordered]@{ action = $Name; changed_pixels = $difference; status_before = $statusBefore; status_after = $statusAfter; geometry_unchanged = $geometry -eq [WtsResizeProbe]::Geometry($script:handle, $false) })
+            $difference = [WtmResizeProbe]::Difference($before, $after, $excluded)
+            $script:results.Add([ordered]@{ action = $Name; changed_pixels = $difference; status_before = $statusBefore; status_after = $statusAfter; geometry_unchanged = $geometry -eq [WtmResizeProbe]::Geometry($script:handle, $false) })
             Write-Host "$Name`: $difference pixels changed by full repaint"
         } finally { $after.Dispose() }
     } finally { $before.Dispose() }
@@ -269,7 +269,7 @@ New-Item -ItemType Directory -Path $fixtureHome -Force | Out-Null
 $oldHome = $env:HOME
 $oldProfile = $env:USERPROFILE
 $process = $null
-$previousDpiContext = [WtsResizeProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
+$previousDpiContext = [WtmResizeProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
 $results = [System.Collections.Generic.List[object]]::new()
 try {
     $env:HOME = Join-Path $Output 'unix-home'
@@ -280,60 +280,60 @@ try {
         Run-Git @('init', '--quiet')
         [IO.File]::WriteAllText((Join-Path $repo 'lines.txt'), "before`n")
         Run-Git @('add', '.')
-        Run-Git @('-c', 'user.name=Wts Test', '-c', 'user.email=wts@example.invalid', 'commit', '--quiet', '-m', 'Fixture')
+        Run-Git @('-c', 'user.name=Wtm Test', '-c', 'user.email=wtm@example.invalid', 'commit', '--quiet', '-m', 'Fixture')
         [IO.File]::WriteAllText((Join-Path $repo 'lines.txt'), "before`nadded`n")
         & $CliBinary add $repo
         if ($LASTEXITCODE -ne 0) { throw 'Fixture registration failed' }
     }
     $process = Start-Process -FilePath $Binary -WorkingDirectory $fixtureHome -NoNewWindow -PassThru
     $script:handle = [IntPtr]::Zero
-    Wait-For { $script:handle = [WtsResizeProbe]::Find([uint32]$process.Id); $script:handle -ne [IntPtr]::Zero } 'window'
-    $viewport = [WtsResizeProbe]::GetDlgItem($script:handle, 1001)
+    Wait-For { $script:handle = [WtmResizeProbe]::Find([uint32]$process.Id); $script:handle -ne [IntPtr]::Zero } 'window'
+    $viewport = [WtmResizeProbe]::GetDlgItem($script:handle, 1001)
     Wait-For {
-        $geometry = [WtsResizeProbe]::Geometry($viewport)
+        $geometry = [WtmResizeProbe]::Geometry($viewport)
         $geometry -match '(?m)^.*infra-tools$' -and [regex]::Matches($geometry, 'S\s+\+1/-0').Count -eq 3 -and $geometry -notmatch 'Refreshing'
     } 'fixture counts'
-    $workArea = [WtsResizeProbe+Rect]::new()
-    if (-not [WtsResizeProbe]::SystemParametersInfo(0x0030, 0, [ref]$workArea, 0)) { throw 'Work area unavailable' }
+    $workArea = [WtmResizeProbe+Rect]::new()
+    if (-not [WtmResizeProbe]::SystemParametersInfo(0x0030, 0, [ref]$workArea, 0)) { throw 'Work area unavailable' }
     $verticalGeometry = $null
     foreach ($width in @(800, 560, 550, 540, 530, 380, 180, 800)) {
-        if (-not [WtsResizeProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, $workArea.Left + 32, $workArea.Top + 32, $width, 720, 20)) { throw 'Spacing resize failed' }
+        if (-not [WtmResizeProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, $workArea.Left + 32, $workArea.Top + 32, $width, 720, 20)) { throw 'Spacing resize failed' }
         Compare-Repaint "spacing-$width"
-        $currentGeometry = [WtsResizeProbe]::VerticalGeometry($viewport)
+        $currentGeometry = [WtmResizeProbe]::VerticalGeometry($viewport)
         if ($null -eq $verticalGeometry) { $verticalGeometry = $currentGeometry }
         elseif ($currentGeometry -ne $verticalGeometry) { throw "Unwrapped rows changed vertical spacing at width $width" }
     }
     $index = 0
     foreach ($size in @(@(640, 540), @(800, 720), @(460, 330), @(740, 620), @(600, 130), @(640, 540), @(380, 620), @(800, 720))) {
         $index++
-        if (-not [WtsResizeProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, $workArea.Left + 32, $workArea.Top + 32, $size[0], $size[1], 20)) { throw 'Resize failed' }
+        if (-not [WtmResizeProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, $workArea.Left + 32, $workArea.Top + 32, $size[0], $size[1], 20)) { throw 'Resize failed' }
         Compare-Repaint "$index-resize-$($size[0])x$($size[1])"
-        [void][WtsResizeProbe]::SendMessage($viewport, 0x0115, [IntPtr]3, [IntPtr]::Zero)
+        [void][WtmResizeProbe]::SendMessage($viewport, 0x0115, [IntPtr]3, [IntPtr]::Zero)
         Compare-Repaint "$index-scroll-down"
-        [void][WtsResizeProbe]::SendMessage($viewport, 0x0115, [IntPtr]6, [IntPtr]::Zero)
+        [void][WtmResizeProbe]::SendMessage($viewport, 0x0115, [IntPtr]6, [IntPtr]::Zero)
         Compare-Repaint "$index-scroll-top"
     }
     [IO.File]::WriteAllText((Join-Path $repo '.git/index'), 'broken index for wrapped error layout')
-    Wait-For { [WtsResizeProbe]::ErrorHeight($viewport) -gt 0 -and [WtsResizeProbe]::Geometry($viewport) -notmatch 'Refreshing' } 'wrapped worktree error'
+    Wait-For { [WtmResizeProbe]::ErrorHeight($viewport) -gt 0 -and [WtmResizeProbe]::Geometry($viewport) -notmatch 'Refreshing' } 'wrapped worktree error'
     $narrowHeight = 0
     foreach ($width in @(180, 260, 380, 800)) {
-        if (-not [WtsResizeProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, $workArea.Left + 32, $workArea.Top + 32, $width, 720, 20)) { throw 'Error resize failed' }
-        $height = [WtsResizeProbe]::ErrorHeight($viewport)
+        if (-not [WtmResizeProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, $workArea.Left + 32, $workArea.Top + 32, $width, 720, 20)) { throw 'Error resize failed' }
+        $height = [WtmResizeProbe]::ErrorHeight($viewport)
         if ($width -eq 180) { $narrowHeight = $height }
         if ($width -eq 800 -and $height -ge $narrowHeight) { throw 'Narrow error did not wrap to a greater height' }
         Compare-Repaint "error-$width"
-        if ($width -eq 800) { [void][WtsResizeProbe]::ErrorHeight($viewport, $true) }
+        if ($width -eq 800) { [void][WtmResizeProbe]::ErrorHeight($viewport, $true) }
     }
     $failed = @($results | Where-Object { $_.changed_pixels -ne 0 -or -not $_.geometry_unchanged })
     [ordered]@{ binary = $Binary; sha256 = (Get-FileHash $Binary).Hash; results = $results.ToArray(); result = $(if ($failed.Count) { 'FAIL' } else { 'PASS' }) } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $Output 'proof.json')
     Write-Host "Evidence at $Output"
     if ($failed.Count) { throw "$($failed.Count) actions left stale pixels" }
-    [void][WtsResizeProbe]::PostMessage($script:handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
+    [void][WtmResizeProbe]::PostMessage($script:handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
     if (-not $process.WaitForExit(10000) -or $process.ExitCode -ne 0) { throw 'Window did not close cleanly' }
     Write-Host 'PASS. Resize and scroll pixels match a full repaint.'
 } finally {
     $env:HOME = $oldHome
     $env:USERPROFILE = $oldProfile
     if ($null -ne $process -and -not $process.HasExited) { $process.Kill($true); $process.WaitForExit() }
-    if ($previousDpiContext -ne [IntPtr]::Zero) { [void][WtsResizeProbe]::SetThreadDpiAwarenessContext($previousDpiContext) }
+    if ($previousDpiContext -ne [IntPtr]::Zero) { [void][WtmResizeProbe]::SetThreadDpiAwarenessContext($previousDpiContext) }
 }

@@ -1,12 +1,12 @@
 param(
-    [string]$Binary = "$PSScriptRoot/../target/debug/wts-ui.exe",
-    [string]$CliBinary = "$PSScriptRoot/../target/debug/wts.exe"
+    [string]$Binary = "$PSScriptRoot/../target/debug/wtm-ui.exe",
+    [string]$CliBinary = "$PSScriptRoot/../target/debug/wtm.exe"
 )
 
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
 $CliBinary = (Resolve-Path $CliBinary).Path
-$fixture = Join-Path ([IO.Path]::GetTempPath()) "wts-indicator-opacity-$([Guid]::NewGuid().ToString('N'))"
+$fixture = Join-Path ([IO.Path]::GetTempPath()) "wtm-indicator-opacity-$([Guid]::NewGuid().ToString('N'))"
 [void][IO.Directory]::CreateDirectory($fixture)
 Add-Type -AssemblyName System.Drawing
 Add-Type -TypeDefinition @'
@@ -14,7 +14,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
-public static class WtsIndicatorProbe {
+public static class WtmIndicatorProbe {
     public struct Rect { public int Left, Top, Right, Bottom; }
     public struct Point { public int X, Y; }
     public struct Size { public int Width, Height; }
@@ -121,8 +121,8 @@ function Start-FixtureProcess([string]$File, [string[]]$Arguments, [string]$Dire
 }
 
 function Get-Bounds([IntPtr]$Handle) {
-    $bounds = [WtsIndicatorProbe+Rect]::new()
-    if (-not [WtsIndicatorProbe]::GetWindowRect($Handle, [ref]$bounds)) { throw 'Window bounds unavailable' }
+    $bounds = [WtmIndicatorProbe+Rect]::new()
+    if (-not [WtmIndicatorProbe]::GetWindowRect($Handle, [ref]$bounds)) { throw 'Window bounds unavailable' }
     return $bounds
 }
 
@@ -132,7 +132,7 @@ function Assert-Alpha([byte]$Expected) {
         [uint32]$color = 0
         [byte]$alpha = 0
         [uint32]$flags = 0
-        if (-not [WtsIndicatorProbe]::GetLayeredWindowAttributes($window, [ref]$color, [ref]$alpha, [ref]$flags)) { throw 'Root alpha unavailable' }
+        if (-not [WtmIndicatorProbe]::GetLayeredWindowAttributes($window, [ref]$color, [ref]$alpha, [ref]$flags)) { throw 'Root alpha unavailable' }
         if ($alpha -eq $Expected -and ($flags -band 2) -ne 0) { Start-Sleep -Milliseconds 150; return }
         Start-Sleep -Milliseconds 30
     } while ([DateTime]::UtcNow -lt $deadline)
@@ -144,7 +144,7 @@ function Capture-Screen([string]$Name) {
     $bitmap = [Drawing.Bitmap]::new($bounds.Right - $bounds.Left, $bounds.Bottom - $bounds.Top)
     $graphics = [Drawing.Graphics]::FromImage($bitmap)
     try {
-        [void][WtsIndicatorProbe]::DwmFlush()
+        [void][WtmIndicatorProbe]::DwmFlush()
         $graphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bitmap.Size)
         $bitmap.Save((Join-Path $fixture "$Name.png"), [Drawing.Imaging.ImageFormat]::Png)
     } finally { $graphics.Dispose() }
@@ -154,8 +154,8 @@ function Capture-Screen([string]$Name) {
 function Get-Regions {
     $regions = @()
     $root = Get-Bounds $window
-    foreach ($child in [WtsIndicatorProbe]::Children($window)) {
-        $caption = [WtsIndicatorProbe]::Text($child)
+    foreach ($child in [WtmIndicatorProbe]::Children($window)) {
+        $caption = [WtmIndicatorProbe]::Text($child)
         if ($caption -match '(?m)^S \+([01])/-0 · T \+1/-0 · X \+1/-0 · binaries: 1\r?$') {
             $added = [int]$Matches[1]
             $changed = $added -gt 0
@@ -174,17 +174,17 @@ function Get-Regions {
             $parts = @(@{ Text = 'S +0/-0'; Name = 'Zero S'; Color = @(132, 150, 156); Active = $false })
         } elseif ($caption -match '^\[read: \d+%\]$') {
             $bounds = Get-Bounds $child
-            $size = [WtsIndicatorProbe]::Measure($child, $caption)
+            $size = [WtmIndicatorProbe]::Measure($child, $caption)
             $regions += @{ Name = 'Read'; X = $bounds.Left - $root.Left; Y = $bounds.Top - $root.Top; Width = $size.Width; Height = $bounds.Bottom - $bounds.Top; Color = @(194, 249, 112); Active = $false }
             continue
         } else { continue }
         $bounds = Get-Bounds $child
-        $dpi = [Math]::Max(96, [int][WtsIndicatorProbe]::GetDpiForWindow($child))
-        $space = [WtsIndicatorProbe]::Measure($child, ' ')
+        $dpi = [Math]::Max(96, [int][WtmIndicatorProbe]::GetDpiForWindow($child))
+        $space = [WtmIndicatorProbe]::Measure($child, ' ')
         $x = $bounds.Left - $root.Left + [Math]::Max(0, [int][Math]::Floor(14 * $dpi / 96) - $space.Width)
         $y = $bounds.Top - $root.Top + [int][Math]::Round(12 * 1.2 * $dpi / 96, [MidpointRounding]::AwayFromZero)
         foreach ($part in $parts) {
-            $size = [WtsIndicatorProbe]::Measure($child, $part.Text)
+            $size = [WtmIndicatorProbe]::Measure($child, $part.Text)
             $regions += @{ Name = $part.Name; X = $x; Y = $y; Width = $size.Width; Height = $size.Height; Color = $part.Color; Active = $part.Active }
             $x += $size.Width
         }
@@ -216,9 +216,9 @@ function Assert-Pixels($Image, $Regions, [bool]$Hover, [string]$Name) {
 $process = $null
 $window = [IntPtr]::Zero
 $backdrop = [IntPtr]::Zero
-$savedCursor = [WtsIndicatorProbe+Point]::new()
-if (-not [WtsIndicatorProbe]::GetCursorPos([ref]$savedCursor)) { throw 'Cursor unavailable' }
-$previousDpi = [WtsIndicatorProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
+$savedCursor = [WtmIndicatorProbe+Point]::new()
+if (-not [WtmIndicatorProbe]::GetCursorPos([ref]$savedCursor)) { throw 'Cursor unavailable' }
+$previousDpi = [WtmIndicatorProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
 try {
     foreach ($name in @('dirty', 'clean')) {
         $repo = Join-Path $fixture $name
@@ -234,30 +234,30 @@ try {
         }
         Start-FixtureProcess $CliBinary @('add', $repo) $fixture -Wait
     }
-    $work = [WtsIndicatorProbe+Rect]::new()
-    if (-not [WtsIndicatorProbe]::SystemParametersInfo(0x30, 0, [ref]$work, 0)) { throw 'Work area unavailable' }
+    $work = [WtmIndicatorProbe+Rect]::new()
+    if (-not [WtmIndicatorProbe]::SystemParametersInfo(0x30, 0, [ref]$work, 0)) { throw 'Work area unavailable' }
     $width = [Math]::Min(800, $work.Right - $work.Left - 100)
     $height = [Math]::Min(550, $work.Bottom - $work.Top - 100)
     if ($width -lt 600 -or $height -lt 300) { throw 'Screen too small for indicator fixture' }
-    $backdrop = [WtsIndicatorProbe]::CreateWindowExW(0x08000008, 'STATIC', 'WTS opacity backing', 2415919110, $work.Left, $work.Top, $work.Right - $work.Left, $work.Bottom - $work.Top, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero)
+    $backdrop = [WtmIndicatorProbe]::CreateWindowExW(0x08000008, 'STATIC', 'WTM opacity backing', 2415919110, $work.Left, $work.Top, $work.Right - $work.Left, $work.Bottom - $work.Top, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero)
     if ($backdrop -eq [IntPtr]::Zero) { throw 'White backing window creation failed' }
-    [void][WtsIndicatorProbe]::UpdateWindow($backdrop)
+    [void][WtmIndicatorProbe]::UpdateWindow($backdrop)
     $process = Start-FixtureProcess $Binary @() $fixture
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
     do {
-        foreach ($candidate in [WtsIndicatorProbe]::Windows([uint32]$process.Id)) {
-            if ([WtsIndicatorProbe]::GetWindow($candidate, 4) -eq [IntPtr]::Zero -and [WtsIndicatorProbe]::IsWindowVisible($candidate)) { $window = $candidate; break }
+        foreach ($candidate in [WtmIndicatorProbe]::Windows([uint32]$process.Id)) {
+            if ([WtmIndicatorProbe]::GetWindow($candidate, 4) -eq [IntPtr]::Zero -and [WtmIndicatorProbe]::IsWindowVisible($candidate)) { $window = $candidate; break }
         }
         if ($window -ne [IntPtr]::Zero) {
-            $captions = @([WtsIndicatorProbe]::Children($window) | ForEach-Object { [WtsIndicatorProbe]::Text($_) }) -join "`n"
+            $captions = @([WtmIndicatorProbe]::Children($window) | ForEach-Object { [WtmIndicatorProbe]::Text($_) }) -join "`n"
             if ($captions -match 'S \+1/-0 · T \+1/-0 · X \+1/-0 · binaries: 1' -and $captions -match 'S \+0/-0') { break }
         }
         if ($process.HasExited) { throw 'Fixture exited before showing counts' }
         Start-Sleep -Milliseconds 80
     } while ([DateTime]::UtcNow -lt $deadline)
     if ($window -eq [IntPtr]::Zero -or $captions -notmatch 'binaries: 1') { throw 'Fixture counts unavailable' }
-    if (-not [WtsIndicatorProbe]::SetWindowPos($window, [IntPtr](-1), $work.Left + 40, $work.Top + 40, $width, $height, 0x10)) { throw 'Fixture positioning failed' }
-    [void][WtsIndicatorProbe]::SetCursorPos($work.Right - 2, $work.Bottom - 2)
+    if (-not [WtmIndicatorProbe]::SetWindowPos($window, [IntPtr](-1), $work.Left + 40, $work.Top + 40, $width, $height, 0x10)) { throw 'Fixture positioning failed' }
+    [void][WtmIndicatorProbe]::SetCursorPos($work.Right - 2, $work.Bottom - 2)
     Assert-Alpha 51
     $regions = Get-Regions
     $regions | ConvertTo-Json | Set-Content (Join-Path $fixture 'regions.json')
@@ -278,22 +278,22 @@ try {
         if ($null -eq $hoverPoint) { throw 'Opaque indicator hover point unavailable' }
     } finally { $image.Dispose() }
     $bounds = Get-Bounds $window
-    [void][WtsIndicatorProbe]::SetCursorPos($bounds.Left + $hoverPoint[0], $bounds.Top + $hoverPoint[1])
+    [void][WtmIndicatorProbe]::SetCursorPos($bounds.Left + $hoverPoint[0], $bounds.Top + $hoverPoint[1])
     Assert-Alpha 255
     $image = Capture-Screen 'hover'
     try { Assert-Pixels $image (Get-Regions) $true 'Hover' } finally { $image.Dispose() }
-    [void][WtsIndicatorProbe]::SetCursorPos($work.Right - 2, $work.Bottom - 2)
+    [void][WtmIndicatorProbe]::SetCursorPos($work.Right - 2, $work.Bottom - 2)
     Assert-Alpha 51
     $image = Capture-Screen 'leave'
     try { Assert-Pixels $image (Get-Regions) $false 'Leave' } finally { $image.Dispose() }
-    if (-not [WtsIndicatorProbe]::SetWindowPos($window, [IntPtr](-1), $bounds.Left + 30, $bounds.Top + 30, $width, $height, 0x10)) { throw 'Fixture move failed' }
+    if (-not [WtmIndicatorProbe]::SetWindowPos($window, [IntPtr](-1), $bounds.Left + 30, $bounds.Top + 30, $width, $height, 0x10)) { throw 'Fixture move failed' }
     Assert-Alpha 51
     $image = Capture-Screen 'moved'
     try { Assert-Pixels $image (Get-Regions) $false 'Moved' } finally { $image.Dispose() }
     $vacated = [Drawing.Bitmap]::new(30, $height)
     $graphics = [Drawing.Graphics]::FromImage($vacated)
     try {
-        [void][WtsIndicatorProbe]::DwmFlush()
+        [void][WtmIndicatorProbe]::DwmFlush()
         $graphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $vacated.Size)
         $vacated.Save((Join-Path $fixture 'vacated.png'), [Drawing.Imaging.ImageFormat]::Png)
         for ($y = 0; $y -lt $vacated.Height; $y++) {
@@ -306,7 +306,7 @@ try {
     Start-FixtureProcess 'git' @('restore', '--source=HEAD', '--', 'source.rs') (Join-Path $fixture 'dirty') -Wait
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
     do {
-        $captions = @([WtsIndicatorProbe]::Children($window) | ForEach-Object { [WtsIndicatorProbe]::Text($_) }) -join "`n"
+        $captions = @([WtmIndicatorProbe]::Children($window) | ForEach-Object { [WtmIndicatorProbe]::Text($_) }) -join "`n"
         if ($captions -match 'S \+0/-0 · T \+1/-0 · X \+1/-0 · binaries: 1') { break }
         Start-Sleep -Milliseconds 80
     } while ([DateTime]::UtcNow -lt $deadline)
@@ -314,18 +314,18 @@ try {
     Assert-Alpha 51
     $image = Capture-Screen 'source-reset'
     try { Assert-Pixels $image (Get-Regions) $false 'Source reset' } finally { $image.Dispose() }
-    $popups = @([WtsIndicatorProbe]::Windows([uint32]$process.Id) | Where-Object { [WtsIndicatorProbe]::GetWindow($_, 4) -eq $window })
-    [void][WtsIndicatorProbe]::PostMessageW($window, 0x10, [IntPtr]::Zero, [IntPtr]::Zero)
+    $popups = @([WtmIndicatorProbe]::Windows([uint32]$process.Id) | Where-Object { [WtmIndicatorProbe]::GetWindow($_, 4) -eq $window })
+    [void][WtmIndicatorProbe]::PostMessageW($window, 0x10, [IntPtr]::Zero, [IntPtr]::Zero)
     if (-not $process.WaitForExit(10000) -or $process.ExitCode -ne 0) { throw 'Fixture did not close successfully' }
-    foreach ($popup in $popups) { if ([WtsIndicatorProbe]::IsWindow($popup)) { throw 'Owned indicator popup survived the main window' } }
+    foreach ($popup in $popups) { if ([WtmIndicatorProbe]::IsWindow($popup)) { throw 'Owned indicator popup survived the main window' } }
     Write-Host "PASS. Screen pixels verify selective opacity across hover, leave, movement, count reset, and close. Captures at $fixture"
 } finally {
     if ($null -ne $process -and -not $process.HasExited) {
-        if ($window -ne [IntPtr]::Zero) { [void][WtsIndicatorProbe]::PostMessageW($window, 0x10, [IntPtr]::Zero, [IntPtr]::Zero) }
+        if ($window -ne [IntPtr]::Zero) { [void][WtmIndicatorProbe]::PostMessageW($window, 0x10, [IntPtr]::Zero, [IntPtr]::Zero) }
         if (-not $process.WaitForExit(5000)) { $process.Kill(); $process.WaitForExit() }
     }
-    if ($backdrop -ne [IntPtr]::Zero) { [void][WtsIndicatorProbe]::DestroyWindow($backdrop) }
-    [void][WtsIndicatorProbe]::SetCursorPos($savedCursor.X, $savedCursor.Y)
-    if ($previousDpi -ne [IntPtr]::Zero) { [void][WtsIndicatorProbe]::SetThreadDpiAwarenessContext($previousDpi) }
+    if ($backdrop -ne [IntPtr]::Zero) { [void][WtmIndicatorProbe]::DestroyWindow($backdrop) }
+    [void][WtmIndicatorProbe]::SetCursorPos($savedCursor.X, $savedCursor.Y)
+    if ($previousDpi -ne [IntPtr]::Zero) { [void][WtmIndicatorProbe]::SetThreadDpiAwarenessContext($previousDpi) }
     if ($null -ne $process) { $process.Dispose() }
 }

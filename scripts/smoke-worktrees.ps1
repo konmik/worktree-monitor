@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)][string]$Repository,
-    [string]$Binary = "$PSScriptRoot/../target/debug/wts.exe"
+    [string]$Binary = "$PSScriptRoot/../target/debug/wtm.exe"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -43,7 +43,7 @@ foreach ($record in $records) {
 }
 if ($paths.Count -lt 2) { throw 'Choose an existing repository with at least two worktrees' }
 
-$fixture = Join-Path $env:LOCALAPPDATA "Temp/opencode/wts-worktrees-$([Guid]::NewGuid().ToString('N'))"
+$fixture = Join-Path $env:LOCALAPPDATA "Temp/opencode/wtm-worktrees-$([Guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $fixture | Out-Null
 $oldHome = $env:HOME
 $oldProfile = $env:USERPROFILE
@@ -52,7 +52,7 @@ try {
     $env:USERPROFILE = $fixture
     & $Binary add $Repository
     if ($LASTEXITCODE -ne 0) { throw 'Registration failed' }
-    if (-not (Test-Path -LiteralPath (Join-Path $fixture '.config/wts/config.json'))) { throw 'Registry was not written at the required home path' }
+    if (-not (Test-Path -LiteralPath (Join-Path $fixture '.config/wtm/config.json'))) { throw 'Registry was not written at the required home path' }
     $output = (& $Binary 2>&1 | Out-String)
     $exit = $LASTEXITCODE
     [IO.File]::WriteAllText((Join-Path $fixture 'snapshot.txt'), $output)

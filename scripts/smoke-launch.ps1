@@ -1,4 +1,4 @@
-param([string]$Binary = "$PSScriptRoot/../target/debug/wts.exe")
+param([string]$Binary = "$PSScriptRoot/../target/debug/wtm.exe")
 
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
@@ -6,7 +6,7 @@ Add-Type -TypeDefinition @'
 using System;
 using System.Text;
 using System.Runtime.InteropServices;
-public static class WtsLaunchProbe {
+public static class WtmLaunchProbe {
     public delegate bool EnumProc(IntPtr handle, IntPtr data);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr data);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr handle, out uint processId);
@@ -28,7 +28,7 @@ public static class WtsLaunchProbe {
             GetWindowThreadProcessId(handle, out owner);
             var text = new StringBuilder(256);
             GetWindowText(handle, text, text.Capacity);
-            if (owner == pid && IsWindowVisible(handle) && text.ToString().StartsWith("WTS")) { found = handle; return false; }
+            if (owner == pid && IsWindowVisible(handle) && text.ToString().StartsWith("WTM")) { found = handle; return false; }
             return true;
         }, IntPtr.Zero);
         return found;
@@ -36,7 +36,7 @@ public static class WtsLaunchProbe {
 }
 '@
 
-$fixture = Join-Path $env:LOCALAPPDATA "Temp/opencode/wts-launch-$([Guid]::NewGuid().ToString('N'))"
+$fixture = Join-Path $env:LOCALAPPDATA "Temp/opencode/wtm-launch-$([Guid]::NewGuid().ToString('N'))"
 $fixtureHome = Join-Path $fixture 'home'
 New-Item -ItemType Directory -Path $fixtureHome | Out-Null
 $launcher = $null
@@ -59,7 +59,7 @@ try {
     do {
         $candidates = @($launcher.Id) + @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($launcher.Id)" | Select-Object -ExpandProperty ProcessId)
         foreach ($candidate in $candidates) {
-            $handle = [WtsLaunchProbe]::Find([uint32]$candidate)
+            $handle = [WtmLaunchProbe]::Find([uint32]$candidate)
             if ($handle -ne [IntPtr]::Zero) {
                 $windowProcess = [Diagnostics.Process]::GetProcessById([int]$candidate)
                 [void]$windowProcess.Handle
@@ -69,7 +69,7 @@ try {
         if ($handle -ne [IntPtr]::Zero) { break }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
-    if ($handle -eq [IntPtr]::Zero) { throw 'No visible WTS window belonging to this launch' }
+    if ($handle -eq [IntPtr]::Zero) { throw 'No visible WTM window belonging to this launch' }
     $exited = $launcher.WaitForExit(3000)
     $stdinReleased = $false
     try { $launcher.StandardInput.BaseStream.WriteByte(0); $launcher.StandardInput.BaseStream.Flush() }
@@ -78,7 +78,7 @@ try {
     $stdoutEof = $stdout.Wait(1000)
     $stderrEof = $stderr.Wait(1000)
     $differentPid = $windowProcess.Id -ne $launcher.Id
-    $detached = -not [WtsLaunchProbe]::SharesConsole([uint32]$windowProcess.Id)
+    $detached = -not [WtmLaunchProbe]::SharesConsole([uint32]$windowProcess.Id)
     $result = if ($exited -and $launcher.ExitCode -eq 0 -and $stdinReleased -and $stdoutEof -and $stderrEof -and $differentPid -and $detached) { 'PASS' } else { 'FAIL' }
     $proof = [ordered]@{
         result = $result
@@ -88,7 +88,7 @@ try {
         stdout_eof = $stdoutEof
         stderr_eof = $stderrEof
         different_window_pid = $differentPid
-        window_visible = [WtsLaunchProbe]::IsWindowVisible($handle)
+        window_visible = [WtmLaunchProbe]::IsWindowVisible($handle)
         console_detached = $detached
         launcher_pid = $launcher.Id
         window_pid = $windowProcess.Id
@@ -99,17 +99,17 @@ try {
     Write-Host "$result. launcher_exited=$exited stdin_released=$stdinReleased stdout_eof=$stdoutEof stderr_eof=$stderrEof different_window_pid=$differentPid console_detached=$detached"
     Write-Host "Evidence at $fixture"
     if ($result -ne 'PASS') { throw 'Live launch did not release the terminal while keeping a separate visible window' }
-    if (-not [WtsLaunchProbe]::PostMessage($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'Window close failed' }
+    if (-not [WtmLaunchProbe]::PostMessage($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'Window close failed' }
     if (-not $windowProcess.WaitForExit(10000)) { throw 'Window did not close within 10 seconds' }
     if ($windowProcess.ExitCode -ne 0) { throw "Window exited with $($windowProcess.ExitCode)" }
-    if ([WtsLaunchProbe]::IsWindow($handle)) { throw 'Window survived close' }
+    if ([WtmLaunchProbe]::IsWindow($handle)) { throw 'Window survived close' }
     $proof['window_exit_code'] = $windowProcess.ExitCode
     $proof['window_destroyed'] = $true
     $proof | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $fixture 'proof.json') -Encoding utf8NoBOM
     Write-Host 'PASS. Window child closed cleanly.'
 } finally {
-    if ($handle -ne [IntPtr]::Zero -and [WtsLaunchProbe]::IsWindow($handle)) {
-        [void][WtsLaunchProbe]::PostMessage($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
+    if ($handle -ne [IntPtr]::Zero -and [WtmLaunchProbe]::IsWindow($handle)) {
+        [void][WtmLaunchProbe]::PostMessage($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
         if ($null -ne $windowProcess -and -not $windowProcess.WaitForExit(10000)) { $windowProcess.Kill($true); $windowProcess.WaitForExit() }
     }
     if ($null -ne $launcher) {

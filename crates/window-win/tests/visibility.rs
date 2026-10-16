@@ -5,7 +5,7 @@ use tempfile::TempDir;
 use window_win::dashboard::{DashboardView, Health, ItemKey};
 use window_win::order::{identity, Order, OrderMove};
 use window_win::visibility::Visibility;
-use wts_core::{Counts, Error, ErrorKind, Head, RepoEntry, Snapshot, WorktreeEntry, WorktreeStats};
+use wtm_core::{Counts, Error, ErrorKind, Head, RepoEntry, Snapshot, WorktreeEntry, WorktreeStats};
 
 struct Fixture {
     directory: TempDir,

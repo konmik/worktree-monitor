@@ -1,4 +1,4 @@
-param([string]$Binary = "$PSScriptRoot/../target/debug/wts.exe")
+param([string]$Binary = "$PSScriptRoot/../target/debug/wtm.exe")
 
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
@@ -6,7 +6,7 @@ Add-Type -TypeDefinition @'
 using System;
 using System.Text;
 using System.Runtime.InteropServices;
-public static class WtsWindowProbe {
+public static class WtmWindowProbe {
     public struct Rect { public int Left, Top, Right, Bottom; }
     public struct Point { public int X, Y; }
     public struct GuiInfo { public uint Size, Flags; public IntPtr Active, Focus, Capture, MenuOwner, MoveSize, Caret; public Rect CaretRect; }
@@ -53,7 +53,7 @@ public static class WtsWindowProbe {
             GetWindowThreadProcessId(handle, out owner);
             var title = new StringBuilder(256);
             GetWindowText(handle, title, title.Capacity);
-            if (owner == pid && IsWindowVisible(handle) && title.ToString().StartsWith("WTS", StringComparison.OrdinalIgnoreCase)) { found = handle; return false; }
+            if (owner == pid && IsWindowVisible(handle) && title.ToString().StartsWith("WTM", StringComparison.OrdinalIgnoreCase)) { found = handle; return false; }
             return true;
         }, IntPtr.Zero);
         return found;
@@ -240,7 +240,7 @@ function Wait-For([scriptblock]$Condition, [string]$Label, [int]$Seconds = 40) {
 }
 
 function Wait-ScrollbarHidden([IntPtr]$Scrollbar, [Diagnostics.Stopwatch]$SinceActivity) {
-    Wait-For { -not [WtsWindowProbe]::IsWindowVisible($Scrollbar) } 'idle scrollbar to hide' 5
+    Wait-For { -not [WtmWindowProbe]::IsWindowVisible($Scrollbar) } 'idle scrollbar to hide' 5
     if ($SinceActivity.Elapsed.TotalSeconds -lt 2.9) { throw 'Scrollbar hid before three seconds' }
 }
 
@@ -250,15 +250,15 @@ function Run-Git([string[]]$Arguments) {
 }
 
 function Has-Counts([int]$Added, [int]$Deleted) {
-    $viewport = [WtsWindowProbe]::GetDlgItem($script:handle, 1001)
-    $rows = @([WtsWindowProbe]::Captions($viewport) | Where-Object {
+    $viewport = [WtmWindowProbe]::GetDlgItem($script:handle, 1001)
+    $rows = @([WtmWindowProbe]::Captions($viewport) | Where-Object {
         $lines = @($_ -split "`r?`n")
         $lines.Count -ge 2 -and $lines[0] -eq $script:branch -and $lines[1] -match 'S\s+\+\d+/-\d+\b'
     })
     return $rows.Count -eq 1 -and $rows[0] -match "S\s+\+$Added/-$Deleted\b"
 }
 
-$fixture = Join-Path $env:LOCALAPPDATA "Temp/opencode/wts-window-$([Guid]::NewGuid().ToString('N'))"
+$fixture = Join-Path $env:LOCALAPPDATA "Temp/opencode/wtm-window-$([Guid]::NewGuid().ToString('N'))"
 $repo = Join-Path $fixture 'repo'
 $fixtureHome = Join-Path $fixture 'home'
 New-Item -ItemType Directory -Path $repo, $fixtureHome | Out-Null
@@ -266,22 +266,22 @@ $oldHome = $env:HOME
 $oldProfile = $env:USERPROFILE
 $process = $null
 $launcher = $null
-$previousDpiContext = [WtsWindowProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
+$previousDpiContext = [WtmWindowProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
 try {
     $env:HOME = Join-Path $fixture 'unix-home'
     $env:USERPROFILE = $fixtureHome
     Run-Git @('init', '--quiet')
     [IO.File]::WriteAllText((Join-Path $repo 'lines.txt'), "before`n")
     Run-Git @('add', '.')
-    Run-Git @('-c', 'user.name=Wts Test', '-c', 'user.email=wts@example.invalid', 'commit', '--quiet', '-m', 'Fixture')
+    Run-Git @('-c', 'user.name=Wtm Test', '-c', 'user.email=wtm@example.invalid', 'commit', '--quiet', '-m', 'Fixture')
     $script:branch = (& git -c core.fsmonitor=false -c core.autocrlf=false -c commit.gpgsign=false -c "core.hooksPath=$fixture" -C $repo branch --show-current | Out-String).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Git branch lookup failed' }
     [IO.File]::WriteAllText((Join-Path $repo 'lines.txt'), "before`nadded`n")
-    Run-Git @('config', 'filter.wts-metric.clean', 'sleep 1; cat')
-    [IO.File]::WriteAllText((Join-Path $repo '.git/info/attributes'), "lines.txt filter=wts-metric`n")
+    Run-Git @('config', 'filter.wtm-metric.clean', 'sleep 1; cat')
+    [IO.File]::WriteAllText((Join-Path $repo '.git/info/attributes'), "lines.txt filter=wtm-metric`n")
     & $Binary add $repo
     if ($LASTEXITCODE -ne 0) { throw 'Registration failed' }
-    $config = Join-Path $fixtureHome '.config/wts/config.json'
+    $config = Join-Path $fixtureHome '.config/wtm/config.json'
     if (-not (Test-Path -LiteralPath $config)) { throw 'Registry was not written at the required home path' }
     $start = [Diagnostics.ProcessStartInfo]::new($Binary)
     $start.ArgumentList.Add('--live')
@@ -297,7 +297,7 @@ try {
     $script:handle = [IntPtr]::Zero
     Wait-For {
         foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($launcher.Id)")) {
-            $script:handle = [WtsWindowProbe]::Find([uint32]$child.ProcessId)
+            $script:handle = [WtmWindowProbe]::Find([uint32]$child.ProcessId)
             if ($script:handle -ne [IntPtr]::Zero) {
                 $script:process = [Diagnostics.Process]::GetProcessById([int]$child.ProcessId)
                 [void]$script:process.Handle
@@ -308,68 +308,68 @@ try {
     } 'visible child window'
     if (-not $launcher.WaitForExit(3000) -or $launcher.ExitCode -ne 0) { throw 'Live launcher did not exit successfully' }
     if (-not $stdout.Wait(1000) -or -not $stderr.Wait(1000)) { throw 'Live launcher did not release stdout and stderr' }
-    if ([WtsWindowProbe]::SharesConsole([uint32]$process.Id)) { throw 'Live window is still attached to the launching terminal' }
+    if ([WtmWindowProbe]::SharesConsole([uint32]$process.Id)) { throw 'Live window is still attached to the launching terminal' }
     $uiBinary = $process.MainModule.FileName
     $uiHash = (Get-FileHash -LiteralPath $uiBinary -Algorithm SHA256).Hash
     Write-Host 'PASS. Live launcher exited, stdout and stderr reached EOF, and the child window is detached from the launching terminal.'
-    $initialStyle = [WtsWindowProbe]::GetWindowLongPtr($script:handle, -20).ToInt64()
-    $foregroundOnShow = [WtsWindowProbe]::GetForegroundWindow()
+    $initialStyle = [WtmWindowProbe]::GetWindowLongPtr($script:handle, -20).ToInt64()
+    $foregroundOnShow = [WtmWindowProbe]::GetForegroundWindow()
     if (($initialStyle -band 8) -eq 0) { throw 'Window is not always on top' }
     if ($foregroundOnShow -eq $script:handle) { throw 'Window took foreground focus' }
     Wait-For { Has-Counts 1 0 } 'initial source count'
-    $initial = [WtsWindowProbe]::Text($script:handle)
+    $initial = [WtmWindowProbe]::Text($script:handle)
     if ($initial -cmatch 'REPOSITORIES|WORKTREES|LINE CHANGES') { throw 'Dashboard still shows summary totals' }
     $initialRead = [regex]::Match($initial, '\[read: (100|[0-9]{1,2})%\]')
     if (-not $initialRead.Success -or $initial -match 'Polling interval') { throw 'Read percentage is missing or still shows the interval' }
     $initialReadPercent = [int]$initialRead.Groups[1].Value
     [IO.File]::WriteAllText((Join-Path $fixture 'initial.txt'), $initial)
-    $viewport = [WtsWindowProbe]::GetDlgItem($script:handle, 1001)
+    $viewport = [WtmWindowProbe]::GetDlgItem($script:handle, 1001)
     if ($viewport -eq [IntPtr]::Zero) { throw 'Dashboard viewport is missing' }
-    if (@([WtsWindowProbe]::Captions($viewport) | Where-Object { $_ -match '^repo(?:\r?\nRefreshing)?$' }).Count -ne 1) { throw 'Repository name is missing or still has a branch counter' }
-    $scrollbar = [WtsWindowProbe]::Scrollbar($script:handle)
+    if (@([WtmWindowProbe]::Captions($viewport) | Where-Object { $_ -match '^repo(?:\r?\nRefreshing)?$' }).Count -ne 1) { throw 'Repository name is missing or still has a branch counter' }
+    $scrollbar = [WtmWindowProbe]::Scrollbar($script:handle)
     $sinceResize = [Diagnostics.Stopwatch]::StartNew()
-    if (-not [WtsWindowProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, 600, 90, 22)) { throw 'Window resize failed' }
-    [WtsWindowProbe]::CheckFrame($script:handle, $viewport)
-    $card = [WtsWindowProbe]::FirstCard($viewport)
+    if (-not [WtmWindowProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, 600, 90, 22)) { throw 'Window resize failed' }
+    [WtmWindowProbe]::CheckFrame($script:handle, $viewport)
+    $card = [WtmWindowProbe]::FirstCard($viewport)
     if ($card -eq [IntPtr]::Zero) { throw 'Visible dashboard cards are missing' }
-    $visibleBounds = [WtsWindowProbe+Rect]::new()
-    [void][WtsWindowProbe]::GetWindowRect($card, [ref]$visibleBounds)
-    if (-not [WtsWindowProbe]::IsWindowVisible($scrollbar)) { throw 'Resizing did not show the scrollbar' }
-    $viewBounds = [WtsWindowProbe+Rect]::new()
-    $barBounds = [WtsWindowProbe+Rect]::new()
-    $windowBounds = [WtsWindowProbe+Rect]::new()
-    [void][WtsWindowProbe]::GetWindowRect($viewport, [ref]$viewBounds)
-    [void][WtsWindowProbe]::GetWindowRect($scrollbar, [ref]$barBounds)
-    [void][WtsWindowProbe]::GetWindowRect($script:handle, [ref]$windowBounds)
+    $visibleBounds = [WtmWindowProbe+Rect]::new()
+    [void][WtmWindowProbe]::GetWindowRect($card, [ref]$visibleBounds)
+    if (-not [WtmWindowProbe]::IsWindowVisible($scrollbar)) { throw 'Resizing did not show the scrollbar' }
+    $viewBounds = [WtmWindowProbe+Rect]::new()
+    $barBounds = [WtmWindowProbe+Rect]::new()
+    $windowBounds = [WtmWindowProbe+Rect]::new()
+    [void][WtmWindowProbe]::GetWindowRect($viewport, [ref]$viewBounds)
+    [void][WtmWindowProbe]::GetWindowRect($scrollbar, [ref]$barBounds)
+    [void][WtmWindowProbe]::GetWindowRect($script:handle, [ref]$windowBounds)
     if ($barBounds.Left -lt $viewBounds.Right -or $barBounds.Right -gt $windowBounds.Right -or $barBounds.Top -lt $viewBounds.Top -or $barBounds.Bottom -gt $viewBounds.Bottom -or $barBounds.Right -le $barBounds.Left -or $barBounds.Bottom -le $barBounds.Top) { throw 'Scrollbar does not fit the right gutter' }
     Start-Sleep -Milliseconds 1500
     $sinceResize.Restart()
     foreach ($height in @(91, 90)) {
-        if (-not [WtsWindowProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, 600, $height, 22)) { throw 'Repeated window resize failed' }
+        if (-not [WtmWindowProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, 600, $height, 22)) { throw 'Repeated window resize failed' }
     }
     Wait-ScrollbarHidden $scrollbar $sinceResize
-    $hiddenBounds = [WtsWindowProbe+Rect]::new()
-    [void][WtsWindowProbe]::GetWindowRect($card, [ref]$hiddenBounds)
+    $hiddenBounds = [WtmWindowProbe+Rect]::new()
+    [void][WtmWindowProbe]::GetWindowRect($card, [ref]$hiddenBounds)
     if ($visibleBounds.Left -ne $hiddenBounds.Left -or $visibleBounds.Right -ne $hiddenBounds.Right) { throw 'Scrollbar visibility shifted cards' }
-    $cardBefore = [WtsWindowProbe]::Top($card) - [WtsWindowProbe]::Top($viewport)
+    $cardBefore = [WtmWindowProbe]::Top($card) - [WtmWindowProbe]::Top($viewport)
     $sinceScroll = [Diagnostics.Stopwatch]::StartNew()
-    [void][WtsWindowProbe]::SendMessage($script:handle, 0x0115, [IntPtr]1, $scrollbar)
-    if (-not [WtsWindowProbe]::IsWindowVisible($scrollbar)) { throw 'Scrolling did not reveal the scrollbar' }
-    $beforeScroll = [WtsWindowProbe]::ScrollPosition($viewport)
-    $cardScrolled = [WtsWindowProbe]::Top($card) - [WtsWindowProbe]::Top($viewport)
+    [void][WtmWindowProbe]::SendMessage($script:handle, 0x0115, [IntPtr]1, $scrollbar)
+    if (-not [WtmWindowProbe]::IsWindowVisible($scrollbar)) { throw 'Scrolling did not reveal the scrollbar' }
+    $beforeScroll = [WtmWindowProbe]::ScrollPosition($viewport)
+    $cardScrolled = [WtmWindowProbe]::Top($card) - [WtmWindowProbe]::Top($viewport)
     if ($beforeScroll -le 0 -or $cardScrolled -ge $cardBefore) { throw 'Viewport scroll did not move the real cards' }
     Start-Sleep -Milliseconds 1500
     $sinceScroll.Restart()
-    [void][WtsWindowProbe]::SendMessage($viewport, 0x0115, [IntPtr]0, [IntPtr]::Zero)
-    [void][WtsWindowProbe]::SendMessage($viewport, 0x0115, [IntPtr]1, [IntPtr]::Zero)
-    if ([WtsWindowProbe]::ScrollPosition($viewport) -ne $beforeScroll) { throw 'Scroll activity did not restore the card position' }
+    [void][WtmWindowProbe]::SendMessage($viewport, 0x0115, [IntPtr]0, [IntPtr]::Zero)
+    [void][WtmWindowProbe]::SendMessage($viewport, 0x0115, [IntPtr]1, [IntPtr]::Zero)
+    if ([WtmWindowProbe]::ScrollPosition($viewport) -ne $beforeScroll) { throw 'Scroll activity did not restore the card position' }
     Wait-ScrollbarHidden $scrollbar $sinceScroll
     $script:nextMetricChange = [DateTime]::MinValue
     Wait-For {
-        $text = [WtsWindowProbe]::Text($script:handle)
-        $line = [WtsWindowProbe]::ScrollPosition($viewport)
-        $height = [WtsWindowProbe]::Height($viewport)
-        $focus = [WtsWindowProbe]::GetForegroundWindow().ToInt64()
+        $text = [WtmWindowProbe]::Text($script:handle)
+        $line = [WtmWindowProbe]::ScrollPosition($viewport)
+        $height = [WtmWindowProbe]::Height($viewport)
+        $focus = [WtmWindowProbe]::GetForegroundWindow().ToInt64()
         [IO.File]::AppendAllText((Join-Path $fixture 'scroll-trace.txt'), "$line`t$height`t$focus`t$($text.Replace("`r", '').Replace("`n", '\n'))`n")
         $polling = [regex]::Match($text, '\[read: (100|[0-9]{1,2})%\]')
         if ($polling.Success -and [int]$polling.Groups[1].Value -gt $initialReadPercent) { return $true }
@@ -379,45 +379,45 @@ try {
         }
         return $false
     } 'read percentage to include scheduled scans' 20
-    Wait-For { [WtsWindowProbe]::Text($script:handle) -notmatch '(?m)^Refreshing\r?$' } 'metric scan completion' 20
-    $afterScroll = [WtsWindowProbe]::ScrollPosition($viewport)
+    Wait-For { [WtmWindowProbe]::Text($script:handle) -notmatch '(?m)^Refreshing\r?$' } 'metric scan completion' 20
+    $afterScroll = [WtmWindowProbe]::ScrollPosition($viewport)
     [IO.File]::WriteAllText((Join-Path $fixture 'scroll.txt'), "before=$beforeScroll`nafter=$afterScroll`n")
     if ($afterScroll -ne $beforeScroll) { throw "Unchanged refresh reset the scroll position from $beforeScroll to $afterScroll" }
-    $unchangedAnchor = [WtsWindowProbe]::Top($card) - [WtsWindowProbe]::Top($viewport)
+    $unchangedAnchor = [WtmWindowProbe]::Top($card) - [WtmWindowProbe]::Top($viewport)
     if ($unchangedAnchor -ne $cardScrolled) { throw "Unchanged refresh moved the card anchor from $cardScrolled to $unchangedAnchor" }
-    [IO.File]::WriteAllText((Join-Path $fixture 'polling-time.txt'), [WtsWindowProbe]::Text($script:handle))
+    [IO.File]::WriteAllText((Join-Path $fixture 'polling-time.txt'), [WtmWindowProbe]::Text($script:handle))
     [IO.File]::WriteAllText((Join-Path $repo 'lines.txt'), "before`nadded`nanother`n")
     Wait-For { Has-Counts 2 0 } 'live source count'
-    $updated = [WtsWindowProbe]::Text($script:handle)
-    if ([WtsWindowProbe]::ScrollPosition($viewport) -ne $beforeScroll) { throw 'Count-only refresh reset viewport scroll' }
-    $updatedAnchor = [WtsWindowProbe]::Top($card) - [WtsWindowProbe]::Top($viewport)
+    $updated = [WtmWindowProbe]::Text($script:handle)
+    if ([WtmWindowProbe]::ScrollPosition($viewport) -ne $beforeScroll) { throw 'Count-only refresh reset viewport scroll' }
+    $updatedAnchor = [WtmWindowProbe]::Top($card) - [WtmWindowProbe]::Top($viewport)
     if ($updatedAnchor -ne $cardScrolled) { throw "Count-only refresh moved the card anchor from $cardScrolled to $updatedAnchor" }
     if ($updated -notmatch '\[read: (100|[0-9]{1,2})%\]' -or $updated -match 'Polling interval') { throw 'Count refresh lost the read percentage' }
-    $foregroundOnRefresh = [WtsWindowProbe]::GetForegroundWindow()
+    $foregroundOnRefresh = [WtmWindowProbe]::GetForegroundWindow()
     if ($foregroundOnRefresh -eq $script:handle) { throw 'Refresh took foreground focus' }
-    if (([WtsWindowProbe]::GetWindowLongPtr($script:handle, -20).ToInt64() -band 0x08000000) -ne 0) { throw 'Window cannot be activated by clicking' }
+    if (([WtmWindowProbe]::GetWindowLongPtr($script:handle, -20).ToInt64() -band 0x08000000) -ne 0) { throw 'Window cannot be activated by clicking' }
     [IO.File]::WriteAllText((Join-Path $fixture 'updated.txt'), $updated)
-    [void][WtsWindowProbe]::SendMessage($script:handle, 0x0115, [IntPtr]1, $scrollbar)
-    [WtsWindowProbe]::ClickScrollbar($script:handle, $scrollbar)
-    if (-not [WtsWindowProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, 600, 400, 22)) { throw 'Window resize restoration failed' }
-    [void][WtsWindowProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 80, 80, 600, 400, 20)
-    [WtsWindowProbe]::DragEmptySpace($script:handle, $viewport)
-    [WtsWindowProbe]::DragCorner($script:handle)
-    [WtsWindowProbe]::CancelEmptyMove($script:handle, $viewport)
+    [void][WtmWindowProbe]::SendMessage($script:handle, 0x0115, [IntPtr]1, $scrollbar)
+    [WtmWindowProbe]::ClickScrollbar($script:handle, $scrollbar)
+    if (-not [WtmWindowProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, 600, 400, 22)) { throw 'Window resize restoration failed' }
+    [void][WtmWindowProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 80, 80, 600, 400, 20)
+    [WtmWindowProbe]::DragEmptySpace($script:handle, $viewport)
+    [WtmWindowProbe]::DragCorner($script:handle)
+    [WtmWindowProbe]::CancelEmptyMove($script:handle, $viewport)
     Write-Host 'PASS. Frameless edge hit testing, empty-space dragging, corner resizing, flush bottom, and idle gutter scrollbars.'
     $validConfig = [IO.File]::ReadAllText($config)
     [IO.File]::WriteAllText($config, '{broken')
-    Wait-For { [WtsWindowProbe]::Text($script:handle) -match '(?i)error' -and (Has-Counts 2 0) } 'invalid config with last-good rows retained'
-    [IO.File]::WriteAllText((Join-Path $fixture 'invalid-config.txt'), [WtsWindowProbe]::Text($script:handle))
+    Wait-For { [WtmWindowProbe]::Text($script:handle) -match '(?i)error' -and (Has-Counts 2 0) } 'invalid config with last-good rows retained'
+    [IO.File]::WriteAllText((Join-Path $fixture 'invalid-config.txt'), [WtmWindowProbe]::Text($script:handle))
     [IO.File]::WriteAllText($config, $validConfig)
-    Wait-For { [WtsWindowProbe]::Text($script:handle) -notmatch '(?i)error' -and (Has-Counts 2 0) } 'valid config recovery'
+    Wait-For { [WtmWindowProbe]::Text($script:handle) -notmatch '(?i)error' -and (Has-Counts 2 0) } 'valid config recovery'
     & $Binary remove $repo
     if ($LASTEXITCODE -ne 0) { throw 'Removal failed' }
-    Wait-For { [WtsWindowProbe]::Text($script:handle) -match '(?i)no (registered )?repo' } 'live registry reload'
-    [IO.File]::WriteAllText((Join-Path $fixture 'empty.txt'), [WtsWindowProbe]::Text($script:handle))
-    if ($process.HasExited -or -not [WtsWindowProbe]::IsWindow($script:handle)) { throw 'Window exited before close' }
-    if (-not [WtsWindowProbe]::PostMessage($script:handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'Close message failed' }
-    Wait-For { -not [WtsWindowProbe]::IsWindow($script:handle) } 'window destruction' 10
+    Wait-For { [WtmWindowProbe]::Text($script:handle) -match '(?i)no (registered )?repo' } 'live registry reload'
+    [IO.File]::WriteAllText((Join-Path $fixture 'empty.txt'), [WtmWindowProbe]::Text($script:handle))
+    if ($process.HasExited -or -not [WtmWindowProbe]::IsWindow($script:handle)) { throw 'Window exited before close' }
+    if (-not [WtmWindowProbe]::PostMessage($script:handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'Close message failed' }
+    Wait-For { -not [WtmWindowProbe]::IsWindow($script:handle) } 'window destruction' 10
     if (-not $process.WaitForExit(10000)) { throw 'Window did not close within 10 seconds' }
     if ($process.ExitCode -ne 0) { throw "Window exited with $($process.ExitCode)" }
     [ordered]@{
@@ -444,7 +444,7 @@ try {
         launcher_pid = $launcher.Id
         window_pid = $process.Id
         registry_empty = [IO.File]::ReadAllText((Join-Path $fixture 'empty.txt')) -match '(?i)no (registered )?repo'
-        window_destroyed = -not [WtsWindowProbe]::IsWindow($script:handle)
+        window_destroyed = -not [WtmWindowProbe]::IsWindow($script:handle)
         scroll_before = $beforeScroll
         scroll_after = $afterScroll
         exit_code = $process.ExitCode
@@ -464,5 +464,5 @@ try {
         }
         if (-not $launcher.HasExited) { $launcher.Kill($true); $launcher.WaitForExit() }
     }
-    if ($previousDpiContext -ne [IntPtr]::Zero) { [void][WtsWindowProbe]::SetThreadDpiAwarenessContext($previousDpiContext) }
+    if ($previousDpiContext -ne [IntPtr]::Zero) { [void][WtmWindowProbe]::SetThreadDpiAwarenessContext($previousDpiContext) }
 }
