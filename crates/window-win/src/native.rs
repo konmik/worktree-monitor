@@ -8,7 +8,7 @@ use crate::typography::{self, RowSpacing, Typography, FONT_SIZE};
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -209,11 +209,28 @@ unsafe fn show_from_tray(window: HWND) {
     SetForegroundWindow(window);
 }
 
-unsafe fn tray_menu(window: HWND, point: POINT) -> Result<(), io::Error> {
+unsafe fn reset_window_bounds(window: HWND) -> io::Result<()> {
+    let dpi = GetDpiForWindow(window).max(96) as i32;
+    let mut monitor: MONITORINFO = std::mem::zeroed();
+    monitor.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+    if GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &mut monitor) == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let work = monitor.rcWork;
+    let width = (640 * dpi / 96).min(work.right - work.left);
+    let height = (540 * dpi / 96).min(work.bottom - work.top);
+    if SetWindowPos(window, HWND_TOPMOST, work.left, work.top, width, height, SWP_NOACTIVATE) == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+unsafe fn tray_menu(window: HWND, point: POINT, placement_path: &Path) -> Result<(), io::Error> {
     let menu = CreatePopupMenu();
     if menu.is_null() { return Err(io::Error::last_os_error()); }
     let visible = IsWindowVisible(window) != 0 && IsIconic(window) == 0;
     let populated = AppendMenuW(menu, MF_STRING, 1, wide(if visible { "Hide" } else { "Show" }).as_ptr()) != 0
+        && AppendMenuW(menu, MF_STRING, 3, wide("Reset").as_ptr()) != 0
         && AppendMenuW(menu, MF_STRING, 2, wide("Exit").as_ptr()) != 0;
     if !populated {
         let error = io::Error::last_os_error();
@@ -228,6 +245,12 @@ unsafe fn tray_menu(window: HWND, point: POINT) -> Result<(), io::Error> {
         1 if visible => { ShowWindow(window, SW_HIDE); }
         1 => show_from_tray(window),
         2 => { PostMessageW(window, WM_CLOSE, 0, 0); }
+        3 => {
+            ShowWindow(window, SW_SHOWNORMAL);
+            reset_window_bounds(window)?;
+            SetForegroundWindow(window);
+            placement_win::save(window, placement_path)?;
+        }
         _ => {}
     }
     PostMessageW(window, WM_NULL, 0, 0);
@@ -1759,7 +1782,7 @@ unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, p
                 WM_CONTEXTMENU => {
                     let mut point = mouse_point(wparam as LPARAM);
                     if point.x == -1 && point.y == -1 { GetCursorPos(&mut point); }
-                    if let Err(error) = tray_menu(window, point) { (*pointer).failure = Some(error); }
+                    if let Err(error) = tray_menu(window, point, &(*pointer).placement_path) { (*pointer).failure = Some(error); }
                 }
                 _ => {}
             }
@@ -2040,27 +2063,15 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
         let no_border = 0xfffffffeu32;
         DwmSetWindowAttribute(window, 34, (&no_border as *const u32).cast(), std::mem::size_of::<u32>() as u32);
         let restored = placement_win::restore_hidden_geometry(window, &state.placement_path).unwrap_or(None);
-        let positioned = if restored.is_some() {
-            SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
-        } else {
-            let dpi = GetDpiForWindow(window).max(96) as i32;
-            let mut rect: RECT = std::mem::zeroed();
-            GetWindowRect(window, &mut rect);
-            let mut monitor: MONITORINFO = std::mem::zeroed();
-            monitor.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-            let (x, y, width, height) = if GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &mut monitor) != 0 {
-                let work = monitor.rcWork;
-                let width = (640 * dpi / 96).min(work.right - work.left);
-                let height = (540 * dpi / 96).min(work.bottom - work.top);
-                (rect.left.clamp(work.left, work.right - width), rect.top.clamp(work.top, work.bottom - height), width, height)
-            } else { (rect.left, rect.top, 640 * dpi / 96, 540 * dpi / 96) };
-            SetWindowPos(window, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE)
-        };
+        let positioned = if restored.is_none() { reset_window_bounds(window) } else { Ok(()) };
         let tray = TrayIcon::new(window);
         if let Err(error) = tray {
             state.failure = Some(error);
             DestroyWindow(window);
-        } else if positioned == 0 || SetLayeredWindowAttributes(window, 0, 51, LWA_ALPHA) == 0 {
+        } else if let Err(error) = positioned {
+            state.failure = Some(error);
+            DestroyWindow(window);
+        } else if SetLayeredWindowAttributes(window, 0, 51, LWA_ALPHA) == 0 {
             state.failure = Some(io::Error::last_os_error());
             DestroyWindow(window);
         } else {

@@ -1,4 +1,4 @@
-param([string]$Binary = "$PSScriptRoot/../target/debug/wtm-ui.exe")
+param([string]$Binary = "$PSScriptRoot/../target/debug/wtm-ui.exe", [switch]$ResetOnly)
 
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
@@ -57,6 +57,10 @@ $extra = @'
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr window, int command);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr window);
     [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr window);
+    public static string ReadPlacement(string path) {
+        using (var file = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite | System.IO.FileShare.Delete))
+        using (var reader = new System.IO.StreamReader(file)) return reader.ReadToEnd();
+    }
     [DllImport("user32.dll", EntryPoint="SystemParametersInfoW")] public static extern bool SystemParametersInfo(uint action, uint parameter, out Rect rect, uint flags);
     public static Rect Bounds(IntPtr handle) {
         Rect rect;
@@ -111,9 +115,11 @@ $extra = @'
         Rect item;
         if (!GetMenuItemRect(IntPtr.Zero, menu, (uint)index, out item)) throw new InvalidOperationException("Fixture menu item bounds unavailable");
         int x = (item.Left + item.Right) / 2, y = (item.Top + item.Bottom) / 2;
-        if (!SetCursorPos(x, y) || WindowFromPoint(new Point { X = x, Y = y }) != popup) throw new InvalidOperationException("Menu click target is not the fixture popup");
+        if (!SetCursorPos(x, y)) throw new InvalidOperationException("Cannot move to fixture menu item");
+        WaitFor(() => WindowFromPoint(new Point { X = x, Y = y }) == popup, "Menu click target is not the fixture popup");
         mouse_event(2, 0, 0, 0, UIntPtr.Zero);
         mouse_event(4, 0, 0, 0, UIntPtr.Zero);
+        WaitFor(() => !IsWindow(popup), "Fixture popup did not close after selection");
     }
 
     public static void DragAndCheck(IntPtr window, int x, int y, bool resize) {
@@ -180,23 +186,25 @@ try {
     $work = [WtmTrayDragProbe+Rect]::new()
     if (-not [WtmTrayDragProbe]::SystemParametersInfo(0x30, 0, [ref]$work, 0)) { throw 'Work area unavailable' }
     if (-not [WtmTrayDragProbe]::SetWindowPos($window, [IntPtr](-1), $work.Left + 80, $work.Top + 80, 640, 300, 0x10)) { throw 'Cannot position fixture' }
-    $status = [WtmTrayDragProbe]::GetDlgItem($window, 1002)
-    Wait-For { [WtmTrayDragProbe]::Caption($status) -match '\[read: \d+%\]' } 'read indicator'
-    $bounds = [WtmTrayDragProbe]::Bounds($status)
-    [WtmTrayDragProbe]::DragAndCheck($window, $bounds.Left + 25, [int](($bounds.Top + $bounds.Bottom) / 2), $false)
-    $bounds = [WtmTrayDragProbe]::Bounds($status)
-    [WtmTrayDragProbe]::DragAndCheck($window, $bounds.Right - 30, [int](($bounds.Top + $bounds.Bottom) / 2), $false)
-    $bounds = [WtmTrayDragProbe]::Bounds($window)
-    if ([WtmTrayDragProbe]::SendMessage($window, 0x84, [IntPtr]::Zero, [WtmTrayDragProbe]::Position($bounds.Right - 2, $bounds.Bottom - 2)).ToInt64() -ne 17) { throw 'Resize corner no longer has its resize hit test' }
-    [WtmTrayDragProbe]::DragAndCheck($window, $bounds.Right - 2, $bounds.Bottom - 2, $true)
-    $toggle = [WtmTrayDragProbe]::GetDlgItem($window, 1004)
-    $bounds = [WtmTrayDragProbe]::Bounds($status)
-    [void][WtmTrayDragProbe]::SetCursorPos($bounds.Left + 25, [int](($bounds.Top + $bounds.Bottom) / 2))
-    Wait-For { [WtmTrayDragProbe]::IsWindowVisible($toggle) } 'Show all on hover'
-    $bounds = [WtmTrayDragProbe]::Bounds($toggle)
-    $point = [WtmTrayDragProbe]::Position([int](($bounds.Left + $bounds.Right) / 2), [int](($bounds.Top + $bounds.Bottom) / 2))
-    if ([WtmTrayDragProbe]::SendMessage($window, 0x84, [IntPtr]::Zero, $point).ToInt64() -ne 1) { throw 'Show all is treated as a window drag region' }
-    Write-Host 'PASS. Real mouse drags on the read text and empty status row move the window. Real corner drag still resizes it.'
+    if (-not $ResetOnly) {
+        $status = [WtmTrayDragProbe]::GetDlgItem($window, 1002)
+        Wait-For { [WtmTrayDragProbe]::Caption($status) -match '\[read: \d+%\]' } 'read indicator'
+        $bounds = [WtmTrayDragProbe]::Bounds($status)
+        [WtmTrayDragProbe]::DragAndCheck($window, $bounds.Left + 25, [int](($bounds.Top + $bounds.Bottom) / 2), $false)
+        $bounds = [WtmTrayDragProbe]::Bounds($status)
+        [WtmTrayDragProbe]::DragAndCheck($window, $bounds.Right - 30, [int](($bounds.Top + $bounds.Bottom) / 2), $false)
+        $bounds = [WtmTrayDragProbe]::Bounds($window)
+        if ([WtmTrayDragProbe]::SendMessage($window, 0x84, [IntPtr]::Zero, [WtmTrayDragProbe]::Position($bounds.Right - 2, $bounds.Bottom - 2)).ToInt64() -ne 17) { throw 'Resize corner no longer has its resize hit test' }
+        [WtmTrayDragProbe]::DragAndCheck($window, $bounds.Right - 2, $bounds.Bottom - 2, $true)
+        $toggle = [WtmTrayDragProbe]::GetDlgItem($window, 1004)
+        $bounds = [WtmTrayDragProbe]::Bounds($status)
+        [void][WtmTrayDragProbe]::SetCursorPos($bounds.Left + 25, [int](($bounds.Top + $bounds.Bottom) / 2))
+        Wait-For { [WtmTrayDragProbe]::IsWindowVisible($toggle) } 'Show all on hover'
+        $bounds = [WtmTrayDragProbe]::Bounds($toggle)
+        $point = [WtmTrayDragProbe]::Position([int](($bounds.Left + $bounds.Right) / 2), [int](($bounds.Top + $bounds.Bottom) / 2))
+        if ([WtmTrayDragProbe]::SendMessage($window, 0x84, [IntPtr]::Zero, $point).ToInt64() -ne 1) { throw 'Show all is treated as a window drag region' }
+        Write-Host 'PASS. Real mouse drags on the read text and empty status row move the window. Real corner drag still resizes it.'
+    }
     [WtmTrayDragProbe]::Menu($window, 'Hide')
     Wait-For { -not [WtmTrayDragProbe]::IsWindowVisible($window) } 'tray Hide action'
     if (-not [WtmTrayDragProbe]::HasIcon($window, 1)) { throw 'Hiding window removed its notification icon' }
@@ -227,7 +235,7 @@ try {
         } "Reset from $mode"
         $defaultBounds = [WtmTrayDragProbe]::Bounds($window)
         Wait-For {
-            $saved = Get-Content -LiteralPath (Join-Path $fixture '.config/wtm/config.placement.json') -Raw | ConvertFrom-Json
+            $saved = [WtmTrayDragProbe]::ReadPlacement((Join-Path $fixture '.config/wtm/config.placement.json')) | ConvertFrom-Json
             $saved.state -eq 'normal' -and $saved.normal.left -eq $defaultBounds.Left -and $saved.normal.top -eq $defaultBounds.Top -and
                 $saved.normal.right -eq $defaultBounds.Right -and $saved.normal.bottom -eq $defaultBounds.Bottom
         } 'saved reset placement'
