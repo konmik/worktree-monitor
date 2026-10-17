@@ -1,7 +1,7 @@
 use crate::context_menu;
 use std::io;
 use std::ptr::null;
-use windows_sys::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
 use windows_sys::Win32::UI::Shell::{Shell_NotifyIconW, NOTIFYICONDATAW, NIF_MESSAGE, NIF_ICON, NIF_TIP, NIF_SHOWTIP,
@@ -9,8 +9,12 @@ use windows_sys::Win32::UI::Shell::{Shell_NotifyIconW, NOTIFYICONDATAW, NIF_MESS
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 pub(crate) const WM_TRAY_ICON: u32 = WM_APP + 43;
-pub(crate) const WINDOW_STYLE: u32 = WS_EX_TOOLWINDOW;
 const APP_ICON: *const u16 = std::ptr::without_provenance(1);
+
+pub(crate) unsafe fn class_icon(instance: HINSTANCE) -> io::Result<HICON> {
+    let icon = LoadIconW(instance, APP_ICON);
+    if icon.is_null() { Err(io::Error::last_os_error()) } else { Ok(icon) }
+}
 
 pub(crate) unsafe fn restart_message() -> io::Result<u32> {
     let message = RegisterWindowMessageW(wide("TaskbarCreated").as_ptr());

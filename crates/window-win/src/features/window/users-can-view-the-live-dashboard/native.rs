@@ -1,4 +1,4 @@
-use super::notification_lifecycle::dispatch_notification_icon;
+use super::notification_lifecycle::{NotificationIcon, dispatch_notification_icon};
 use super::context_menu_actions::{context_menu};
 use super::dashboard_rows::{Card, create_card, reconcile, refresh};
 use super::font_resources::{Resources, fonts};
@@ -34,7 +34,7 @@ use windows_sys::Win32::UI::Controls::SetWindowTheme;
 use windows_sys::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetCapture, ReleaseCapture};
 use windows_sys::Win32::UI::Shell::SetWindowSubclass;
-use windows_sys::Win32::UI::WindowsAndMessaging::{BS_AUTOCHECKBOX, CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA, GetCursorPos, GetMessageW, GetParent, GetWindowLongPtrW, HTCAPTION, HTCLIENT, HTTRANSPARENT, IDC_ARROW, IsDialogMessageW, IsWindow, KillTimer, LWA_ALPHA, LoadCursorW, LoadIconW, MINMAXINFO, MSG, PostMessageW, RegisterClassW, SBS_VERT, SW_HIDE, SendMessageW, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, ShowWindow, TranslateMessage, UnregisterClassW, WM_ACTIVATEAPP, WM_CANCELMODE, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCRBUTTONUP, WM_PAINT, WM_QUERYENDSESSION, WM_SETFONT, WM_SHOWWINDOW, WM_SIZE, WM_TIMER, WM_VSCROLL, WM_WINDOWPOSCHANGED, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_CONTROLPARENT, WS_TABSTOP, WS_VISIBLE};
+use windows_sys::Win32::UI::WindowsAndMessaging::{BS_AUTOCHECKBOX, CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA, GetCursorPos, GetMessageW, GetParent, GetWindowLongPtrW, HTCAPTION, HTCLIENT, HTTRANSPARENT, IDC_ARROW, IsDialogMessageW, IsWindow, KillTimer, LWA_ALPHA, LoadCursorW, MINMAXINFO, MSG, PostMessageW, RegisterClassW, SBS_VERT, SW_HIDE, SendMessageW, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, ShowWindow, TranslateMessage, UnregisterClassW, WM_ACTIVATEAPP, WM_CANCELMODE, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCCREATE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCRBUTTONUP, WM_PAINT, WM_QUERYENDSESSION, WM_SETFONT, WM_SHOWWINDOW, WM_SIZE, WM_TIMER, WM_VSCROLL, WM_WINDOWPOSCHANGED, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_CONTROLPARENT, WS_TABSTOP, WS_VISIBLE};
 use wtm_core::{Monitor, MonitorUpdate, Service};
 pub(super) struct State {
     pub(super) ordering: Ordering,
@@ -62,8 +62,7 @@ pub(super) struct State {
     pub(super) indicator_overlay: HWND,
     pub(super) indicators_dirty: bool,
     pub(super) indicators_queued: bool,
-    pub(super) tray: Option<TrayIcon>,
-    pub(super) taskbar_created: u32,
+    pub(super) notification_icon: NotificationIcon,
 }
 
 
@@ -287,14 +286,13 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
         ordering: Ordering { next_check: Instant::now(), ..ordering },
         worktree_visibility: WorktreeVisibility { next_check: Instant::now(), ..worktree_visibility },
         show_all_button: null_mut(), controls_visible: false, next_action_id: 3000,
-        indicator_overlay: null_mut(), indicators_dirty: true, indicators_queued: false, tray: None, taskbar_created: 0 });
+        indicator_overlay: null_mut(), indicators_dirty: true, indicators_queued: false, notification_icon: NotificationIcon::default() });
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-        state.taskbar_created = notification_icon::restart_message()?;
+        state.notification_icon.initialize()?;
         let instance = GetModuleHandleW(null());
         if instance.is_null() { return Err(io::Error::last_os_error()); }
-        let icon = LoadIconW(instance, APP_ICON);
-        if icon.is_null() { return Err(io::Error::last_os_error()); }
+        let icon = notification_icon::class_icon(instance)?;
         let class = wide("WtmStatusWindow");
         let viewport_class = wide("WtmDashboardViewport");
         let overlay_class = wide("WtmIndicatorOverlay");
@@ -344,7 +342,7 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
             state.failure = Some(io::Error::last_os_error());
             DestroyWindow(window);
         } else {
-            state.tray = tray.ok();
+            state.notification_icon.install(tray.ok());
             super::dashboard_opening::show(window, restored);
             update_hover_state(window, &mut state);
             if !sync_indicators(window, &mut state) {
@@ -380,5 +378,3 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
     }
     Ok(())
 }
-
-pub(super) const APP_ICON: *const u16 = std::ptr::without_provenance(1);

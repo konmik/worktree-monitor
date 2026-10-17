@@ -1,0 +1,1 @@
+- The app has no taskbar icon.

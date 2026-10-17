@@ -75,7 +75,7 @@ mod saved_preferences;
 #[path = "features/window/repo-list/worktree/indicators/loading-reserves-count-space-without-placeholder-messages/native.rs"]
 mod loading_rows;
 
-#[path = "features/notification-icon/the-app-has-one-notification-icon-and-no-taskbar-icon/native.rs"]
+#[path = "features/notification-icon/the-app-has-one-notification-icon/native.rs"]
 mod notification_lifecycle;
 
 #[path = "features/window/window-position-survives-restart/native.rs"]

@@ -28,7 +28,7 @@ pub(super) unsafe fn close(window: HWND, pointer: *mut State) -> LRESULT {
 }
 
 pub(super) unsafe fn destroy(window: HWND, pointer: *mut State) -> LRESULT {
-    (*pointer).tray = None;
+    (*pointer).notification_icon.remove();
     cancel_drag(pointer);
     (*pointer).indicator_overlay = null_mut();
     KillTimer(window, 1);

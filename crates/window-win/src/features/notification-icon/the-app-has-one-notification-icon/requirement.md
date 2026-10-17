@@ -1,0 +1,1 @@
+- The app has one icon in the notification area.

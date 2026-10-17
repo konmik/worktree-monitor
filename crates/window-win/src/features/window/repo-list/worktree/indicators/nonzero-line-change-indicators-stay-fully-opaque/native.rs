@@ -152,11 +152,11 @@ pub(super) const WM_SYNC_INDICATORS: u32 = WM_APP + 42;
 
 use windows_sys::Win32::Foundation::HINSTANCE;
 use std::ptr::null;
-use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, WS_DISABLED, WS_EX_LAYERED, WS_EX_TRANSPARENT, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP};
+use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, WS_DISABLED, WS_EX_LAYERED, WS_EX_TRANSPARENT, WS_EX_NOACTIVATE, WS_POPUP};
 use super::runtime::wide;
 
 pub(super) unsafe fn create_indicator_overlay(window: HWND, instance: HINSTANCE, class: *const u16) -> HWND {
-    CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+    CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | crate::taskbar_icon::WINDOW_STYLE,
             class, wide("Line-change indicators").as_ptr(), WS_POPUP | WS_DISABLED,
             0, 0, 1, 1, window, null_mut(), instance, null())
 }
