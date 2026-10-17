@@ -82,17 +82,58 @@ pub fn text_row(value: &str, columns: usize, color: Color) -> RenderBuffer {
 }
 
 pub fn render_dashboard(view: &DashboardView, polling_time_last_minute: std::time::Duration, columns: usize, rows: usize, options: impl Fn(&crate::dashboard::ViewItem) -> RowOptions) -> RenderBuffer {
-    let mut buffer = RenderBuffer::new(columns, rows, MUTED);
     let status = render_row(&DisplayItem::Status { health: view.health, polling_time_last_minute }, columns, RowOptions::default());
-    buffer.blit(0, 0, &status);
-    let mut y = 2;
-    for item in &view.items {
-        let row = render_row(&item.display, columns, options(item));
-        buffer.blit(0, y, &row);
-        y += row.rows() + 1;
-        if y >= rows { break; }
+    let items: Vec<_> = view.items.iter().map(|item| render_row(&item.display, columns, options(item))).collect();
+    compose_dashboard(&status, &items, &[], columns, rows, 0).buffer
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DashboardFrame {
+    pub buffer: RenderBuffer,
+    pub content_rows: usize,
+    pub scroll_row: usize,
+    pub row_offsets: Vec<usize>,
+    pub row_heights: Vec<usize>,
+}
+
+pub fn compose_dashboard(header: &RenderBuffer, items: &[RenderBuffer], attached: &[bool], columns: usize, rows: usize, requested_scroll: usize) -> DashboardFrame {
+    let row_heights: Vec<_> = items.iter().map(RenderBuffer::rows).collect();
+    let (row_offsets, content_rows) = crate::layout::content_rows(&row_heights, attached).expect("Could not lay out character rows");
+    let body_rows = rows.saturating_sub(2);
+    let scroll_row = requested_scroll.min(content_rows.saturating_sub(body_rows));
+    let mut buffer = RenderBuffer::new(columns, rows, MUTED);
+    buffer.blit_rows(0, 0, header, 0, 1);
+    let bottom = scroll_row + body_rows;
+    for (item, &offset) in items.iter().zip(&row_offsets) {
+        let first = offset.max(scroll_row);
+        let last = (offset + item.rows()).min(bottom);
+        if first < last { buffer.blit_rows(0, 2 + first - scroll_row, item, first - offset, last - first); }
     }
-    buffer
+    DashboardFrame { buffer, content_rows, scroll_row, row_offsets, row_heights }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Scrollbar {
+    pub rows: usize,
+    pub thumb: std::ops::Range<usize>,
+    maximum: usize,
+}
+
+impl Scrollbar {
+    pub fn new(content: usize, rows: usize, position: usize) -> Self {
+        let track = rows.saturating_sub(2);
+        let length = if content > 0 { (track * rows / content).max(1).min(track) } else { track };
+        let maximum = content.saturating_sub(rows);
+        let start = if maximum > 0 { (track - length) * position.min(maximum) / maximum } else { 0 };
+        Self { rows, thumb: 1 + start..1 + start + length, maximum }
+    }
+
+    pub fn position_at(&self, row: i32, grab: usize) -> usize {
+        let travel = self.rows.saturating_sub(2 + self.thumb.len());
+        if travel == 0 { return 0; }
+        let top = (i64::from(row) - grab as i64 - 1).clamp(0, travel as i64) as usize;
+        (top * self.maximum + travel / 2) / travel
+    }
 }
 
 #[cfg(test)]

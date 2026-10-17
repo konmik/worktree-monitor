@@ -3,3 +3,4 @@
 - JetBrains Mono precedes Consolas in the fallback order.
 - The default system monospace font is the final fallback when named fonts are unavailable.
 - The font size is 12 and the shared line-height factor is 1.2.
+- The line advance fits the complete font glyph cell.

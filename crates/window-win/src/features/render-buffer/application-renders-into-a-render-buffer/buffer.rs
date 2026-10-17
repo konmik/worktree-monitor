@@ -81,9 +81,12 @@ impl RenderBuffer {
         self.write_styled(column, row, value, color, CellFlags::default());
     }
     pub fn blit(&mut self, column: usize, row: usize, source: &Self) {
-        for y in 0..source.rows.min(self.rows.saturating_sub(row)) {
+        self.blit_rows(column, row, source, 0, source.rows);
+    }
+    pub fn blit_rows(&mut self, column: usize, row: usize, source: &Self, source_row: usize, rows: usize) {
+        for y in 0..rows.min(source.rows.saturating_sub(source_row)).min(self.rows.saturating_sub(row)) {
             for x in 0..source.columns.min(self.columns.saturating_sub(column)) {
-                let cell = &source.cells[y * source.columns + x];
+                let cell = &source.cells[(source_row + y) * source.columns + x];
                 self.put_grapheme(column + x, row + y, cell.text(), cell.color, cell.flags);
             }
         }

@@ -3,28 +3,23 @@ use super::window_appearance::Palette;
 use super::cell_fonts::CellFonts;
 use crate::typography::{FONT_SIZE, Typography};
 use std::ptr::null_mut;
-use windows_sys::Win32::Foundation::{HWND, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::{CLEARTYPE_QUALITY, CreateCompatibleDC, CreateFontW, DEFAULT_CHARSET, DeleteDC, DeleteObject, FF_MODERN, FIXED_PITCH, GetTextExtentPoint32W, GetTextFaceW, GetTextMetricsW, HDC, HFONT, RestoreDC, SaveDC, SelectObject, TEXTMETRICW, TMPF_FIXED_PITCH};
+use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::Graphics::Gdi::{CLEARTYPE_QUALITY, CreateCompatibleDC, CreateFontW, DEFAULT_CHARSET, DeleteDC, DeleteObject, FF_MODERN, FIXED_PITCH, GetTextFaceW, GetTextMetricsW, HFONT, SelectObject, TEXTMETRICW, TMPF_FIXED_PITCH};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
-use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_SETFONT};
+
+#[cfg(test)]
+use windows_sys::Win32::Graphics::Gdi::{GetTextExtentPoint32W, HDC, RestoreDC, SaveDC};
 pub(super) unsafe fn fonts(window: HWND, state: &mut State) -> bool {
     state.indicators_dirty = true;
     let dpi = GetDpiForWindow(window).max(96) as i32;
     let Some(resources) = Resources::new(dpi) else { return false; };
-    for card in state.fixed.iter().chain(&state.cards) {
-        SendMessageW(card.window, WM_SETFONT, resources.font as WPARAM, 0);
-        if let Some(action) = card.action {
-            SendMessageW(action, WM_SETFONT, resources.font as WPARAM, 0);
-        }
-    }
-    if !state.show_all_button.is_null() {
-        SendMessageW(state.show_all_button, WM_SETFONT, resources.font as WPARAM, 0);
-    }
+    state.frame_dirty = true;
     state.resources = Some(resources);
     state.dpi = dpi;
     true
 }
 
+#[cfg(test)]
 pub(super) unsafe fn wrapped_width(dc: HDC, value: &str, font: HFONT) -> i32 {
     let saved = SaveDC(dc);
     SelectObject(dc, font);
@@ -85,4 +80,3 @@ impl Drop for Resources {
         }
     }
 }
-

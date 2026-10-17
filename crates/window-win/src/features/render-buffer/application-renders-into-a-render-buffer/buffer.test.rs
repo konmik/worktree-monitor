@@ -75,3 +75,22 @@ fn text_width_matches_the_columns_reserved_by_storage() {
     buffer.write(0, 0, text, color);
     assert_eq!(buffer.row(0).unwrap().iter().map(|cell| cell.text()).collect::<String>(), text);
 }
+
+#[test]
+fn row_composition_copies_only_the_requested_source_rows() {
+    let color = Color { red: 1, green: 2, blue: 3 };
+    let mut source = RenderBuffer::new(3, 3, color);
+    source.write(0, 0, "abc", color);
+    source.write(0, 1, "def", color);
+    source.write(0, 2, "ghi", color);
+    let mut target = RenderBuffer::new(3, 3, color);
+    target.blit_rows(0, 1, &source, 1, 1);
+    assert_eq!(target.row(0).unwrap().iter().map(|cell| cell.text()).collect::<String>(), "   ");
+    assert_eq!(target.row(1).unwrap(), source.row(1).unwrap());
+    assert_eq!(target.row(2).unwrap().iter().map(|cell| cell.text()).collect::<String>(), "   ");
+    target.blit_rows(0, 2, &source, 2, usize::MAX);
+    assert_eq!(target.row(2).unwrap(), source.row(2).unwrap());
+    let previous = target.clone();
+    target.blit_rows(0, 0, &source, usize::MAX, usize::MAX);
+    assert_eq!(target, previous);
+}

@@ -89,3 +89,89 @@ fn refresh_markers_follow_display_columns_of_complete_graphemes() {
         assert_eq!(buffer.row(0).unwrap()[width + 1].color, TEAL);
     }
 }
+
+#[test]
+fn scrolling_projects_complete_rows_below_a_fixed_header() {
+    let header = text_row("header", 8, GREEN);
+    let mut item = RenderBuffer::new(8, 4, MUTED);
+    for row in 0..4 { item.write(0, row, &format!("line{row}"), WHITE); }
+    let items = [item];
+    for scroll in 0..=2 {
+        let frame = compose_dashboard(&header, &items, &[], 8, 4, scroll);
+        assert_eq!(frame.scroll_row, scroll);
+        assert_eq!(line(&frame.buffer, 0), "header");
+        assert_eq!(line(&frame.buffer, 1), "");
+        assert_eq!(line(&frame.buffer, 2), format!("line{scroll}"));
+        assert_eq!(line(&frame.buffer, 3), format!("line{}", scroll + 1));
+        assert_eq!(frame.buffer.row(0), header.row(0));
+    }
+}
+
+#[test]
+fn scrolling_clamps_at_the_bottom_and_preserves_attached_row_positions() {
+    let header = text_row("header", 8, GREEN);
+    let items = [text_row("repo", 8, TEAL), text_row("branch", 8, WHITE), text_row("next", 8, TEAL)];
+    let frame = compose_dashboard(&header, &items, &[true, false], 8, 4, usize::MAX);
+    assert_eq!(frame.content_rows, 4);
+    assert_eq!(frame.row_offsets, [0, 1, 3]);
+    assert_eq!(frame.row_heights, [1, 1, 1]);
+    assert_eq!(frame.scroll_row, 2);
+    assert_eq!(line(&frame.buffer, 2), "");
+    assert_eq!(line(&frame.buffer, 3), "next");
+    let spacious = compose_dashboard(&header, &items, &[true, false], 8, 10, usize::MAX);
+    assert_eq!(spacious.scroll_row, 0);
+    assert_eq!(line(&spacious.buffer, 2), "repo");
+    assert_eq!(line(&spacious.buffer, 3), "branch");
+    assert_eq!(line(&spacious.buffer, 4), "");
+    assert_eq!(line(&spacious.buffer, 5), "next");
+}
+
+#[test]
+fn tiny_frames_and_empty_content_stay_within_grid_dimensions() {
+    let header = text_row("header", 8, GREEN);
+    let items = [text_row("body", 8, WHITE)];
+    for columns in 0..=2 {
+        for rows in 0..=3 {
+            let frame = compose_dashboard(&header, &items, &[], columns, rows, usize::MAX);
+            assert_eq!(frame.buffer.columns(), columns);
+            assert_eq!(frame.buffer.rows(), rows);
+            assert_eq!(frame.buffer.cells().len(), columns * rows);
+            if rows > 1 { assert_eq!(line(&frame.buffer, 1), ""); }
+        }
+    }
+    let empty = compose_dashboard(&header, &[], &[], 8, 4, usize::MAX);
+    assert_eq!(empty.content_rows, 0);
+    assert_eq!(empty.scroll_row, 0);
+    assert!(empty.row_offsets.is_empty());
+    assert!(empty.row_heights.is_empty());
+    assert_eq!(line(&empty.buffer, 2), "");
+}
+
+#[test]
+fn scroll_projection_keeps_wide_glyphs_whole_and_preserves_cell_flags() {
+    let header = text_row("head", 4, GREEN);
+    let mut item = RenderBuffer::new(4, 2, MUTED);
+    item.write(0, 0, "skip", WHITE);
+    item.write_styled(0, 1, "a\u{754c}b", RED, crate::render_buffer::CellFlags { stressed: true, bold: true, underline: true });
+    let frame = compose_dashboard(&header, &[item.clone()], &[], 2, 3, 1);
+    assert_eq!(line(&frame.buffer, 2), "a");
+    assert_eq!(frame.buffer.row(2).unwrap()[0], item.row(1).unwrap()[0]);
+    assert_eq!(frame.buffer.row(2).unwrap()[1].text(), " ");
+    let whole = compose_dashboard(&header, &[item.clone()], &[], 3, 3, 1);
+    assert_eq!(line(&whole.buffer, 2), "a\u{754c}");
+    assert_eq!(whole.buffer.row(2).unwrap(), &item.row(1).unwrap()[..3]);
+}
+
+#[test]
+fn scrollbar_drag_matches_the_visible_thumb_at_each_end() {
+    let top = super::Scrollbar::new(100, 10, 0);
+    assert_eq!(top.thumb, 1..2);
+    assert_eq!(top.position_at(1, 0), 0);
+    assert_eq!(top.position_at(8, 0), 90);
+    assert_eq!(top.position_at(-20, 0), 0);
+    assert_eq!(top.position_at(100, 0), 90);
+    let bottom = super::Scrollbar::new(100, 10, 90);
+    assert_eq!(bottom.thumb, 8..9);
+    let short = super::Scrollbar::new(100, 2, 0);
+    assert_eq!(short.position_at(10, 0), 0);
+}

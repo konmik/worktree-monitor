@@ -1,3 +1,6 @@
 - Overflowing rows can be scrolled using the mouse wheel, keyboard and scrollbar.
 - Scrolling stays within the available content.
 - The scrollbar hides after inactivity.
+- Scroll position, content height and viewport height are measured in character rows.
+- Scrolling is an operation on the grid and has no pixel offset.
+- The viewport never shows a fraction of a character at its top or bottom edge.

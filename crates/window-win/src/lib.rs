@@ -25,7 +25,6 @@ pub mod placement;
 #[path = "features/window/repo-list/worktree/users-can-hide-and-restore-worktrees/visibility.rs"]
 pub mod visibility;
 
-#[cfg(any(windows, test))]
 #[path = "features/window/design/layout-stays-compact-when-the-window-narrows/layout.rs"]
 mod layout;
 
@@ -57,10 +56,6 @@ pub use window::run;
 
 #[path = "features/window/design/layout-stays-compact-when-the-window-narrows/name-fitting.rs"]
 mod name_fitting;
-
-#[cfg(any(windows, test))]
-#[path = "features/window/design/layout-stays-compact-when-the-window-narrows/spacing.rs"]
-mod spacing;
 
 #[path = "features/window/repo-list/users-can-view-repository-and-worktree-status/scan.rs"]
 mod scan_projection;
