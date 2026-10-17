@@ -228,7 +228,7 @@ unsafe fn reset_window_bounds(window: HWND) -> io::Result<()> {
     Ok(())
 }
 
-unsafe fn tray_menu(window: HWND, point: POINT, pointer: *mut State) -> Result<(), io::Error> {
+unsafe fn context_menu(window: HWND, point: POINT, pointer: *mut State) -> Result<(), io::Error> {
     let menu = CreatePopupMenu();
     if menu.is_null() { return Err(io::Error::last_os_error()); }
     let opacity_menu = CreatePopupMenu();
@@ -249,7 +249,7 @@ unsafe fn tray_menu(window: HWND, point: POINT, pointer: *mut State) -> Result<(
     }
     let visible = IsWindowVisible(window) != 0 && IsIconic(window) == 0;
     let populated = AppendMenuW(menu, MF_STRING, 1, wide(if visible { "Hide" } else { "Show" }).as_ptr()) != 0
-        && AppendMenuW(menu, MF_STRING, 3, wide("Reset").as_ptr()) != 0
+        && AppendMenuW(menu, MF_STRING, 3, wide("Reset position").as_ptr()) != 0
         && AppendMenuW(menu, MF_STRING, 2, wide("Exit").as_ptr()) != 0;
     if !populated {
         let error = io::Error::last_os_error();
@@ -1807,12 +1807,16 @@ unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, p
                 NIN_SELECT => show_from_tray(window),
                 event if event == NIN_SELECT | NINF_KEY => show_from_tray(window),
                 WM_CONTEXTMENU => {
-                    let mut point = mouse_point(wparam as LPARAM);
-                    if point.x == -1 && point.y == -1 { GetCursorPos(&mut point); }
-                    if let Err(error) = tray_menu(window, point, pointer) { (*pointer).failure = Some(error); }
+                    SendMessageW(window, WM_CONTEXTMENU, window as WPARAM, wparam as LPARAM);
                 }
                 _ => {}
             }
+            0
+        }
+        WM_CONTEXTMENU | WM_NCRBUTTONUP if !viewport => {
+            let mut point = mouse_point(lparam);
+            if point.x == -1 && point.y == -1 { GetCursorPos(&mut point); }
+            if let Err(error) = context_menu(window, point, pointer) { (*pointer).failure = Some(error); }
             0
         }
         WM_SYNC_INDICATORS if !viewport => {

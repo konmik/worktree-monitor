@@ -319,8 +319,8 @@ try {
     Wait-For { Has-Counts 1 0 } 'initial source count'
     $initial = [WtmWindowProbe]::Text($script:handle)
     if ($initial -cmatch 'REPOSITORIES|WORKTREES|LINE CHANGES') { throw 'Dashboard still shows summary totals' }
-    $initialRead = [regex]::Match($initial, '\[read: (100|[0-9]{1,2})%\]')
-    if (-not $initialRead.Success -or $initial -match 'Polling interval') { throw 'Read percentage is missing or still shows the interval' }
+    $initialRead = [regex]::Match($initial, '\[idle: (100|[0-9]{1,2})%\]')
+    if (-not $initialRead.Success -or $initial -match 'Polling interval') { throw 'Idle percentage is missing or still shows the interval' }
     $initialReadPercent = [int]$initialRead.Groups[1].Value
     [IO.File]::WriteAllText((Join-Path $fixture 'initial.txt'), $initial)
     $viewport = [WtmWindowProbe]::GetDlgItem($script:handle, 1001)
@@ -371,14 +371,14 @@ try {
         $height = [WtmWindowProbe]::Height($viewport)
         $focus = [WtmWindowProbe]::GetForegroundWindow().ToInt64()
         [IO.File]::AppendAllText((Join-Path $fixture 'scroll-trace.txt'), "$line`t$height`t$focus`t$($text.Replace("`r", '').Replace("`n", '\n'))`n")
-        $polling = [regex]::Match($text, '\[read: (100|[0-9]{1,2})%\]')
-        if ($polling.Success -and [int]$polling.Groups[1].Value -gt $initialReadPercent) { return $true }
+        $polling = [regex]::Match($text, '\[idle: (100|[0-9]{1,2})%\]')
+        if ($polling.Success -and [int]$polling.Groups[1].Value -lt $initialReadPercent) { return $true }
         if ([DateTime]::UtcNow -ge $script:nextMetricChange) {
             [IO.File]::SetLastWriteTimeUtc((Join-Path $repo 'lines.txt'), [DateTime]::UtcNow)
             $script:nextMetricChange = [DateTime]::UtcNow.AddMilliseconds(600)
         }
         return $false
-    } 'read percentage to include scheduled scans' 20
+    } 'idle percentage to include scheduled scans' 20
     Wait-For { [WtmWindowProbe]::Text($script:handle) -notmatch '(?m)^Refreshing\r?$' } 'metric scan completion' 20
     $afterScroll = [WtmWindowProbe]::ScrollPosition($viewport)
     [IO.File]::WriteAllText((Join-Path $fixture 'scroll.txt'), "before=$beforeScroll`nafter=$afterScroll`n")
@@ -392,7 +392,7 @@ try {
     if ([WtmWindowProbe]::ScrollPosition($viewport) -ne $beforeScroll) { throw 'Count-only refresh reset viewport scroll' }
     $updatedAnchor = [WtmWindowProbe]::Top($card) - [WtmWindowProbe]::Top($viewport)
     if ($updatedAnchor -ne $cardScrolled) { throw "Count-only refresh moved the card anchor from $cardScrolled to $updatedAnchor" }
-    if ($updated -notmatch '\[read: (100|[0-9]{1,2})%\]' -or $updated -match 'Polling interval') { throw 'Count refresh lost the read percentage' }
+    if ($updated -notmatch '\[idle: (100|[0-9]{1,2})%\]' -or $updated -match 'Polling interval') { throw 'Count refresh lost the idle percentage' }
     $foregroundOnRefresh = [WtmWindowProbe]::GetForegroundWindow()
     if ($foregroundOnRefresh -eq $script:handle) { throw 'Refresh took foreground focus' }
     if (([WtmWindowProbe]::GetWindowLongPtr($script:handle, -20).ToInt64() -band 0x08000000) -ne 0) { throw 'Window cannot be activated by clicking' }
@@ -450,7 +450,7 @@ try {
         exit_code = $process.ExitCode
         result = 'PASS'
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $fixture 'proof.json') -Encoding utf8NoBOM
-    Write-Host "PASS. Terminal detached, always on top, live counts, scroll preservation, read percentage, config error/recovery, registry reload, and clean close. Evidence at $fixture"
+    Write-Host "PASS. Terminal detached, always on top, live counts, scroll preservation, idle percentage, config error/recovery, registry reload, and clean close. Evidence at $fixture"
 } finally {
     $env:HOME = $oldHome
     $env:USERPROFILE = $oldProfile

@@ -90,8 +90,8 @@ impl DisplayItem {
     pub fn caption(&self) -> String {
         match self {
             Self::Status { polling_time_last_minute, .. } => {
-                let percent = (polling_time_last_minute.as_millis().saturating_add(300) / 600).min(100);
-                format!("[read: {percent}%]")
+                let percent = 100 - (polling_time_last_minute.as_millis().saturating_add(300) / 600).min(100);
+                format!("[idle: {percent}%]")
             }
             Self::Repository { name, bare } => {
                 let mut text = name.clone();

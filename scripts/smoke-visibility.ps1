@@ -1128,7 +1128,7 @@ function Invoke-EdgeScrollTest {
 
 function Get-StatusText {
     $status = @([WtmVisibilityNativeProbe]::Children($script:handle) | Where-Object {
-        $_.Parent -eq $script:handle -and $_.Class -ieq 'STATIC' -and $_.Text -match '^\[read: (100|[0-9]{1,2})%\]$'
+        $_.Parent -eq $script:handle -and $_.Class -ieq 'STATIC' -and $_.Text -match '^\[idle: (100|[0-9]{1,2})%\]$'
     })
     if ($status.Count -ne 1) { throw "Expected one read indicator, found $($status.Count)" }
     [string]$status[0].Text
@@ -1142,8 +1142,8 @@ function Invoke-MetricPaintTest([array]$Cards, [string]$Path) {
     try {
     Clear-Paint $Cards
     $statusBefore = Get-StatusText
-    $initialMetric = [regex]::Match($statusBefore, '\[read: (100|[0-9]{1,2})%\]')
-    if (-not $initialMetric.Success) { throw 'Initial read percentage is missing' }
+    $initialMetric = [regex]::Match($statusBefore, '\[idle: (100|[0-9]{1,2})%\]')
+    if (-not $initialMetric.Success) { throw 'Initial idle percentage is missing' }
     $initialPercent = [int]$initialMetric.Groups[1].Value
     $metricAdvanced = $false
     $lastStatus = $statusBefore
@@ -1172,8 +1172,8 @@ function Invoke-MetricPaintTest([array]$Cards, [string]$Path) {
             if ($update.Pending) { [void][WtmVisibilityNativeProbe]::UpdateWindow($Card.Handle) }
         }
         $status = Get-StatusText
-        $metric = [regex]::Match($status, '\[read: (100|[0-9]{1,2})%\]')
-        if ($metric.Success -and [int]$metric.Groups[1].Value -gt $initialPercent) { $metricAdvanced = $true }
+        $metric = [regex]::Match($status, '\[idle: (100|[0-9]{1,2})%\]')
+        if ($metric.Success -and [int]$metric.Groups[1].Value -lt $initialPercent) { $metricAdvanced = $true }
         if ($status -cne $lastStatus) { $statusChanges++ }
         $lastStatus = $status
         $samples++
@@ -1181,7 +1181,7 @@ function Invoke-MetricPaintTest([array]$Cards, [string]$Path) {
     }
     Clear-Paint $Cards
     if ($badViewport -gt 0 -or $badCards -gt 0) { throw "Metric-only updates produced broad paint invalidation (viewport=$badViewport cards=$badCards)" }
-    if (-not $metricAdvanced) { throw 'No increase in read percentage was observed during the paint check' }
+    if (-not $metricAdvanced) { throw 'No decrease in idle percentage was observed during the paint check' }
     [ordered]@{
         result = 'PASS'
         maximum_window_ms = 15000

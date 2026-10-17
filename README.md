@@ -38,7 +38,7 @@ wtm remove C:\src\project
 - Drag repository headers or worktree cards to reorder them.
 - Use **Hide**, **Show all**, and **Unhide** to control which worktrees appear.
 - Drag empty space to move the window; drag its edges to resize it.
-- Right-click the notification-area icon for opacity, visibility, reset, and exit controls.
+- Right-click the window or notification-area icon for opacity, visibility, reset position, and exit controls.
 
 Window settings are remembered. Hover makes the window fully opaque.
 

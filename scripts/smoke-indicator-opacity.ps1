@@ -172,7 +172,7 @@ function Get-Regions {
             )
         } elseif ($caption -match '(?m)^S \+0/-0\r?$') {
             $parts = @(@{ Text = 'S +0/-0'; Name = 'Zero S'; Color = @(132, 150, 156); Active = $false })
-        } elseif ($caption -match '^\[read: \d+%\]$') {
+        } elseif ($caption -match '^\[idle: \d+%\]$') {
             $bounds = Get-Bounds $child
             $size = [WtmIndicatorProbe]::Measure($child, $caption)
             $regions += @{ Name = 'Read'; X = $bounds.Left - $root.Left; Y = $bounds.Top - $root.Top; Width = $size.Width; Height = $bounds.Bottom - $bounds.Top; Color = @(194, 249, 112); Active = $false }

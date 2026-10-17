@@ -115,9 +115,17 @@ $extra = @'
         mouse_event(4, 0, 0, 0, UIntPtr.Zero);
     }
     public static void Menu(IntPtr window, string caption, int opacity = 0, int expectedOpacity = 0) {
-        var rect = Bounds(window);
-        if (!PostMessage(window, 32811, Position(rect.Left + 40, rect.Top + 40), new IntPtr((1 << 16) | 123))) throw new InvalidOperationException("Cannot open fixture tray menu");
-        WaitFor(() => HasMenu(window), "Fixture tray menu did not open");
+        Menu(window, caption, opacity, expectedOpacity, IntPtr.Zero);
+    }
+    public static void Menu(IntPtr window, string caption, int opacity, int expectedOpacity, IntPtr target) {
+        var rect = Bounds(target == IntPtr.Zero ? window : target);
+        if (target != IntPtr.Zero) {
+            var point = new Point { X = (rect.Left + rect.Right) / 2, Y = (rect.Top + rect.Bottom) / 2 };
+            if (!SetCursorPos(point.X, point.Y) || GetAncestor(WindowFromPoint(point), 2) != window) throw new InvalidOperationException("Right-click target is not the fixture window");
+            mouse_event(8, 0, 0, 0, UIntPtr.Zero);
+            mouse_event(16, 0, 0, 0, UIntPtr.Zero);
+        } else if (!PostMessage(window, 32811, Position(rect.Left + 40, rect.Top + 40), new IntPtr((1 << 16) | 123))) throw new InvalidOperationException("Cannot open fixture tray menu");
+        WaitFor(() => HasMenu(window), "Fixture context menu did not open");
         IntPtr popup = IntPtr.Zero;
         uint pid;
         GetWindowThreadProcessId(window, out pid);
@@ -221,7 +229,7 @@ try {
     if (-not [WtmTrayDragProbe]::SetWindowPos($window, [IntPtr](-1), $work.Left + 80, $work.Top + 80, 640, 300, 0x10)) { throw 'Cannot position fixture' }
     if (-not $ResetOnly) {
         $status = [WtmTrayDragProbe]::GetDlgItem($window, 1002)
-        Wait-For { [WtmTrayDragProbe]::Caption($status) -match '\[read: \d+%\]' } 'read indicator'
+        Wait-For { [WtmTrayDragProbe]::Caption($status) -match '\[idle: \d+%\]' } 'read indicator'
         $bounds = [WtmTrayDragProbe]::Bounds($status)
         [WtmTrayDragProbe]::DragAndCheck($window, $bounds.Left + 25, [int](($bounds.Top + $bounds.Bottom) / 2), $false)
         $bounds = [WtmTrayDragProbe]::Bounds($status)
@@ -238,6 +246,11 @@ try {
         if ([WtmTrayDragProbe]::SendMessage($window, 0x84, [IntPtr]::Zero, $point).ToInt64() -ne 1) { throw 'Show all is treated as a window drag region' }
         Write-Host 'PASS. Real mouse drags on the read text and empty status row move the window. Real corner drag still resizes it.'
     }
+    foreach ($target in @($window, [WtmTrayDragProbe]::GetDlgItem($window, 1002))) {
+        [WtmTrayDragProbe]::Menu($window, 'Reset position', 0, 0, $target)
+        if (-not [WtmTrayDragProbe]::SetWindowPos($window, [IntPtr](-1), $work.Left + 80, $work.Top + 80, 640, 300, 0x10)) { throw 'Cannot restore fixture position' }
+    }
+    Write-Host 'PASS. Real right-clicks on the window and status open the menu with Reset position.'
     [WtmTrayDragProbe]::Menu($window, 'Hide')
     Wait-For { -not [WtmTrayDragProbe]::IsWindowVisible($window) } 'tray Hide action'
     if (-not [WtmTrayDragProbe]::HasIcon($window, 1)) { throw 'Hiding window removed its notification icon' }
@@ -268,7 +281,7 @@ try {
             'minimized' { [void][WtmTrayDragProbe]::ShowWindow($window, 6) }
             'maximized' { [void][WtmTrayDragProbe]::ShowWindow($window, 3) }
         }
-        [WtmTrayDragProbe]::Menu($window, 'Reset')
+        [WtmTrayDragProbe]::Menu($window, 'Reset position')
         Wait-For {
             $rect = [WtmTrayDragProbe]::Bounds($window)
             $dpi = [WtmTrayDragProbe]::GetDpiForWindow($window)
