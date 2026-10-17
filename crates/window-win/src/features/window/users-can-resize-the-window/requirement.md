@@ -1,1 +1,2 @@
 - Users can resize the dashboard by dragging its edges and corners.
+- Native resizing retains mouse capture throughout the held-button drag.

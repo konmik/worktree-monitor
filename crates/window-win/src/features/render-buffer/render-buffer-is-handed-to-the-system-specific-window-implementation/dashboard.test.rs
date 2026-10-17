@@ -6,6 +6,7 @@ use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::{BitBlt, ClientToScreen, GdiFlush, GetDC, RDW_ALLCHILDREN, RDW_INVALIDATE, RDW_UPDATENOW, RedrawWindow, ReleaseDC, SRCCOPY};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, mouse_event};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 static PROBE: Mutex<Option<mpsc::Sender<Snapshot>>> = Mutex::new(None);
@@ -296,14 +297,47 @@ fn native_dashboard_keeps_whole_cells_while_scrolling_and_resizing() {
             SendMessageW(window, WM_MOUSEMOVE, 1, point(1) as LPARAM);
             SendMessageW(window, WM_LBUTTONUP, 0, point(1) as LPARAM);
             assert_eq!(snapshot(window, &receiver).scroll, 0, "painted thumb cannot return to the first row");
+            SetForegroundWindow(window);
+            for corner in [false, true] {
+                let mut bounds: RECT = std::mem::zeroed();
+                assert_ne!(GetWindowRect(window, &mut bounds), 0);
+                let edge = POINT { x: bounds.right - 1, y: if corner { bounds.bottom - 1 } else { (bounds.top + bounds.bottom) / 2 } };
+                assert_ne!(SetCursorPos(edge.x, edge.y), 0);
+                std::thread::sleep(Duration::from_millis(100));
+                mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+                std::thread::sleep(Duration::from_millis(100));
+                let mut resize = Vec::new();
+                let ui_thread = GetWindowThreadProcessId(window, null_mut());
+                for delta in [20, 60, 100] {
+                    assert_ne!(SetCursorPos(edge.x + delta, edge.y + if corner { delta } else { 0 }), 0);
+                    std::thread::sleep(Duration::from_millis(150));
+                    let mut current: RECT = std::mem::zeroed();
+                    assert_ne!(GetWindowRect(window, &mut current), 0);
+                    let mut thread: GUITHREADINFO = std::mem::zeroed();
+                    thread.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+                    assert_ne!(GetGUIThreadInfo(ui_thread, &mut thread), 0);
+                    resize.push((current.right - current.left, current.bottom - current.top, thread.hwndCapture == window));
+                }
+                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+                println!("native resize corner {corner}, width, height, and capture {resize:?}");
+                let mut previous = (bounds.right - bounds.left, bounds.bottom - bounds.top);
+                for (width, height, captured) in resize {
+                    assert!(width > previous.0, "native edge drag stopped resizing after width {}, current width {width}", previous.0);
+                    if corner { assert!(height > previous.1, "native corner drag stopped resizing after height {}, current height {height}", previous.1); }
+                    assert!(captured, "native resize lost pointer capture while the mouse button was held");
+                    previous = (width, height);
+                }
+                check(&snapshot(window, &receiver));
+            }
             for delta in 0..=top.advance {
                 SetWindowPos(window, null_mut(), 0, 0, 343 + delta, 407 + delta, SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOZORDER);
                 let current = snapshot(window, &receiver);
                 check(&current);
                 if delta == top.advance { save(&current, &evidence.join("resized.bmp")); }
             }
-            println!("native dashboard checked root hover, Show all click and keyboard, Hide, Unhide, drag cancellation, wheel, line, page, thumb, bottom, and {} single-pixel resizes; evidence {}", top.advance + 1, evidence.display());
+            println!("native dashboard checked root hover, Show all click and keyboard, Hide, Unhide, drag cancellation, wheel, line, page, thumb, bottom, native edge and corner drags, and {} single-pixel resizes; evidence {}", top.advance + 1, evidence.display());
         }));
+        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
         SetCursorPos(cursor.x, cursor.y);
         PostMessageW(window, WM_CLOSE, 0, 0);
         result

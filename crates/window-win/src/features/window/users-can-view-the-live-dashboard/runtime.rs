@@ -91,11 +91,12 @@ pub(super) unsafe fn rebuild_frame(state: &mut State) {
 }
 
 unsafe fn cancel_input(pointer: *mut State) {
+    let owns_capture = (*pointer).pressed.is_some() || (*pointer).scrolling.grab.is_some() || (*pointer).ordering.drag.is_some();
     (*pointer).pressed = None;
     (*pointer).scrolling.grab = None;
     cancel_drag(pointer);
     (*pointer).frame_dirty = true;
-    if GetCapture() == (*pointer).window { ReleaseCapture(); }
+    if owns_capture && GetCapture() == (*pointer).window { ReleaseCapture(); }
 }
 
 pub(super) unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -171,7 +172,7 @@ unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, p
             if visibility_controls::hit_test(state, point).is_some() || scrollbar || row { HTCLIENT as LRESULT }
             else { HTCAPTION as LRESULT }
         }
-        WM_NCLBUTTONDOWN if wparam == HTCAPTION as WPARAM => { ReleaseCapture(); DefWindowProcW(window, message, wparam, lparam) }
+        WM_NCLBUTTONDOWN if wparam == HTCAPTION as WPARAM => { cancel_input(pointer); DefWindowProcW(window, message, wparam, lparam) }
         WM_CREATE => {
             let state = &mut *pointer;
             if !fonts(window, state) { state.failure = Some(io::Error::last_os_error()); return -1; }
