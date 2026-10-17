@@ -7,8 +7,5 @@ fn invoke(args: &[&str], home: &std::path::Path) -> Output {
 #[path = "../src/features/command-line/users-can-register-repositories/tests.rs"]
 mod registration;
 
-#[path = "../src/features/command-line/users-can-read-snapshots/tests.rs"]
-mod snapshots;
-
 #[path = "../src/features/command-line/users-can-run-terminal-commands/tests.rs"]
 mod commands;

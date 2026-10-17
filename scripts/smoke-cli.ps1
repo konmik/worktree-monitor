@@ -45,23 +45,6 @@ function Invoke-Git {
     }
 }
 
-function Get-Numstat {
-    param([string[]]$GitArgs)
-    $add = 0
-    $del = 0
-    foreach ($line in @(Invoke-Git -Ok @(0, 1) -GitArgs $GitArgs)) {
-        if ($null -eq $line) { continue }
-        $text = [string]$line
-        if ([string]::IsNullOrWhiteSpace($text)) { continue }
-        $parts = $text -split "`t"
-        if ($parts.Count -lt 2) { throw "bad numstat: $text" }
-        if ($parts[0] -eq "-" -or $parts[1] -eq "-") { throw "unexpected binary numstat: $text" }
-        $add += [int]$parts[0]
-        $del += [int]$parts[1]
-    }
-    return @{ Add = $add; Del = $del }
-}
-
 function Invoke-Wtm {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$WtmArgs)
     if ($null -eq $WtmArgs) { $WtmArgs = @() }
@@ -179,18 +162,6 @@ function Assert-Unregistered {
     }
 }
 
-function Assert-Snapshot {
-    param($Result, [int]$Add, [int]$Del)
-    if ($Result.ExitCode -ne 0 -or $Result.Stderr -ne '') { throw "snapshot failed: $($Result.Stderr)" }
-    $out = Normalize $Result.Stdout
-    if (-not $out.Replace('\', '/').Contains($worktreeDisplay.Replace('\', '/'))) { throw 'snapshot lacks the worktree path' }
-    if (-not $out.Contains($branch)) { throw 'snapshot lacks the branch' }
-    $counts = [regex]::Matches($out, '\bS\s+\+(\d+)/-(\d+)\b')
-    if ($counts.Count -ne 1 -or [int]$counts[0].Groups[1].Value -ne $Add -or [int]$counts[0].Groups[2].Value -ne $Del) {
-        throw "snapshot expected S +$Add/-$Del, got $out"
-    }
-}
-
 function Assert-Help {
     param($Result)
     $out = Normalize $Result.Stdout
@@ -201,7 +172,7 @@ function Assert-Help {
     foreach ($needle in @(
         "add",
         "remove",
-        "--live"
+        "--help"
     )) {
         if (-not $out.Contains($needle)) {
             throw "FAIL help missing [$needle]`nstdout: [$out]"
@@ -244,9 +215,9 @@ try {
     $configPath = Join-Path $isolatedHome ".config\wtm\config.json"
     [System.IO.File]::WriteAllText((Join-Path $artifact "transcript.txt"), "binary: $resolvedBinary`r`nhome: $isolatedHome`r`nconfig: $configPath`r`n", $utf8)
 
-    $empty = "No registered repositories.`n"
     Assert-Help (Invoke-Wtm help)
-    Assert-Result "empty" (Invoke-Wtm) 0 $empty ""
+    $usage = Invoke-Wtm
+    if ($usage.ExitCode -ne 2 -or $usage.Stdout -ne '' -or $usage.Stderr -notmatch 'Usage:') { throw 'Default command did not show usage' }
     Assert-Unregistered "empty"
 
     [void](Invoke-Git -GitArgs @("init", "-q"))
@@ -261,26 +232,12 @@ try {
         "-c", "core.hooksPath=$artifact",
         "commit", "-q", "-m", "baseline"
     ))
-    $branch = [string](@(Invoke-Git -GitArgs @("branch", "--show-current"))[0])
-    $branch = $branch.Trim()
-    if ([string]::IsNullOrWhiteSpace($branch)) { throw "fixture has no branch" }
     $fromGit = [string](@(Invoke-Git -GitArgs @("rev-parse", "--path-format=absolute", "--git-common-dir"))[0])
     $common = [System.IO.Path]::GetFullPath($fromGit.Trim())
-    $worktree = $repoPath
     $expectedCommon = [System.IO.Path]::GetFullPath((Join-Path $repoPath ".git"))
     if ($common -cne $expectedCommon) {
         throw "fixture common dir [$common] expected [$expectedCommon]"
     }
-    $porcelain = @(Invoke-Git -GitArgs @("worktree", "list", "--porcelain"))
-    $worktreeDisplay = $null
-    foreach ($line in $porcelain) {
-        $text = [string]$line
-        if ($text.StartsWith("worktree ")) {
-            $worktreeDisplay = $text.Substring(9).Trim()
-            break
-        }
-    }
-    if ([string]::IsNullOrWhiteSpace($worktreeDisplay)) { throw "fixture missing worktree path" }
     $sub = Join-Path $repoPath "sub"
     New-Item -ItemType Directory -Path $sub | Out-Null
     $sub = [System.IO.Path]::GetFullPath($sub)
@@ -296,39 +253,12 @@ try {
     Assert-Registered "add" @($common)
     Assert-Result "duplicate-add" (Invoke-Wtm add $sub) 0 "Repository already registered.`n" ""
     Assert-Registered "duplicate-add" @($common)
-    Assert-Snapshot (Invoke-Wtm) 0 0
-
-    Write-Text (Join-Path $repoPath "tracked.txt") "alpha`nBRAVO`ncharlie`ndelta`n"
-    [void](Invoke-Git -GitArgs @("add", "--", "tracked.txt"))
-    Write-Text (Join-Path $repoPath "tracked.txt") "alpha`nbravo`ncharlie`nECHO`n"
-    Write-Text (Join-Path $repoPath "notes.txt") "one`ntwo`nthree`n"
-    Write-Text (Join-Path $repoPath "ignored.txt") "secret1`nsecret2`nsecret3`nsecret4`n"
-    $head = Get-Numstat -GitArgs @("diff", "--numstat", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames=50%", "-l0", "--diff-algorithm=myers", "--no-indent-heuristic", "--ignore-submodules=all", "HEAD", "--")
-    $cached = Get-Numstat -GitArgs @("diff", "--cached", "--numstat", "HEAD", "--")
-    $work = Get-Numstat -GitArgs @("diff", "--numstat", "--")
-    $notes = Get-Numstat -GitArgs @("diff", "--no-index", "--numstat", "--no-color", "--no-ext-diff", "--no-textconv", "--", "/dev/null", "notes.txt")
-    if ($head.Add -ne 1 -or $head.Del -ne 1) {
-        throw "fixture net HEAD +$($head.Add) -$($head.Del) expected +1 -1"
-    }
-    if ($notes.Add -ne 3 -or $notes.Del -ne 0) {
-        throw "fixture untracked +$($notes.Add) -$($notes.Del) expected +3 -0"
-    }
-    if (($cached.Add + $work.Add) -eq $head.Add -and ($cached.Del + $work.Del) -eq $head.Del) {
-        throw "fixture does not distinguish net HEAD from summed diffs"
-    }
-    $listed = @(Invoke-Git -GitArgs @("ls-files", "--others", "--exclude-standard") | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
-    if ($listed.Count -ne 1 -or [string]$listed[0] -ne "notes.txt") {
-        throw "fixture untracked [$($listed -join ', ')]"
-    }
-    Assert-Snapshot (Invoke-Wtm) 4 1
-
     Assert-Result "remove" (Invoke-Wtm remove $sub) 0 "Repository removed.`n" ""
     Assert-Unregistered "remove"
     Assert-Result "duplicate-remove" (Invoke-Wtm remove $sub) 0 "Repository is not registered.`n" ""
     Assert-Unregistered "duplicate-remove"
     Assert-Result "add-plain" (Invoke-Wtm add $plain) 1 "" "Error: fatal: not a git repository (or any of the parent directories): .git`n"
     Assert-Unregistered "add-plain"
-    Assert-Result "empty-after-remove" (Invoke-Wtm) 0 $empty ""
 
     Write-Text $configPath '{broken'
     $malformed = Invoke-Wtm add $sub

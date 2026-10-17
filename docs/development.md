@@ -39,12 +39,6 @@ The spacing check inspects a running dashboard that already has adjacent worktre
 ./scripts/smoke-worktree-spacing.ps1 -ProcessId <dashboard-process-id>
 ```
 
-The existing-worktree check compares against Git without creating worktrees. Its repository argument must already contain at least two worktrees:
-
-```powershell
-./scripts/smoke-worktrees.ps1 -Repository C:\src\project -Binary ./target/release/wtm.exe
-```
-
 ## Release package
 
 Python 3 generates `target/THIRD-PARTY-NOTICES.txt` from the locked Windows dependency graph. The notices include the dependencies' license, copyright, notice, and patent files. Generated notices are included in release ZIPs.

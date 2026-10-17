@@ -22,7 +22,10 @@ fn registration_clears_inherited_git_repository_overrides() {
         .output().unwrap();
     assert_eq!(added.status.code(), Some(0));
     assert_eq!(added.stdout, b"Repository registered.\n");
-    let snapshot = invoke(&[], &home);
-    assert_eq!(snapshot.status.code(), Some(0));
-    assert!(String::from_utf8(snapshot.stdout).unwrap().contains("S +0/-0"));
+    let stored = fs::read_to_string(home.join(".config/wtm/config.json")).unwrap();
+    let common = repo.join(".git").to_string_lossy().replace('\\', "\\\\");
+    assert!(stored.contains(&format!("\"{common}\"")));
+    let duplicate = invoke(&["add", repo.to_str().unwrap()], &home);
+    assert_eq!(duplicate.status.code(), Some(0));
+    assert_eq!(duplicate.stdout, b"Repository already registered.\n");
 }

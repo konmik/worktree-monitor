@@ -30,7 +30,6 @@ Run wtm-ui.exe to open the dashboard. Add this folder to PATH to use:
 
 wtm add C:\src\project
 wtm-ui
-wtm
 
 Source and documentation:
 https://github.com/konmik/worktree-monitor

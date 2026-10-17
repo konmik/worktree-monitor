@@ -33,12 +33,6 @@ wtm-ui
 
 All worktrees of a registered repository are included. The dashboard also includes the repository you launch it from.
 
-Print a snapshot in the terminal:
-
-```powershell
-wtm
-```
-
 Stop monitoring a repository:
 
 ```powershell

@@ -1,2 +1,3 @@
 - Help and version requests succeed, and invalid command combinations report usage errors.
+- Running without a command shows help and exits with status 2 without reading configuration or scanning repositories.
 - Command failures print their cause to standard error and return a failing exit status.

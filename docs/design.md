@@ -2,7 +2,7 @@
 
 ## Usage
 
-`wtm add <path>` registers a repository from any of its worktrees. `wtm` prints a snapshot. `wtm-ui` displays registered repositories and the repository it is launched from in an always-on-top Windows window. Launch context does not change registrations. `wtm remove <path>` unregisters the repository.
+`wtm add <path>` registers a repository from any of its worktrees. `wtm` shows command help. `wtm-ui` displays registered repositories and the repository it is launched from in an always-on-top Windows window. Launch context does not change registrations. `wtm remove <path>` unregisters the repository.
 
 ## Shape
 
@@ -37,7 +37,7 @@ The coordinator owns scan scheduling. A private watcher boundary owns native wat
 
 The Windows dashboard projects structured snapshots into repository sections and worktree rows. It does not parse CLI output or show summary totals. Each worktree shows its own counts or scan error. Zero changed lines are not presented as proof of a clean Git status.
 
-Line counts are grouped into source, tests, and scripts or tooling when Git's numstat records are parsed. Renames use the destination path. Test classification takes precedence over tooling classification, following the OpenCode line-changes plugin. The groups are the only stored line counts. Both text output and accessible window captions use `S +n/-n · T +n/-n · X +n/-n`. Only source numbers receive addition and deletion colors.
+Line counts are grouped into source, tests, and scripts or tooling when Git's numstat records are parsed. Renames use the destination path. Test classification takes precedence over tooling classification, following the OpenCode line-changes plugin. The groups are the only stored line counts. Accessible window captions use `S +n/-n · T +n/-n · X +n/-n`. Only source numbers receive addition and deletion colors.
 
 The visual design uses charcoal surfaces, monospace typography, acid-green additions, coral-red deletions and errors, and teal branch labels. Native owner-drawn controls retain real captions for accessibility. A clipped native viewport owns scrolling, while the header stays fixed. Dragging a repository header moves its whole section. Dragging a worktree card reorders it within its section. Saved display order does not change registrations or create worktrees. There are no invented history charts, activity scores, or decorative animations.
 
@@ -68,8 +68,8 @@ Git subprocesses cost more than an in-process scan, especially with many untrack
 
 Timeout and cancellation manage the Git child process. Helper processes started by user-configured Git filters are not managed as a Windows process job.
 
-The initial release provides a Windows live window. Other platforms can use the core and command-line view, but their live windows need separate implementations and verification.
+The initial release provides a Windows live window. Other platforms can use the core and registration commands, but their live windows need separate implementations and verification.
 
 ## Verification
 
-Core tests exercise real temporary Git repositories and literal expected counts. Scheduler tests check scan lifecycle, recovery backoff, pending changes, and the rolling polling duration. CLI smoke checks exercise the executable with an isolated registry. The Windows smoke check reads the actual visible controls, verifies topmost behavior, changes a file, checks the idle-percentage label, reloads the registry, and closes the real window. A separate read-only check compares discovered paths and counts against existing Git worktrees. The release measurement example and benchmark script compare published rolling-minute durations across unchanged repository snapshots.
+Core tests exercise real temporary Git repositories and literal expected counts. Scheduler tests check scan lifecycle, recovery backoff, pending changes, and the rolling polling duration. CLI smoke checks exercise the executable with an isolated registry. The Windows smoke check reads the actual visible controls, verifies topmost behavior, changes a file, checks the idle-percentage label, reloads the registry, and closes the real window. The release measurement example and benchmark script compare published rolling-minute durations across unchanged repository snapshots.
