@@ -1,7 +1,7 @@
 use super::*;
 use crate::dashboard::{ItemKey, ViewItem};
 use std::time::Duration;
-use wtm_core::{Error, ErrorKind, Head, LineCounts, WorktreeStats};
+use wtm_core::{Counts, Error, ErrorKind, Head, LineCounts, WorktreeStats};
 
 fn line(buffer: &RenderBuffer, row: usize) -> String {
     buffer.row(row).unwrap().iter().map(|cell| cell.text()).collect::<String>().trim_end().to_owned()
@@ -24,26 +24,23 @@ fn repository_and_path_names_reserve_refresh_and_action_columns() {
 }
 
 #[test]
-fn counts_preserve_text_colors_and_layer_positions() {
+fn counts_preserve_text_colors_and_mark_only_nonzero_line_groups_stressed() {
     let counts = Counts { source: LineCounts { additions: 3, deletions: 4 },
         test: LineCounts { additions: 5, deletions: 0 }, binaries: 2, ..Default::default() };
-    let all = render_counts(&counts, 80, false, CountLayer::All);
-    assert_eq!(line(&all, 0), counts.to_string());
-    assert_eq!(all.row(0).unwrap()[2].color, GREEN);
-    assert_eq!(all.row(0).unwrap()[5].color, RED);
-    let faded = render_counts(&counts, 80, false, CountLayer::Faded);
-    let opaque = render_counts(&counts, 80, false, CountLayer::Opaque);
-    for (index, cell) in all.row(0).unwrap().iter().enumerate() {
-        let faded = &faded.row(0).unwrap()[index];
-        let opaque = &opaque.row(0).unwrap()[index];
-        if cell.text() != " " {
-            assert_eq!(usize::from(faded.text() == cell.text()) + usize::from(opaque.text() == cell.text()), 1);
+    let buffer = render_counts(&counts, 80, false);
+    assert_eq!(line(&buffer, 0), counts.to_string());
+    assert_eq!(buffer.row(0).unwrap()[2].color, GREEN);
+    assert_eq!(buffer.row(0).unwrap()[5].color, RED);
+    let mut x = 0;
+    for part in crate::count_indicators::count_parts(&counts) {
+        for cell in &buffer.row(0).unwrap()[x..x + display_width(&part.text)] {
+            assert_eq!(cell.flags.stressed, part.opaque);
+            assert!(!cell.flags.bold && !cell.flags.underline);
         }
+        x += display_width(&part.text);
     }
-    assert!(line(&faded, 0).contains("binaries: 2"));
-    assert!(!line(&opaque, 0).contains("binaries"));
-    let blank = render_counts(&Counts { binaries: 2, ..Default::default() }, 80, false, CountLayer::Opaque);
-    assert!(line(&blank, 0).is_empty());
+    let blank = render_counts(&Counts { binaries: 2, ..Default::default() }, 80, false);
+    assert!(blank.cells().iter().all(|cell| !cell.flags.stressed));
 }
 
 #[test]

@@ -1,0 +1,1 @@
+- Each grid cell bears stressed, bold, and underline flags.

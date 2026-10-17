@@ -17,7 +17,7 @@ fn presenter_draws_complete_graphemes_across_their_reserved_columns() {
                 let color = Color { red: 255, green: 255, blue: 255 };
                 let mut buffer = RenderBuffer::new(columns + 2, 1, color);
                 buffer.write(1, 0, text, color);
-                present_at(&buffer, actual.dc, &resources, 0, 0, resources.font);
+                present_at(&buffer, actual.dc, &resources, 0, 0, TextLayer::All);
                 SelectObject(expected.dc, resources.font);
                 SetBkMode(expected.dc, TRANSPARENT as i32);
                 SetTextColor(expected.dc, native_color(color));

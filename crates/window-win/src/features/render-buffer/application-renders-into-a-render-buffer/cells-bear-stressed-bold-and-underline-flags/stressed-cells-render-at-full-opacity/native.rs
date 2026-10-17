@@ -1,23 +1,13 @@
-pub(super) use crate::rendering::CountLayer;
-use crate::rendering::render_counts;
+use super::buffer_presentation::TextLayer;
+use super::dashboard_rows::render_card;
 use super::buffer_presentation;
 use windows_sys::Win32::UI::WindowsAndMessaging::WM_APP;
-use super::font_resources::Resources;
-use super::row_layout::{content_inset, content_text_width};
 use super::runtime::{State};
 use super::window_appearance::intersection;
-use crate::dashboard::DisplayItem;
 use std::ptr::null_mut;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, ClientToScreen, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GdiFlush, GetDC, HBITMAP, HDC, HGDIOBJ, MapWindowPoints, ReleaseDC, SelectObject, SaveDC, RestoreDC, IntersectClipRect};
 use windows_sys::Win32::UI::WindowsAndMessaging::{DefWindowProcW, GA_ROOT, GetAncestor, GetClientRect, GetWindowRect, HTTRANSPARENT, IsIconic, IsWindowVisible, MA_NOACTIVATE, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, SetWindowPos, ShowWindow, ULW_ALPHA, UpdateLayeredWindow, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_NCHITTEST};
-use wtm_core::Counts;
-pub(super) unsafe fn draw_counts(dc: HDC, counts: &Counts, rect: RECT, resources: &Resources, dragging: bool, layer: CountLayer) {
-    let buffer = render_counts(counts, buffer_presentation::columns(rect.right - rect.left, resources), dragging, layer);
-    buffer_presentation::present_at(&buffer, dc, resources, rect.left, rect.top,
-        if matches!(layer, CountLayer::Opaque | CountLayer::Mask) { resources.overlay_font } else { resources.font });
-}
-
 pub(super) struct IndicatorBitmap {
     pub(super) dc: HDC,
     pub(super) bitmap: HBITMAP,
@@ -52,30 +42,32 @@ impl Drop for IndicatorBitmap {
     }
 }
 
-pub(super) unsafe fn draw_opaque_indicators(state: &State, dc: HDC, layer: CountLayer) {
+pub(super) unsafe fn draw_stressed_cells(state: &State, dc: HDC, layer: TextLayer) {
     let Some(resources) = &state.resources else { return; };
     let root = GetAncestor(state.viewport, GA_ROOT);
     let mut viewport: RECT = std::mem::zeroed();
     if GetClientRect(state.viewport, &mut viewport) == 0 { return; }
     MapWindowPoints(state.viewport, root, (&mut viewport as *mut RECT).cast(), 2);
-    let saved = SaveDC(dc);
-    IntersectClipRect(dc, viewport.left, viewport.top, viewport.right, viewport.bottom);
-    for card in &state.cards {
-        let DisplayItem::Worktree { result: Ok(stats), .. } = &card.display else { continue; };
+    for card in state.fixed.iter().chain(&state.cards) {
         if IsWindowVisible(card.window) == 0 { continue; }
         let mut rect: RECT = std::mem::zeroed();
         if GetClientRect(card.window, &mut rect) == 0 { continue; }
         let width = rect.right;
+        let height = rect.bottom;
+        let Some((buffer, left, top)) = render_card(card, state, width) else { continue; };
         MapWindowPoints(card.window, root, (&mut rect as *mut RECT).cast(), 2);
-        if intersection(rect, viewport).is_none() { continue; }
-        let inset = content_inset(width, state.dpi, resources);
-        let y = rect.top + card.spacing.top(resources.typography, 1);
-        let dragging = state.ordering.drag.as_ref().is_some_and(|drag| drag.source_handle == card.window);
-        draw_counts(dc, &stats.counts, RECT { left: rect.left + inset, top: y,
-            right: rect.left + inset + content_text_width(width, state.dpi, resources), bottom: y + resources.typography.cell },
-            resources, dragging, layer);
+        let clip = if state.cards.iter().any(|row| row.window == card.window) {
+            let Some(clip) = intersection(rect, viewport) else { continue; };
+            clip
+        } else { rect };
+        let saved = SaveDC(dc);
+        IntersectClipRect(dc, clip.left, clip.top, clip.right, clip.bottom);
+        let top = if matches!(card.display, crate::dashboard::DisplayItem::Status { .. }) {
+            (height - resources.typography.cell) / 2
+        } else { top };
+        buffer_presentation::present_at(&buffer, dc, resources, rect.left + left, rect.top + top, layer);
+        RestoreDC(dc, saved);
     }
-    RestoreDC(dc, saved);
 }
 
 pub(super) unsafe fn sync_indicators(window: HWND, state: &mut State) -> bool {
@@ -100,8 +92,8 @@ pub(super) unsafe fn sync_indicators(window: HWND, state: &mut State) -> bool {
         let color = IndicatorBitmap::new(screen, width, height);
         let mask = IndicatorBitmap::new(screen, width, height);
         let success = if let (Some(color), Some(mask)) = (color, mask) {
-            draw_opaque_indicators(state, color.dc, CountLayer::Opaque);
-            draw_opaque_indicators(state, mask.dc, CountLayer::Mask);
+            draw_stressed_cells(state, color.dc, TextLayer::Stressed);
+            draw_stressed_cells(state, mask.dc, TextLayer::Mask);
             GdiFlush();
             let colors = std::slice::from_raw_parts_mut(color.pixels, color.length);
             let masks = std::slice::from_raw_parts(mask.pixels, mask.length);

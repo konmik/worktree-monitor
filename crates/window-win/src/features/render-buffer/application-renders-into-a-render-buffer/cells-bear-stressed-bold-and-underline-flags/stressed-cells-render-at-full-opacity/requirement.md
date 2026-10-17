@@ -1,0 +1,1 @@
+- The renderer displays stressed cells at 100% opacity.

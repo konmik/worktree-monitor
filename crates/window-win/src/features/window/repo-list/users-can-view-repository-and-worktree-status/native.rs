@@ -1,5 +1,5 @@
 use crate::render_buffer::RenderBuffer;
-use crate::rendering::{render_row, RowOptions, CountLayer};
+use crate::rendering::{render_row, RowOptions};
 use super::buffer_presentation;
 use super::font_resources::{Resources};
 use super::idle_indicator::{set_status};
@@ -22,7 +22,7 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows_sys::Win32::UI::Shell::SetWindowSubclass;
 use windows_sys::Win32::UI::WindowsAndMessaging::{BS_OWNERDRAW, CreateWindowExW, DestroyWindow, PostMessageW, SW_HIDE, SW_SHOWNOACTIVATE, SendMessageW, SetWindowTextW, ShowWindow, WM_CLOSE, WM_SETFONT, WS_CHILD, WS_CLIPCHILDREN, WS_EX_CONTROLPARENT, WS_TABSTOP, WS_VISIBLE};
-pub(super) unsafe fn set_item(card: &mut Card, display: DisplayItem) {
+pub(super) unsafe fn set_item(card: &mut Card, display: DisplayItem) -> bool {
     if card.display != display {
         if matches!(card.display, DisplayItem::PendingWorktree { .. }) != matches!(display, DisplayItem::PendingWorktree { .. }) {
             if let Some(action) = card.action { EnableWindow(action, i32::from(!matches!(display, DisplayItem::PendingWorktree { .. }))); }
@@ -30,7 +30,8 @@ pub(super) unsafe fn set_item(card: &mut Card, display: DisplayItem) {
         SetWindowTextW(card.window, wide(&display.caption_with_refresh(card.refreshing)).as_ptr());
         card.display = display;
         InvalidateRect(card.window, null(), 0);
-    }
+        true
+    } else { false }
 }
 
 pub(super) unsafe fn create_card(parent: HWND, id: usize, action_id: Option<usize>, key: Option<ItemKey>, display: DisplayItem, resources: &Resources) -> Option<Card> {
@@ -145,7 +146,6 @@ pub(super) fn render_card(card: &Card, state: &State, width: i32) -> Option<(Ren
     let buffer = render_row(&card.display, buffer_presentation::columns(text_width, resources), RowOptions {
         refreshing: card.refreshing, dragging,
         heading_columns: Some(buffer_presentation::columns(heading_right - inset, resources)),
-        counts: if state.controls_visible { CountLayer::All } else { CountLayer::Faded },
     });
     let left = if matches!(card.display, DisplayItem::Status { .. }) { 0 } else { inset };
     Some((buffer, left, card.spacing.top(resources.typography, 0)))

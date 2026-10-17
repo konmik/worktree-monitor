@@ -41,7 +41,7 @@ pub(super) unsafe fn paint_button(draw: &DRAWITEMSTRUCT, state: &State) {
     let used = buffer.row(0).unwrap().iter().rposition(|cell| cell.text() != " ").map_or(0, |i| i + 1);
     let left = rect.left + (rect.right - rect.left - used as i32 * resources.space_width) / 2;
     let top = rect.top + (rect.bottom - rect.top - resources.typography.cell).max(0) / 2;
-    buffer_presentation::paint_at(&buffer, draw.hDC, rect, resources, left, top);
+    buffer_presentation::paint_at(&buffer, draw.hDC, rect, resources, left, top, buffer_presentation::TextLayer::All);
 }
 
 pub(super) unsafe fn paint_checkbox(dc: HDC, rect: RECT, window: HWND, state: &State) {
@@ -55,7 +55,7 @@ pub(super) unsafe fn paint_checkbox(dc: HDC, rect: RECT, window: HWND, state: &S
         if disabled { MUTED } else if pressed { GREEN } else if focused { TEAL }
             else if checked { GREEN } else { WHITE });
     let top = rect.top + (rect.bottom - rect.top - resources.typography.cell).max(0) / 2;
-    buffer_presentation::paint_at(&buffer, dc, rect, resources, rect.left, top);
+    buffer_presentation::paint_at(&buffer, dc, rect, resources, rect.left, top, buffer_presentation::TextLayer::All);
 }
 
 pub(super) unsafe extern "system" fn show_all_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, data: usize) -> LRESULT {

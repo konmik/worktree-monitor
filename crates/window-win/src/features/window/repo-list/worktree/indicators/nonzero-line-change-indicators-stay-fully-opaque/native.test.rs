@@ -1,6 +1,8 @@
 use std::ptr::{null_mut};
 use super::font_resources::{Resources, wrapped_width};
-use super::opaque_indicators::{CountLayer, IndicatorBitmap, draw_counts};
+use super::opaque_indicators::IndicatorBitmap;
+use super::buffer_presentation::{present_at, TextLayer};
+use crate::rendering::render_counts;
 use windows_sys::Win32::Foundation::{RECT};
 use windows_sys::Win32::Graphics::Gdi::{GdiFlush, GetDC, ReleaseDC};
 use wtm_core::{Counts};
@@ -19,7 +21,7 @@ fn opaque_counts_leave_zero_source_and_binary_text_transparent() {
             let height = resources.typography.cell;
             let bitmap = IndicatorBitmap::new(screen, width, height).unwrap();
             let rect = RECT { left: 0, top: 0, right: width, bottom: height };
-            draw_counts(bitmap.dc, &counts, rect, &resources, false, CountLayer::Mask);
+            present_at(&render_counts(&counts, (width / resources.space_width) as usize, false), bitmap.dc, &resources, rect.left, rect.top, TextLayer::Mask);
             GdiFlush();
             let source_end = wrapped_width(screen, "S +0/-0 · ", resources.font);
             let test_end = source_end + wrapped_width(screen, "T +12/-0", resources.font);
@@ -33,7 +35,7 @@ fn opaque_counts_leave_zero_source_and_binary_text_transparent() {
             assert!(has_pixels(extra_start, extra_end));
             assert!(!has_pixels(extra_end, width));
             let blank = IndicatorBitmap::new(screen, width, height).unwrap();
-            draw_counts(blank.dc, &Counts { binaries: 9, ..Counts::default() }, rect, &resources, false, CountLayer::Mask);
+            present_at(&render_counts(&Counts { binaries: 9, ..Counts::default() }, (width / resources.space_width) as usize, false), blank.dc, &resources, rect.left, rect.top, TextLayer::Mask);
             GdiFlush();
             assert!(std::slice::from_raw_parts(blank.pixels, blank.length).iter().all(|pixel| *pixel == 0));
         }

@@ -14,10 +14,15 @@ enum CellContent {
     Continuation,
 }
 
+#[path = "cells-bear-stressed-bold-and-underline-flags/flags.rs"]
+mod flags;
+pub use flags::CellFlags;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cell {
     content: CellContent,
     pub color: Color,
+    pub flags: CellFlags,
 }
 
 impl Cell {
@@ -25,7 +30,7 @@ impl Cell {
         match &self.content { CellContent::Grapheme(text) => text, CellContent::Continuation => "" }
     }
     pub fn width(&self) -> usize { display_width(self.text()) }
-    fn blank(color: Color) -> Self { Self { content: CellContent::Grapheme(" ".into()), color } }
+    fn blank(color: Color) -> Self { Self { content: CellContent::Grapheme(" ".into()), color, flags: CellFlags::default() } }
 }
 
 pub fn display_width(value: &str) -> usize {
@@ -60,25 +65,31 @@ impl RenderBuffer {
             self.cells[start + x] = Cell::blank(color);
         }
     }
-    fn put_grapheme(&mut self, column: usize, row: usize, text: &str, color: Color) {
+    fn put_grapheme(&mut self, column: usize, row: usize, text: &str, color: Color, flags: CellFlags) {
         let width = display_width(text);
         if row >= self.rows || width == 0 || width > self.columns.saturating_sub(column) { return; }
         for x in column..column + width { self.clear_glyph(x, row); }
-        self.cells[row * self.columns + column] = Cell { content: CellContent::Grapheme(text.into()), color };
+        self.cells[row * self.columns + column] = Cell { content: CellContent::Grapheme(text.into()), color, flags };
         for x in column + 1..column + width {
-            self.cells[row * self.columns + x] = Cell { content: CellContent::Continuation, color };
+            self.cells[row * self.columns + x] = Cell { content: CellContent::Continuation, color, flags };
         }
     }
     pub fn put(&mut self, column: usize, row: usize, character: char, color: Color) {
         self.write(column, row, character.encode_utf8(&mut [0; 4]), color);
     }
+    pub fn put_styled(&mut self, column: usize, row: usize, character: char, color: Color, flags: CellFlags) {
+        self.write_styled(column, row, character.encode_utf8(&mut [0; 4]), color, flags);
+    }
     pub fn write(&mut self, column: usize, row: usize, value: &str, color: Color) {
+        self.write_styled(column, row, value, color, CellFlags::default());
+    }
+    pub fn write_styled(&mut self, column: usize, row: usize, value: &str, color: Color, flags: CellFlags) {
         if column >= self.columns || row >= self.rows { return; }
         let mut x = column;
         for grapheme in value.graphemes(true) {
             let width = display_width(grapheme);
             if width > self.columns - x { break; }
-            self.put_grapheme(x, row, grapheme, color);
+            self.put_grapheme(x, row, grapheme, color, flags);
             x += width;
         }
     }
@@ -86,7 +97,7 @@ impl RenderBuffer {
         for y in 0..source.rows.min(self.rows.saturating_sub(row)) {
             for x in 0..source.columns.min(self.columns.saturating_sub(column)) {
                 let cell = &source.cells[y * source.columns + x];
-                self.put_grapheme(column + x, row + y, cell.text(), cell.color);
+                self.put_grapheme(column + x, row + y, cell.text(), cell.color, cell.flags);
             }
         }
     }
@@ -95,3 +106,7 @@ impl RenderBuffer {
 #[cfg(test)]
 #[path = "buffer.test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "cells-bear-stressed-bold-and-underline-flags/buffer.test.rs"]
+mod flag_tests;

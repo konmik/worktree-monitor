@@ -18,7 +18,8 @@ pub(super) unsafe fn paint_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &Stat
     let top = if matches!(card.display, crate::dashboard::DisplayItem::Status { .. }) {
         (draw.rcItem.bottom - draw.rcItem.top - resources.typography.cell) / 2
     } else { top };
-    buffer_presentation::paint_at(&buffer, draw.hDC, draw.rcItem, resources, draw.rcItem.left + left, draw.rcItem.top + top);
+    buffer_presentation::paint_at(&buffer, draw.hDC, draw.rcItem, resources, draw.rcItem.left + left, draw.rcItem.top + top,
+        if state.controls_visible { buffer_presentation::TextLayer::All } else { buffer_presentation::TextLayer::Faded });
     if let Some(target) = state.ordering.drag.as_ref().and_then(|drag| drag.target.as_ref()) {
         let thickness = super::runtime::scaled(2, state.dpi);
         let y = if target.marker == card.top { Some(draw.rcItem.top) }

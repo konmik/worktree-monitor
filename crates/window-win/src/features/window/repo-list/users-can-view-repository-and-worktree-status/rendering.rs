@@ -2,7 +2,6 @@ use crate::dashboard::{DashboardView, DisplayItem, Health};
 use crate::render_buffer::{Color, RenderBuffer, display_width};
 use crate::name_fitting::fit_name;
 use crate::wrapping::wrap;
-use wtm_core::Counts;
 
 pub const GREEN: Color = Color { red: 194, green: 249, blue: 112 };
 pub const TEAL: Color = Color { red: 84, green: 213, blue: 197 };
@@ -11,14 +10,10 @@ pub const WHITE: Color = Color { red: 232, green: 239, blue: 235 };
 pub const MUTED: Color = Color { red: 132, green: 150, blue: 156 };
 
 #[derive(Clone, Copy, Default)]
-pub enum CountLayer { #[default] All, Faded, Opaque, Mask }
-
-#[derive(Clone, Copy, Default)]
 pub struct RowOptions {
     pub refreshing: bool,
     pub dragging: bool,
     pub heading_columns: Option<usize>,
-    pub counts: CountLayer,
 }
 
 pub fn render_name(value: &str, columns: usize, suffix: bool, refreshing: bool, color: Color) -> RenderBuffer {
@@ -30,20 +25,7 @@ pub fn render_name(value: &str, columns: usize, suffix: bool, refreshing: bool, 
     buffer
 }
 
-pub fn render_counts(counts: &Counts, columns: usize, dragging: bool, layer: CountLayer) -> RenderBuffer {
-    let mut buffer = RenderBuffer::new(columns, 1, MUTED);
-    let parts = crate::count_indicators::count_parts(counts);
-    let mut x = 0;
-    for part in parts {
-        let crate::count_indicators::CountPart { text, color, opaque } = part;
-        if match layer { CountLayer::All => true, CountLayer::Faded => !opaque, CountLayer::Opaque | CountLayer::Mask => opaque } {
-            buffer.write(x, 0, &text, if matches!(layer, CountLayer::Mask) { Color { red: 255, green: 255, blue: 255 } }
-                else if dragging { GREEN } else { color });
-        }
-        x += display_width(&text);
-    }
-    buffer
-}
+pub use crate::count_opacity::render_counts;
 
 pub fn render_row(item: &DisplayItem, columns: usize, options: RowOptions) -> RenderBuffer {
     let caption = item.caption();
@@ -66,7 +48,7 @@ pub fn render_row(item: &DisplayItem, columns: usize, options: RowOptions) -> Re
         DisplayItem::Worktree { path, result } => match result {
             Ok(stats) => {
                 name(lines.first().copied().unwrap_or(""), false, name_color);
-                rows.push(render_counts(&stats.counts, columns, options.dragging, options.counts));
+                rows.push(render_counts(&stats.counts, columns, options.dragging));
             }
             Err(error) => {
                 name(&path.display().to_string(), true, if options.dragging { GREEN } else { MUTED });

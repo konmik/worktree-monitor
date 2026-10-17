@@ -18,7 +18,7 @@ fn grid_marker_pixels_follow_one_blank_cell_at_each_dpi() {
             let height = top + resources.typography.cell + 3;
             let bitmap = IndicatorBitmap::new(screen, width, height).unwrap();
             let buffer = render_name("repository", 7, false, true, WHITE);
-            present_at(&buffer, bitmap.dc, &resources, left, top, resources.overlay_font);
+            present_at(&buffer, bitmap.dc, &resources, left, top, super::buffer_presentation::TextLayer::All);
             GdiFlush();
             let pixels = std::slice::from_raw_parts(bitmap.pixels, bitmap.length);
             let has_pixels = |start, end| (top..height).any(|y| (start..end).any(|x| pixels[(y * width + x) as usize] != 0));
@@ -28,7 +28,7 @@ fn grid_marker_pixels_follow_one_blank_cell_at_each_dpi() {
             assert!(!has_pixels(left + 7 * cell, width));
             let clipped = IndicatorBitmap::new(screen, width, height).unwrap();
             IntersectClipRect(clipped.dc, left + 6 * cell, top, left + 7 * cell, height);
-            present_at(&buffer, clipped.dc, &resources, left, top, resources.overlay_font);
+            present_at(&buffer, clipped.dc, &resources, left, top, super::buffer_presentation::TextLayer::All);
             GdiFlush();
             let clipped_pixels = std::slice::from_raw_parts(clipped.pixels, clipped.length);
             for y in 0..height { for x in 0..width {
