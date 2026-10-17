@@ -14,6 +14,14 @@ mod typography;
 mod placement_win;
 
 #[cfg(windows)]
+#[path = "features/notification-icon/the-app-has-one-notification-icon-and-no-taskbar-icon/icon.rs"]
+mod notification_icon;
+
+#[cfg(windows)]
+#[path = "features/notification-icon/users-can-open-the-context-menu/menu.rs"]
+mod notification_menu;
+
+#[cfg(windows)]
 mod native;
 
 #[cfg(windows)]

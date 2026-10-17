@@ -3,6 +3,8 @@ use crate::order::{Order, OrderMove};
 use crate::opacity::Opacity;
 use crate::placement::ShowState;
 use crate::placement_win;
+use crate::notification_icon::{self, show_from_tray, TrayIcon, WM_TRAY_ICON};
+use crate::notification_menu::{self, Action};
 use crate::layout::{self, Rect, RowSize};
 use crate::visibility::Visibility;
 use crate::typography::{self, RowSpacing, Typography, FONT_SIZE};
@@ -22,8 +24,7 @@ use windows_sys::Win32::UI::Controls::{SetScrollInfo, SetWindowTheme, DRAWITEMST
     ODS_HOTLIGHT, ODS_SELECTED, BST_CHECKED, WM_MOUSELEAVE};
 use windows_sys::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetCapture, GetFocus, IsWindowEnabled, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE, TME_NONCLIENT};
-use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass, Shell_NotifyIconW, NOTIFYICONDATAW, NIF_MESSAGE, NIF_ICON, NIF_TIP, NIF_SHOWTIP,
-    NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NIN_SELECT, NINF_KEY, NOTIFYICON_VERSION_4};
+use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use wtm_core::{Counts, Monitor, MonitorUpdate, Service};
 
@@ -36,7 +37,6 @@ const MUTED: COLORREF = rgb(132, 150, 156);
 const STATIC_OWNERDRAW: u32 = 13;
 const STATIC_NOTIFY: u32 = 256;
 const WM_SYNC_INDICATORS: u32 = WM_APP + 42;
-const WM_TRAY_ICON: u32 = WM_APP + 43;
 const APP_ICON: *const u16 = std::ptr::without_provenance(1);
 
 const fn rgb(red: u32, green: u32, blue: u32) -> COLORREF { red | (green << 8) | (blue << 16) }
@@ -161,57 +161,6 @@ struct State {
     taskbar_created: u32,
 }
 
-struct TrayIcon {
-    data: NOTIFYICONDATAW,
-    added: bool,
-}
-
-impl TrayIcon {
-    unsafe fn new(window: HWND) -> Result<Self, io::Error> {
-        let mut data: NOTIFYICONDATAW = std::mem::zeroed();
-        data.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-        data.hWnd = window;
-        data.uID = 1;
-        data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
-        data.uCallbackMessage = WM_TRAY_ICON;
-        let dpi = GetDpiForWindow(window).max(96);
-        data.hIcon = LoadImageW(GetModuleHandleW(null()), APP_ICON, IMAGE_ICON,
-            GetSystemMetricsForDpi(SM_CXSMICON, dpi), GetSystemMetricsForDpi(SM_CYSMICON, dpi), 0).cast();
-        if data.hIcon.is_null() { return Err(io::Error::last_os_error()); }
-        data.szTip[..4].copy_from_slice(&wide("WTM"));
-        let mut icon = Self { data, added: false };
-        icon.add()?;
-        Ok(icon)
-    }
-
-    unsafe fn add(&mut self) -> Result<(), io::Error> {
-        if self.added { return Ok(()); }
-        if Shell_NotifyIconW(NIM_ADD, &self.data) == 0 && Shell_NotifyIconW(NIM_MODIFY, &self.data) == 0 {
-            return Err(io::Error::other("Cannot add the WTM notification icon"));
-        }
-        self.added = true;
-        self.data.Anonymous.uVersion = NOTIFYICON_VERSION_4;
-        if Shell_NotifyIconW(NIM_SETVERSION, &self.data) == 0 {
-            return Err(io::Error::other("Cannot set the WTM notification icon version"));
-        }
-        Ok(())
-    }
-}
-
-impl Drop for TrayIcon {
-    fn drop(&mut self) {
-        unsafe {
-            if self.added { Shell_NotifyIconW(NIM_DELETE, &self.data); }
-            DestroyIcon(self.data.hIcon);
-        }
-    }
-}
-
-unsafe fn show_from_tray(window: HWND) {
-    ShowWindow(window, if IsIconic(window) != 0 { SW_RESTORE } else { SW_SHOWNOACTIVATE });
-    SetForegroundWindow(window);
-}
-
 unsafe fn reset_window_bounds(window: HWND) -> io::Result<()> {
     let dpi = GetDpiForWindow(window).max(96) as i32;
     let mut monitor: MONITORINFO = std::mem::zeroed();
@@ -229,56 +178,24 @@ unsafe fn reset_window_bounds(window: HWND) -> io::Result<()> {
 }
 
 unsafe fn context_menu(window: HWND, point: POINT, pointer: *mut State) -> Result<(), io::Error> {
-    let menu = CreatePopupMenu();
-    if menu.is_null() { return Err(io::Error::last_os_error()); }
-    let opacity_menu = CreatePopupMenu();
-    if opacity_menu.is_null() {
-        let error = io::Error::last_os_error();
-        DestroyMenu(menu);
-        return Err(error);
-    }
-    let opacity = (*pointer).opacity;
-    let populated = (5..=100).step_by(5).all(|percent| {
-        AppendMenuW(opacity_menu, MF_STRING, percent, wide(&format!("{percent}%")).as_ptr()) != 0
-    }) && CheckMenuRadioItem(opacity_menu, 5, 100, u32::from(opacity.percent()), MF_BYCOMMAND) != 0;
-    if !populated || AppendMenuW(menu, MF_POPUP, opacity_menu as usize, wide("Opacity").as_ptr()) == 0 {
-        let error = io::Error::last_os_error();
-        DestroyMenu(opacity_menu);
-        DestroyMenu(menu);
-        return Err(error);
-    }
-    let visible = IsWindowVisible(window) != 0 && IsIconic(window) == 0;
-    let populated = AppendMenuW(menu, MF_STRING, 1, wide(if visible { "Hide" } else { "Show" }).as_ptr()) != 0
-        && AppendMenuW(menu, MF_STRING, 3, wide("Reset position").as_ptr()) != 0
-        && AppendMenuW(menu, MF_STRING, 2, wide("Exit").as_ptr()) != 0;
-    if !populated {
-        let error = io::Error::last_os_error();
-        DestroyMenu(menu);
-        return Err(error);
-    }
-    SetForegroundWindow(window);
-    let command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
-        point.x, point.y, 0, window, null());
-    DestroyMenu(menu);
-    match command {
-        1 if visible => { ShowWindow(window, SW_HIDE); }
-        1 => show_from_tray(window),
-        2 => { PostMessageW(window, WM_CLOSE, 0, 0); }
-        3 => {
+    match notification_menu::show(window, point, (*pointer).opacity)? {
+        Action::Hide => { ShowWindow(window, SW_HIDE); }
+        Action::Show => show_from_tray(window),
+        Action::Exit => { PostMessageW(window, WM_CLOSE, 0, 0); }
+        Action::ResetPosition => {
             ShowWindow(window, SW_SHOWNORMAL);
             reset_window_bounds(window)?;
             SetForegroundWindow(window);
             placement_win::save(window, &(*pointer).placement_path)?;
         }
-        command => {
-            if let Some(opacity) = u8::try_from(command).ok().and_then(Opacity::new) {
-                opacity.write(&(*pointer).opacity_path)?;
-                (*pointer).opacity = opacity;
-                if SetLayeredWindowAttributes(window, 0, if (*pointer).controls_visible { 255 } else { opacity.alpha() }, LWA_ALPHA) == 0 {
-                    return Err(io::Error::last_os_error());
-                }
+        Action::Opacity(opacity) => {
+            opacity.write(&(*pointer).opacity_path)?;
+            (*pointer).opacity = opacity;
+            if SetLayeredWindowAttributes(window, 0, if (*pointer).controls_visible { 255 } else { opacity.alpha() }, LWA_ALPHA) == 0 {
+                return Err(io::Error::last_os_error());
             }
         }
+        Action::None => {}
     }
     PostMessageW(window, WM_NULL, 0, 0);
     Ok(())
@@ -1794,23 +1711,15 @@ unsafe fn dispatch(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, p
     match message {
         message if !viewport && message == (*pointer).taskbar_created => {
             if let Some(icon) = &mut (*pointer).tray {
-                icon.added = false;
-                if let Err(error) = icon.add() {
+                if let Err(error) = icon.restore() {
                     (*pointer).failure = Some(error);
                     PostMessageW(window, WM_CLOSE, 0, 0);
                 }
             }
             0
         }
-        WM_TRAY_ICON if !viewport && (lparam as u32 >> 16) == 1 => {
-            match lparam as u32 & 0xffff {
-                NIN_SELECT => show_from_tray(window),
-                event if event == NIN_SELECT | NINF_KEY => show_from_tray(window),
-                WM_CONTEXTMENU => {
-                    SendMessageW(window, WM_CONTEXTMENU, window as WPARAM, wparam as LPARAM);
-                }
-                _ => {}
-            }
+        WM_TRAY_ICON if !viewport => {
+            notification_icon::callback(window, wparam, lparam);
             0
         }
         WM_CONTEXTMENU | WM_NCRBUTTONUP if !viewport => {
@@ -2042,8 +1951,7 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
         indicator_overlay: null_mut(), indicators_dirty: true, indicators_queued: false, tray: None, taskbar_created: 0 });
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-        state.taskbar_created = RegisterWindowMessageW(wide("TaskbarCreated").as_ptr());
-        if state.taskbar_created == 0 { return Err(io::Error::last_os_error()); }
+        state.taskbar_created = notification_icon::restart_message()?;
         let instance = GetModuleHandleW(null());
         if instance.is_null() { return Err(io::Error::last_os_error()); }
         let icon = LoadIconW(instance, APP_ICON);
@@ -2067,7 +1975,7 @@ pub fn run(service: Service, launch_directory: PathBuf) -> Result<(), io::Error>
             UnregisterClassW(class.as_ptr(), instance);
             return Err(error);
         }
-        let window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TOOLWINDOW, class.as_ptr(), wide("WTM Worktree status").as_ptr(),
+        let window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED | notification_icon::WINDOW_STYLE, class.as_ptr(), wide("WTM Worktree status").as_ptr(),
             WS_POPUP | WS_SYSMENU | WS_THICKFRAME | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, CW_USEDEFAULT, CW_USEDEFAULT, 640, 540, null_mut(), null_mut(), instance,
             (&mut *state as *mut State).cast());
         if window.is_null() {
