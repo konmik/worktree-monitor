@@ -1,0 +1,1 @@
+- Fatal dashboard startup errors appear in a Windows error dialog and return a failing exit status.

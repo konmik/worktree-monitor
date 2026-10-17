@@ -1,0 +1,3 @@
+- The dashboard shows each repository and its worktrees with their own branch and counts.
+- Bare repositories, missing repositories, configuration errors and launch errors have visible rows.
+- Errors preserve available worktree counts.

@@ -1,5 +1,7 @@
-use super::*;
 
+use super::super::context_menu_actions::context_menu;
+use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::UI::WindowsAndMessaging::{SW_HIDE, ShowWindow};
 pub(super) unsafe fn hide(window: HWND) {
     ShowWindow(window, SW_HIDE);
 }

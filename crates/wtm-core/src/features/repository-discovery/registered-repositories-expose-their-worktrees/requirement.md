@@ -1,0 +1,4 @@
+- Registered repositories expose their sorted non-bare worktrees, including linked worktrees.
+- Bare repositories have no fabricated working tree.
+- Missing or inaccessible repositories and worktrees report errors rather than zero counts.
+- Git paths and NUL-separated worktree records are validated before use.

@@ -1,5 +1,10 @@
-use super::*;
+use crate::context_menu;
 
+use crate::context_menu::Action;
+use std::io;
+use super::runtime::State;
+use windows_sys::Win32::Foundation::{HWND, POINT};
+use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_NULL};
 #[path = "users-can-select-opacity-in-five-percent-steps/native.rs"]
 pub(super) mod opacity;
 

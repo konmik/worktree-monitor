@@ -1,4 +1,10 @@
-use super::*;
+use std::ptr::{null_mut};
+use super::font_resources::{Resources, wrapped_width};
+use super::opaque_indicators::{CountLayer, IndicatorBitmap, draw_counts};
+use windows_sys::Win32::Foundation::{RECT};
+use windows_sys::Win32::Graphics::Gdi::{GdiFlush, GetDC, ReleaseDC};
+use wtm_core::{Counts};
+
 
 #[test]
 fn opaque_counts_leave_zero_source_and_binary_text_transparent() {

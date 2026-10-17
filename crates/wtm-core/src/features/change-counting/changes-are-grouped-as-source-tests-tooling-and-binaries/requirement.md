@@ -1,0 +1,3 @@
+- Changed paths are grouped into source, test, or tooling counts with test classification taking precedence.
+- Renames use destination paths for classification and binary changes have a separate file count.
+- Malformed Git statistics and count overflow are reported as errors.

@@ -1,0 +1,1 @@
+- Scanning is read-only and never modifies files or Git data in monitored repositories.

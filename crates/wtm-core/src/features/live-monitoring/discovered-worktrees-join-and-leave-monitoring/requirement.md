@@ -1,0 +1,2 @@
+- Repository discovery adds new worktrees once, removes vanished worktrees and their activity, and preserves existing results.
+- Recovered repositories or worktrees with previous errors are rescanned.

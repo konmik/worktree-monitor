@@ -1,0 +1,1 @@
+- Users can resize the dashboard by dragging its edges and corners.

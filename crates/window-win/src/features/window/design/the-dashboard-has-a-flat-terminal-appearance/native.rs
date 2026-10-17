@@ -1,5 +1,11 @@
-use super::*;
-
+use super::dashboard_rows::{Card, draw_card};
+use super::font_resources::{Resources};
+use super::row_layout::{wrapped_lines};
+use super::runtime::{State, wide};
+use super::visibility_controls::{paint_button};
+use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT};
+use windows_sys::Win32::Graphics::Gdi::{BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DT_NOPREFIX, DT_SINGLELINE, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, HBRUSH, HDC, HFONT, PAINTSTRUCT, SRCCOPY, SelectObject, SetBkMode, SetTextColor, TRANSPARENT};
+use windows_sys::Win32::UI::Controls::{DRAWITEMSTRUCT, ODT_BUTTON, ODT_STATIC};
 pub(super) const BACKGROUND: COLORREF = rgb(11, 16, 18);
 pub(super) const GREEN: COLORREF = rgb(194, 249, 112);
 pub(super) const TEAL: COLORREF = rgb(84, 213, 197);
@@ -45,79 +51,6 @@ pub(super) unsafe fn paint_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &Stat
     if !memory.is_null() { DeleteDC(memory); }
 }
 
-pub(super) unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
-    let Some(resources) = &state.resources else { return; };
-    let dc = draw.hDC;
-    let saved = SaveDC(dc);
-    let rect = draw.rcItem;
-    let s = |value| scaled(value, state.dpi);
-    let width = rect.right - rect.left;
-    let height = rect.bottom - rect.top;
-    let line = DT_SINGLELINE | DT_END_ELLIPSIS;
-    let caption = card.display.caption();
-    let lines: Vec<_> = caption.lines().collect();
-    let bounds = |left, top, right, bottom| RECT { left: rect.left + left, top: rect.top + top,
-        right: rect.left + right, bottom: rect.top + bottom };
-    let typography = resources.typography;
-    let line_bounds = |left, index, right| {
-        let top = card.spacing.top(typography, index);
-        bounds(left, top, right, top + typography.cell)
-    };
-    let inset = content_inset(width, state.dpi, resources);
-    let right_padding = (s(12) - resources.space_width).max(0);
-    let heading_right = if matches!(card.display, DisplayItem::Repository { .. }) { width - right_padding }
-        else { card.action_rect.map_or(width - right_padding, |rect| rect.left - s(8)) };
-    let dragging = state.drag.as_ref().is_some_and(|drag| drag.source_handle == card.window);
-    fill(dc, rect, resources.background);
-    match &card.display {
-        DisplayItem::Status { health, .. } => {
-            let color = match health { Health::Live => GREEN, Health::Errors => RED, Health::Scanning => MUTED };
-            let y = (height - typography.cell) / 2;
-            text(dc, &caption, bounds(0, y, width, y + typography.cell), resources.font, color, line);
-        }
-        DisplayItem::Repository { bare, .. } => {
-            draw_name(dc, lines[0], line_bounds(inset, 0, heading_right), resources.font,
-                if dragging { GREEN } else { TEAL }, false, card.refreshing);
-            if *bare { text(dc, lines[1], line_bounds(inset, 1, width - right_padding), resources.font, MUTED, line); }
-        }
-        DisplayItem::Worktree { path, result } => {
-            let text_width = content_text_width(width, state.dpi, resources);
-            let right = inset + text_width;
-            let heading_width = (heading_right - inset).max(0).min(text_width);
-            let path = path.display().to_string();
-            match result {
-                Ok(stats) => {
-                    draw_name(dc, lines[0], line_bounds(inset, 0, inset + heading_width), resources.font,
-                        if dragging { GREEN } else { WHITE }, false, card.refreshing);
-                    let y = card.spacing.top(typography, 1);
-                    draw_counts(dc, &stats.counts, bounds(inset, y, right, y + typography.cell), resources, dragging,
-                        if state.controls_visible { CountLayer::All } else { CountLayer::Faded });
-                }
-                Err(error) => {
-                    draw_name(dc, &path, line_bounds(inset, 0, inset + heading_width), resources.font,
-                        if dragging { GREEN } else { MUTED }, true, card.refreshing);
-                    text(dc, lines[1], line_bounds(inset, 1, right), resources.font, MUTED, line);
-                    wrapped_text(dc, &format!("ERROR ({:?}): {}", error.kind, error.message), line_bounds(inset, 2, right), resources, RED);
-                }
-            }
-        }
-        DisplayItem::PendingWorktree { path } => {
-            let heading_width = (heading_right - inset).max(0);
-            draw_name(dc, &path.display().to_string(), line_bounds(inset, 0, inset + heading_width), resources.font,
-                if dragging { GREEN } else { MUTED }, true, card.refreshing);
-        }
-        DisplayItem::Notice { title, message, error } => {
-            text(dc, title, line_bounds(inset, 0, width - inset), resources.font, if *error { RED } else { WHITE }, line);
-            wrapped_text(dc, message, line_bounds(inset, 1, width - inset), resources, if *error { RED } else { MUTED });
-        }
-    }
-    if let Some(target) = state.drag.as_ref().and_then(|drag| drag.target.as_ref()) {
-        let y = if target.marker == card.top { Some(0) }
-            else if target.marker == card.top + card.height { Some(height - s(2)) } else { None };
-        if let Some(y) = y { fill(dc, bounds(0, y, width, y + s(2)), resources.teal); }
-    }
-    RestoreDC(dc, saved);
-}
 
 pub(super) unsafe fn paint_background(window: HWND, resources: &Resources, marker: Option<RECT>) {
     let mut paint: PAINTSTRUCT = std::mem::zeroed();
@@ -137,15 +70,15 @@ pub(super) unsafe fn paint_background(window: HWND, resources: &Resources, marke
         let bitmap = CreateCompatibleBitmap(dc, width, height);
         if !memory.is_null() && !bitmap.is_null() {
             let old = SelectObject(memory, bitmap);
-            fill(memory, RECT { left: 0, top: 0, right: width, bottom: height }, resources.background);
-            if let Some(marker) = marker.as_ref() { fill(memory, *marker, resources.teal); }
+            fill(memory, RECT { left: 0, top: 0, right: width, bottom: height }, resources.palette.background);
+            if let Some(marker) = marker.as_ref() { fill(memory, *marker, resources.palette.teal); }
             BitBlt(dc, rect.left, rect.top, width, height, memory, 0, 0, SRCCOPY);
             SelectObject(memory, old);
         } else {
-            fill(dc, rect, resources.background);
+            fill(dc, rect, resources.palette.background);
             if let Some(marker) = marker.as_ref() {
                 fill(dc, RECT { left: marker.left + rect.left, top: marker.top + rect.top,
-                    right: marker.right + rect.left, bottom: marker.bottom + rect.top }, resources.teal);
+                    right: marker.right + rect.left, bottom: marker.bottom + rect.top }, resources.palette.teal);
             }
         }
         if !bitmap.is_null() { DeleteObject(bitmap); }
@@ -154,3 +87,62 @@ pub(super) unsafe fn paint_background(window: HWND, resources: &Resources, marke
     EndPaint(window, &paint);
 }
 
+pub(super) unsafe fn draw_item(state: &State, lparam: LPARAM) -> LRESULT {
+    let draw = &*(lparam as *const DRAWITEMSTRUCT);
+    if draw.CtlType == ODT_STATIC {
+        if let Some(card) = state.fixed.iter().chain(&state.cards).find(|card| card.window == draw.hwndItem) {
+            paint_card(draw, card, state);
+            return 1;
+        }
+    }
+    if draw.CtlType == ODT_BUTTON {
+        paint_button(draw, state);
+        return 1;
+    }
+    0
+}
+
+pub(super) fn intersection(left: RECT, right: RECT) -> Option<RECT> {
+    let rect = RECT { left: left.left.max(right.left), top: left.top.max(right.top),
+        right: left.right.min(right.right), bottom: left.bottom.min(right.bottom) };
+    (rect.left < rect.right && rect.top < rect.bottom).then_some(rect)
+}
+
+
+use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
+
+pub(super) unsafe fn configure_window_appearance(window: HWND) {
+    let dark = 1i32;
+    DwmSetWindowAttribute(window, 20, (&dark as *const i32).cast(), std::mem::size_of::<i32>() as u32);
+    let disabled = 1u32;
+    DwmSetWindowAttribute(window, 2, (&disabled as *const u32).cast(), std::mem::size_of::<u32>() as u32);
+    DwmSetWindowAttribute(window, 33, (&disabled as *const u32).cast(), std::mem::size_of::<u32>() as u32);
+    let no_border = 0xfffffffeu32;
+    DwmSetWindowAttribute(window, 34, (&no_border as *const u32).cast(), std::mem::size_of::<u32>() as u32);
+}
+
+pub(super) struct Palette {
+    pub(super) background: HBRUSH,
+    pub(super) teal: HBRUSH,
+    pub(super) muted: HBRUSH,
+}
+
+impl Palette {
+    pub(super) unsafe fn new() -> Self {
+        Self { background: CreateSolidBrush(BACKGROUND), teal: CreateSolidBrush(TEAL), muted: CreateSolidBrush(MUTED) }
+    }
+
+    pub(super) fn is_valid(&self) -> bool {
+        !self.background.is_null() && !self.teal.is_null() && !self.muted.is_null()
+    }
+}
+
+impl Drop for Palette {
+    fn drop(&mut self) {
+        unsafe {
+            for object in [self.background, self.teal, self.muted] {
+                if !object.is_null() { DeleteObject(object); }
+            }
+        }
+    }
+}

@@ -1,0 +1,2 @@
+- Help and version requests succeed, and invalid command combinations report usage errors.
+- Command failures print their cause to standard error and return a failing exit status.

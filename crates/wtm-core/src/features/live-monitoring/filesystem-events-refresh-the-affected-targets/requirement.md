@@ -1,0 +1,4 @@
+- Directory watchers monitor configuration, launch paths, repositories, worktree metadata, and permitted worktree paths.
+- Filesystem events queue affected worktrees, repository discovery, configuration reloads, or launch discovery.
+- Events received during scans remain queued for the next pass.
+- Unchanged worktrees are not scanned again until relevant events queue them.

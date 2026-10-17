@@ -1,5 +1,10 @@
-use super::*;
-
+use super::runtime::{State};
+use super::visibility_controls::{update_visibility_controls};
+use std::io;
+use windows_sys::Win32::Foundation::{HWND, POINT};
+use windows_sys::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent};
+use windows_sys::Win32::UI::WindowsAndMessaging::{GA_ROOT, GWLP_USERDATA, GetAncestor, GetCursorPos, GetWindowLongPtrW, IsIconic, IsWindowVisible, LWA_ALPHA, PostMessageW, SetLayeredWindowAttributes, WM_CLOSE, WM_MOUSEMOVE, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WindowFromPoint};
 pub(super) unsafe fn update_hover_state(window: HWND, state: &mut State) {
     let mut point: POINT = std::mem::zeroed();
     let visible = IsWindowVisible(window) != 0 && IsIconic(window) == 0 && GetCursorPos(&mut point) != 0
@@ -10,17 +15,7 @@ pub(super) unsafe fn update_hover_state(window: HWND, state: &mut State) {
         PostMessageW(window, WM_CLOSE, 0, 0);
         return;
     }
-    state.controls_visible = visible;
-    if visible && !state.indicator_overlay.is_null() { ShowWindow(state.indicator_overlay, SW_HIDE); }
-    let focus = GetFocus();
-    if !visible && (focus == state.show_all_button || state.cards.iter().any(|card| card.action == Some(focus))) {
-        SetFocus(if GetForegroundWindow() == window && IsIconic(window) == 0 { state.viewport } else { null_mut() });
-    }
-    ShowWindow(state.show_all_button, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE });
-    for card in &state.cards {
-        if let Some(action) = card.action { ShowWindow(action, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE }); }
-    }
-    layout(window, state, None, false);
+    update_visibility_controls(window, state, visible);
 }
 
 pub(super) unsafe fn track_hover(window: HWND, message: u32) {

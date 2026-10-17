@@ -1,0 +1,2 @@
+- User documentation contains useful information without repetition or unnecessary detail.
+- The README states that Git-ignored paths are not monitored.

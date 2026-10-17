@@ -1,0 +1,3 @@
+- Monitor updates report which repositories and worktrees are being scanned.
+- Started and completed scans are distinguishable.
+- Completed activity remains until replacement or target removal.

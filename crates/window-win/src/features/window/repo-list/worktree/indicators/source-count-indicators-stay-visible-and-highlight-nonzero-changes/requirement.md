@@ -1,0 +1,2 @@
+- S remains visible and grey when both source counters are zero.
+- Nonzero S indicators are colored.

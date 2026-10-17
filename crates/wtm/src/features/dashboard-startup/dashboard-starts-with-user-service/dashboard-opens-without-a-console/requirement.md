@@ -1,0 +1,1 @@
+- The Windows dashboard executable runs without opening a console.

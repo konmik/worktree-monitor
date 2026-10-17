@@ -1,5 +1,9 @@
-use super::*;
 
+use crate::opacity::Opacity;
+use std::io;
+use super::super::runtime::State;
+use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::UI::WindowsAndMessaging::{LWA_ALPHA, SetLayeredWindowAttributes};
 pub(super) unsafe fn apply(window: HWND, state: &mut State, opacity: Opacity) -> io::Result<()> {
     opacity.write(&state.opacity_path)?;
     state.opacity = opacity;

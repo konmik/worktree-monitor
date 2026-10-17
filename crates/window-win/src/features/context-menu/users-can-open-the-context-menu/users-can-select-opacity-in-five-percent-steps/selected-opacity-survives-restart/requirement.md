@@ -1,0 +1,2 @@
+- Reopening the app restores the selected opacity.
+- Missing or invalid saved opacity uses the default.

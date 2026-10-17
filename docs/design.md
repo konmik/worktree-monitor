@@ -2,7 +2,7 @@
 
 ## Usage
 
-`wtm add <path>` registers a repository from any of its worktrees. `wtm` prints a snapshot. `wtm --live` displays registered repositories and the repository it is launched from in an always-on-top Windows window. Launch context does not change registrations. `wtm remove <path>` unregisters the repository.
+`wtm add <path>` registers a repository from any of its worktrees. `wtm` prints a snapshot. `wtm-ui` displays registered repositories and the repository it is launched from in an always-on-top Windows window. Launch context does not change registrations. `wtm remove <path>` unregisters the repository.
 
 ## Shape
 

@@ -1,0 +1,2 @@
+- Preference read and write failures appear in the dashboard.
+- A failed preference write keeps the current usable settings.

@@ -1,60 +1,36 @@
-#[path = "features/change-counting/worktree-counts-include-branch-changes/model.rs"]
+#[path = "features/change-counting/changes-are-grouped-as-source-tests-tooling-and-binaries/model.rs"]
 mod count_model;
+#[path = "features/repository-registration/users-can-register-and-remove-repositories/config.rs"]
 mod config;
+#[path = "features/repository-discovery/registered-repositories-expose-their-worktrees/git.rs"]
 mod git;
 mod model;
-#[path = "features/live-monitoring/poll.rs"]
+#[path = "features/live-monitoring/monitoring-runs-in-the-background/poll.rs"]
 mod poll;
-#[path = "features/live-monitoring/process.rs"]
+#[path = "features/git-execution/git-commands-complete-or-report-failure/process.rs"]
 mod process;
-#[path = "features/live-monitoring/ignored-directories-do-not-cause-background-scans/watch.rs"]
+#[path = "features/git-execution/cancellation-stops-git-commands/cancel.rs"]
+mod cancellation;
+#[path = "features/git-execution/scans-are-read-only/command.rs"]
+mod read_only;
+#[path = "features/live-monitoring/filesystem-events-refresh-the-affected-targets/watch.rs"]
 mod watch;
-#[path = "features/live-monitoring/service.rs"]
+#[path = "features/live-monitoring/monitoring-runs-in-the-background/service.rs"]
 mod monitoring_service;
 
 pub use model::{Counts, Error, ErrorKind, Head, LineCounts, RepoEntry, Snapshot, WorktreeEntry, WorktreeStats};
 pub use poll::{Monitor, MonitorUpdate, ScanActivity, ScanTarget};
-pub use process::Cancel;
+pub use cancellation::Cancel;
+pub use registration_service::Service;
 
-use std::path::{Path, PathBuf};
-
-#[derive(Clone, Debug)]
-pub struct Service {
-    config_path: PathBuf,
-}
-
-impl Service {
-    pub fn user() -> Result<Self, Error> {
-        let variable = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-        let home = std::env::var_os(variable)
-            .filter(|home| !home.is_empty())
-            .ok_or_else(|| Error::config(format!("{variable} is not set")))?;
-        Ok(Self::at(PathBuf::from(home).join(".config/wtm/config.json")))
-    }
-
-    pub fn at(path: impl Into<PathBuf>) -> Self {
-        Self { config_path: path.into() }
-    }
-
-    pub fn add(&self, path: &Path) -> Result<bool, Error> {
-        config::update(&self.config_path, path, true, &Cancel::new())
-    }
-
-    pub fn remove(&self, path: &Path) -> Result<bool, Error> {
-        config::update(&self.config_path, path, false, &Cancel::new())
-    }
-
-    pub fn snapshot(&self, cancel: &Cancel) -> Snapshot {
-        match config::read(&self.config_path).and_then(|bytes| config::parse(&bytes)) {
-            Ok(repos) => git::scan(&repos, None, cancel),
-            Err(error) => Snapshot { repos: Vec::new(), config_error: Some(error) },
-        }
-    }
-
-    pub fn config_path(&self) -> &Path {
-        &self.config_path
-    }
-}
+#[path = "features/repository-registration/users-can-register-and-remove-repositories/service.rs"]
+mod registration_service;
+#[path = "features/snapshot-reporting/snapshots-show-counts-and-errors/service.rs"]
+mod snapshot_service;
+#[path = "features/snapshot-reporting/snapshots-show-counts-and-errors/report.rs"]
+mod snapshot_report;
+#[path = "features/snapshot-reporting/snapshots-show-counts-and-errors/counts.rs"]
+mod snapshot_counts;
 
 #[cfg(test)]
 #[path = "../tests/unit/mod.rs"]

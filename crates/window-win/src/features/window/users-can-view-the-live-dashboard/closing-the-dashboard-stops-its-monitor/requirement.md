@@ -1,0 +1,1 @@
+- Closing the dashboard stops its monitor and releases native resources.

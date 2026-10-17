@@ -1,0 +1,1 @@
+- The window starts at its intended size without resizing after scan completion.

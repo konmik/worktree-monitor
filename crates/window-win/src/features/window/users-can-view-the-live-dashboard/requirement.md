@@ -1,0 +1,1 @@
+- The dashboard updates from monitor results.

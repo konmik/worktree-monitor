@@ -1,0 +1,2 @@
+- The example image is narrow and has no unused space.
+- The image shows several worktrees per repository, including some with T indicators and some with zero changes.

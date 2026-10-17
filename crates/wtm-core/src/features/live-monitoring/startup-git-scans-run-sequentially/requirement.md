@@ -1,1 +1,0 @@
-- Startup Git checks do not overlap.

@@ -1,0 +1,4 @@
+- Launching inside a repository includes its real root and linked worktrees without changing registrations.
+- Registered repositories keep their order and the launch repository is appended once.
+- Launching outside Git adds no repository; later Git initialization and directory recovery are detected.
+- Launch discovery failures are shown and clear after a successful retry.

@@ -1,0 +1,2 @@
+- Running without a command prints the registered repositories snapshot and fails if the snapshot contains errors.
+- Normal command line snapshots use registered repositories without including the launch repository or reading presentation preferences.

@@ -1,0 +1,1 @@
+- Dragging a worktree changes its position within its repository.

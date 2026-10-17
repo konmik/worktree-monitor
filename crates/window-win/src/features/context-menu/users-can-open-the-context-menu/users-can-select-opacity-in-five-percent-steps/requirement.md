@@ -1,3 +1,3 @@
 - An Opacity submenu contains the available opacity choices.
-- Opacity choices use five-percent steps.
+- Opacity choices range from 5% to 100% in five-percent steps.
 - The currently selected opacity is highlighted.

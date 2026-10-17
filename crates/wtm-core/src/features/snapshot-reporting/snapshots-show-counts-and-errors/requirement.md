@@ -1,0 +1,4 @@
+- Snapshots report configuration, repository, and worktree errors alongside successful results.
+- Text output identifies repositories, Git directories, worktree HEAD states, and categorized change counts.
+- An empty snapshot reports that no repositories are registered.
+- Snapshots assembled from registrations scan each discovered worktree.

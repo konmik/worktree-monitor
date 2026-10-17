@@ -1,0 +1,3 @@
+- Overflowing rows can be scrolled using the mouse wheel, keyboard and scrollbar.
+- Scrolling stays within the available content.
+- The scrollbar hides after inactivity.

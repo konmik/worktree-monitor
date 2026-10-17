@@ -1,0 +1,1 @@
+- Saved order survives restart and applies to newly scanned rows.

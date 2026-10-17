@@ -1,0 +1,1 @@
+- Refreshes and window layout changes preserve the visible row and its offset when the row remains available.

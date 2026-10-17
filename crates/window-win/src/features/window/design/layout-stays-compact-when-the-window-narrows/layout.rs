@@ -1,5 +1,6 @@
 use std::io;
-use crate::typography::{RowSpacing, Typography};
+use crate::spacing::RowSpacing;
+use crate::typography::Typography;
 use std::sync::{Mutex, MutexGuard};
 use yoga_sys::*;
 use yoga_sys::YGDirection::YGDirectionLTR;

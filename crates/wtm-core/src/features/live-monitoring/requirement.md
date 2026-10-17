@@ -1,2 +1,0 @@
-- Monitoring and refreshing begin at startup without hanging the app.
-- Git work runs in a separate thread or process from the interface.

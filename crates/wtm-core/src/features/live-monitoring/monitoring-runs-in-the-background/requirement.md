@@ -1,0 +1,3 @@
+- Monitoring and refreshing begin at startup without hanging the app.
+- Git monitoring work runs in a separate worker thread.
+- Stopping or dropping the monitor stops its worker.

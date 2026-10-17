@@ -1,0 +1,2 @@
+- Git checks do not overlap.
+- Repository discovery and changed worktree scans run serially in repository order.

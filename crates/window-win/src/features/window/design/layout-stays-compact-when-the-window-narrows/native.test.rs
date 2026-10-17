@@ -1,4 +1,13 @@
-use super::*;
+use crate::dashboard::{DisplayItem};
+use crate::spacing::{RowSpacing};
+use std::path::{PathBuf};
+use std::ptr::{null_mut};
+use super::dashboard_rows::{Card};
+use super::font_resources::{Resources, wrapped_width};
+use super::row_layout::{attached_rows, content_inset, content_text_width, item_height};
+use super::runtime::{scaled};
+use windows_sys::Win32::Graphics::Gdi::{CreateCompatibleDC, DeleteDC, GetDC, ReleaseDC};
+
 
 #[test]
 fn content_padding_shrinks_by_one_font_space_at_each_dpi() {

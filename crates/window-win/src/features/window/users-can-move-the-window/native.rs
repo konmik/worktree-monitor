@@ -1,5 +1,10 @@
-use super::*;
-
+use super::runtime::{mouse_point};
+use super::window_fading::{track_hover};
+use super::window_resizing::{resize_hit};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
+use windows_sys::Win32::UI::WindowsAndMessaging::{CWP_SKIPINVISIBLE, ChildWindowFromPointEx, GA_ROOT, GetAncestor, GetClientRect, GetDlgCtrlID, HTTRANSPARENT, WM_NCDESTROY, WM_NCHITTEST};
 #[derive(Clone, Copy)]
 pub(super) enum NativeHit {
     Edge(LRESULT),
@@ -7,32 +12,6 @@ pub(super) enum NativeHit {
     Empty,
 }
 
-pub(super) unsafe fn resize_hit(window: HWND, point: POINT) -> Option<LRESULT> {
-    if IsZoomed(window) != 0 { return None; }
-    let mut rect: RECT = std::mem::zeroed();
-    if GetWindowRect(window, &mut rect) == 0 || point.x < rect.left || point.x >= rect.right
-        || point.y < rect.top || point.y >= rect.bottom { return None; }
-    let dpi = GetDpiForWindow(window).max(96) as i32;
-    let frame_x = (GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi as u32)
-        + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi as u32)).max(scaled(4, dpi));
-    let frame_y = (GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi as u32)
-        + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi as u32)).max(scaled(4, dpi));
-    let left = point.x < rect.left + frame_x;
-    let right = point.x >= rect.right - frame_x;
-    let top = point.y < rect.top + frame_y;
-    let bottom = point.y >= rect.bottom - frame_y;
-    Some(match (left, right, top, bottom) {
-        (true, _, true, _) => HTTOPLEFT as LRESULT,
-        (_, true, true, _) => HTTOPRIGHT as LRESULT,
-        (true, _, _, true) => HTBOTTOMLEFT as LRESULT,
-        (_, true, _, true) => HTBOTTOMRIGHT as LRESULT,
-        (_, _, true, _) => HTTOP as LRESULT,
-        (_, _, _, true) => HTBOTTOM as LRESULT,
-        (true, _, _, _) => HTLEFT as LRESULT,
-        (_, true, _, _) => HTRIGHT as LRESULT,
-        _ => return None,
-    })
-}
 
 pub(super) unsafe fn native_hit_test(root: HWND, viewport: HWND, point: POINT) -> Option<NativeHit> {
     if let Some(hit) = resize_hit(root, point) { return Some(NativeHit::Edge(hit)); }

@@ -1,2 +1,4 @@
 - Reopening the app restores its previous window position.
-- The window starts at its intended size without resizing after scan completion.
+- Saved bounds are restored when the monitor identity and pixel dimensions match and the window overlaps its work area.
+- An incompatible placement falls back to the default position.
+- Normal bounds survive maximization and minimization, and startup never restores a minimized window.

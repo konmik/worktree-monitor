@@ -1,5 +1,16 @@
-use super::*;
-
+use windows_sys::Win32::UI::WindowsAndMessaging::WM_APP;
+use super::window_appearance::rgb;
+use super::count_indicators::{count_parts};
+use super::font_resources::{Resources, wrapped_width};
+use super::row_layout::{content_inset, content_text_width};
+use super::runtime::{State};
+use super::window_appearance::{GREEN, intersection, text};
+use crate::dashboard::DisplayItem;
+use std::ptr::null_mut;
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::{AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, ClientToScreen, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DT_END_ELLIPSIS, DT_SINGLELINE, DeleteDC, DeleteObject, GdiFlush, GetDC, HBITMAP, HDC, HGDIOBJ, IntersectClipRect, MapWindowPoints, ReleaseDC, RestoreDC, SaveDC, SelectObject};
+use windows_sys::Win32::UI::WindowsAndMessaging::{DefWindowProcW, GA_ROOT, GetAncestor, GetClientRect, GetWindowRect, HTTRANSPARENT, IsIconic, IsWindowVisible, MA_NOACTIVATE, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, SetWindowPos, ShowWindow, ULW_ALPHA, UpdateLayeredWindow, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_NCHITTEST};
+use wtm_core::Counts;
 #[derive(Clone, Copy)]
 pub(super) enum CountLayer { All, Faded, Opaque, Mask }
 
@@ -71,7 +82,7 @@ pub(super) unsafe fn draw_opaque_indicators(state: &State, dc: HDC, layer: Count
         if intersection(rect, viewport).is_none() { continue; }
         let inset = content_inset(width, state.dpi, resources);
         let y = rect.top + card.spacing.top(resources.typography, 1);
-        let dragging = state.drag.as_ref().is_some_and(|drag| drag.source_handle == card.window);
+        let dragging = state.ordering.drag.as_ref().is_some_and(|drag| drag.source_handle == card.window);
         draw_counts(dc, &stats.counts, RECT { left: rect.left + inset, top: y,
             right: rect.left + inset + content_text_width(width, state.dpi, resources), bottom: y + resources.typography.cell },
             resources, dragging, layer);
@@ -133,3 +144,19 @@ pub(super) unsafe extern "system" fn indicator_procedure(window: HWND, message: 
     }
 }
 
+pub(super) fn line_counts_stay_opaque(counts: wtm_core::LineCounts) -> bool {
+    counts.additions > 0 || counts.deletions > 0
+}
+
+pub(super) const WM_SYNC_INDICATORS: u32 = WM_APP + 42;
+
+use windows_sys::Win32::Foundation::HINSTANCE;
+use std::ptr::null;
+use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, WS_DISABLED, WS_EX_LAYERED, WS_EX_TRANSPARENT, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP};
+use super::runtime::wide;
+
+pub(super) unsafe fn create_indicator_overlay(window: HWND, instance: HINSTANCE, class: *const u16) -> HWND {
+    CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+            class, wide("Line-change indicators").as_ptr(), WS_POPUP | WS_DISABLED,
+            0, 0, 1, 1, window, null_mut(), instance, null())
+}

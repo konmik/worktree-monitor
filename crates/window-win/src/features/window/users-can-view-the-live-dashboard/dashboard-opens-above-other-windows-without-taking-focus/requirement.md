@@ -1,0 +1,1 @@
+- The live dashboard opens above other windows without taking focus.

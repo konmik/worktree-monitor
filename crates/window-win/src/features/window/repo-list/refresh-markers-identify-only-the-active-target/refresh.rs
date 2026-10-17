@@ -32,3 +32,11 @@ impl RefreshTracker {
     }
 }
 
+
+impl super::DisplayItem {
+    pub fn caption_with_refresh(&self, refreshing: bool) -> String {
+        let mut caption = self.caption();
+        if refreshing { caption.push_str("\nRefreshing"); }
+        caption
+    }
+}

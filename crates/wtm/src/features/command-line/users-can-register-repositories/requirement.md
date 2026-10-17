@@ -1,0 +1,1 @@
+- The command line accepts repository add and remove commands with a path and reports whether registration changed.

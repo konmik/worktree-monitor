@@ -1,3 +1,4 @@
 - Scan indicators identify the repository or worktree being refreshed.
 - The indicator appears one character space after the repository or worktree name.
 - A repository refresh indicator appears only when the repository itself is refreshing.
+- Each observed refresh remains visible for at least one second without delaying scanning or clearing prior counts.

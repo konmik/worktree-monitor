@@ -1,0 +1,1 @@
+- Rows can be reordered by dragging.

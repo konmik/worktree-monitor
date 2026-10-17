@@ -1,0 +1,2 @@
+- A completed scan pass waits ten seconds before another pass.
+- Incoming events do not extend that deadline.

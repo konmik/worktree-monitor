@@ -1,0 +1,2 @@
+- Cancellation stops running Git commands promptly.
+- Cancellation wakes waiting workers so shutdown does not wait for the next scan.

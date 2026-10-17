@@ -1,0 +1,2 @@
+- Completed scan results and errors are published to the dashboard as they become available.
+- Worktrees without results remain pending.

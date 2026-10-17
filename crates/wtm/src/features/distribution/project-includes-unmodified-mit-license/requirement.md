@@ -1,0 +1,1 @@
+- The project includes the unmodified MIT license.

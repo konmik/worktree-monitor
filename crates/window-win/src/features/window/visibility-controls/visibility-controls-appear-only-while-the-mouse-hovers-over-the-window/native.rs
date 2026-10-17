@@ -1,18 +1,16 @@
-use super::*;
-
-pub(super) unsafe fn update_action_caption(card: &mut Card, visibility: &Visibility) -> bool {
-    let Some(action) = card.action else { return false; };
-    let Some(ItemKey::Worktree(repository, worktree)) = &card.key else { return false; };
-    let hidden = visibility.contains(repository, worktree);
-    if card.action_hidden != Some(hidden) {
-        SetWindowTextW(action, wide(if hidden { "Unhide" } else { "Hide" }).as_ptr());
-        InvalidateRect(action, null(), 0);
-        card.action_hidden = Some(hidden);
-        return true;
-    }
-    false
-}
-
+use super::dashboard_rows::{Card};
+use super::row_layout::{layout};
+use super::runtime::{State, mouse_point, scaled};
+use super::window_appearance::{GREEN, MUTED, TEAL, WHITE, fill, text};
+use super::window_fading::{track_hover};
+use super::window_movement::{edge_hit_transparent};
+use std::ptr::{null, null_mut};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::{BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DT_CENTER, DT_END_ELLIPSIS, DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject, EndPaint, HDC, InvalidateRect, PAINTSTRUCT, RestoreDC, SRCCOPY, SaveDC, SelectObject};
+use windows_sys::Win32::UI::Controls::{BST_CHECKED, DRAWITEMSTRUCT, ODS_CHECKED, ODS_DISABLED, ODS_FOCUS, ODS_GRAYED, ODS_HOTLIGHT, ODS_SELECTED};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetFocus, IsWindowEnabled, SetFocus};
+use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
+use windows_sys::Win32::UI::WindowsAndMessaging::{BM_GETCHECK, BM_GETSTATE, BM_SETCHECK, BM_SETSTATE, BST_PUSHED, GetClientRect, GetForegroundWindow, GetWindowTextW, HTTRANSPARENT, IsIconic, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, SendMessageW, SetWindowPos, ShowWindow, WM_ENABLE, WM_ERASEBKGND, WM_KILLFOCUS, WM_NCDESTROY, WM_NCHITTEST, WM_PAINT, WM_PRINTCLIENT, WM_SETFOCUS};
 pub(super) unsafe fn position_action(card: &Card) {
     let Some(action) = card.action else { return; };
     let Some(rect) = card.action_rect else { return; };
@@ -26,9 +24,6 @@ pub(super) unsafe fn button_caption(window: HWND) -> String {
     String::from_utf16_lossy(&value[..length.min(value.len())])
 }
 
-pub(super) unsafe fn show_all_checked(state: &State) -> bool {
-    SendMessageW(state.show_all_button, BM_GETCHECK, 0, 0) == BST_CHECKED as LRESULT
-}
 
 pub(super) unsafe fn paint_button(draw: &DRAWITEMSTRUCT, state: &State) {
     let width = draw.rcItem.right - draw.rcItem.left;
@@ -58,7 +53,7 @@ pub(super) unsafe fn draw_button(draw: &DRAWITEMSTRUCT, state: &State) {
     let focused = draw.itemState & ODS_FOCUS != 0;
     let hot = draw.itemState & ODS_HOTLIGHT != 0;
     let checked = draw.itemState & ODS_CHECKED != 0;
-    fill(draw.hDC, rect, resources.background);
+    fill(draw.hDC, rect, resources.palette.background);
     let padding = s(8);
     let text_top = rect.top + (rect.bottom - rect.top - resources.typography.cell).max(0) / 2;
     let text_rect = RECT { left: rect.left + padding, top: text_top,
@@ -76,7 +71,7 @@ pub(super) unsafe fn draw_checkbox(dc: HDC, rect: RECT, window: HWND, state: &St
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
     if width > 0 && height > 0 {
-        fill(dc, rect, resources.background);
+        fill(dc, rect, resources.palette.background);
         let checked = SendMessageW(window, BM_GETCHECK, 0, 0) == BST_CHECKED as LRESULT;
         let focused = GetFocus() == window;
         let disabled = IsWindowEnabled(window) == 0;
@@ -110,5 +105,19 @@ pub(super) unsafe extern "system" fn show_all_procedure(window: HWND, message: u
         InvalidateRect(window, null(), 0);
     }
     result
+}
+
+pub(super) unsafe fn update_visibility_controls(window: HWND, state: &mut State, visible: bool) {
+    state.controls_visible = visible;
+    if visible && !state.indicator_overlay.is_null() { ShowWindow(state.indicator_overlay, SW_HIDE); }
+    let focus = GetFocus();
+    if !visible && (focus == state.show_all_button || state.cards.iter().any(|card| card.action == Some(focus))) {
+        SetFocus(if GetForegroundWindow() == window && IsIconic(window) == 0 { state.viewport } else { null_mut() });
+    }
+    ShowWindow(state.show_all_button, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE });
+    for card in &state.cards {
+        if let Some(action) = card.action { ShowWindow(action, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE }); }
+    }
+    layout(window, state, None, false);
 }
 

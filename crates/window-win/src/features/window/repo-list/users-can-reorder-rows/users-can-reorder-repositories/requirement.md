@@ -1,0 +1,1 @@
+- Dragging a repository changes the position of its entire group.

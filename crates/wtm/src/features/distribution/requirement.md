@@ -1,2 +1,0 @@
-- The app and executable names use WTM instead of WTS.
-- The project includes the unmodified MIT license.

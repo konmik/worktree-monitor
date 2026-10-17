@@ -1,2 +1,4 @@
-- Counts include uncommitted changes.
-- Counts also include changes from the main or master branch.
+- The tracked comparison base is the merge base with main, then master, so branch commits contribute to counts.
+- Without a usable comparison branch, counts use HEAD; an unborn branch uses an empty tree.
+- Detached HEAD is supported and the current HEAD state is reported.
+- A scan retries once if HEAD or the comparison branch changes, then reports an error if identity changes again.

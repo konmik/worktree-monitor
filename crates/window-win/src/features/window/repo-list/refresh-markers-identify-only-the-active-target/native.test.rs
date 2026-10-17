@@ -1,4 +1,11 @@
-use super::*;
+use std::ptr::{null_mut};
+use super::font_resources::{Resources};
+use super::refresh_markers::{draw_name};
+use super::runtime::{scaled, wide};
+use super::window_appearance::{BACKGROUND, TEAL, WHITE, fill, text};
+use windows_sys::Win32::Foundation::{RECT};
+use windows_sys::Win32::Graphics::Gdi::{CreateCompatibleBitmap, CreateCompatibleDC, DT_SINGLELINE, DeleteDC, DeleteObject, GetDC, GetPixel, GetTextExtentPoint32W, ReleaseDC, SelectObject};
+
 
 #[test]
 fn refresh_marker_pixels_follow_displayed_name_by_one_space() {
@@ -29,8 +36,8 @@ fn refresh_marker_pixels_follow_displayed_name_by_one_space() {
                 let actual_old = SelectObject(actual, actual_bitmap);
                 let expected_old = SelectObject(expected, expected_bitmap);
                 let rect = RECT { left: 0, top: 0, right: width, bottom: height };
-                fill(actual, rect, resources.background);
-                fill(expected, rect, resources.background);
+                fill(actual, rect, resources.palette.background);
+                fill(expected, rect, resources.palette.background);
                 draw_name(actual, name, rect, resources.font, WHITE, suffix, true);
                 text(expected, displayed, RECT { right: name_size.cx, ..rect }, resources.font, WHITE, DT_SINGLELINE);
                 text(expected, "*", RECT { left: name_size.cx + space_size.cx, right: name_size.cx + space_size.cx + marker_size.cx, ..rect }, resources.font, TEAL, DT_SINGLELINE);

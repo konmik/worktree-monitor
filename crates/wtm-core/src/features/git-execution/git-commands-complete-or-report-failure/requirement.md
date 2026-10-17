@@ -1,0 +1,3 @@
+- Git commands do not wait for interactive input.
+- Commands that exceed their time or output limits report an error.
+- Failed commands report Git diagnostics.

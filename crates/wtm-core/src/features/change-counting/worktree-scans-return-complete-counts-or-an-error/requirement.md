@@ -1,0 +1,3 @@
+- Tracked counts combine staged and unstaged changes as a net difference.
+- Unresolved conflicts and unreadable files report errors instead of partial counts.
+- Submodule contents are not recursively counted.

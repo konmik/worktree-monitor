@@ -1,20 +1,10 @@
-use super::*;
+use crate::native::initial_geometry::reset_window_bounds;
 
-pub(in crate::native) unsafe fn reset_window_bounds(window: HWND) -> io::Result<()> {
-    let dpi = GetDpiForWindow(window).max(96) as i32;
-    let mut monitor: MONITORINFO = std::mem::zeroed();
-    monitor.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-    if GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &mut monitor) == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let work = monitor.rcWork;
-    let width = (640 * dpi / 96).min(work.right - work.left);
-    let height = (540 * dpi / 96).min(work.bottom - work.top);
-    if SetWindowPos(window, HWND_TOPMOST, work.left, work.top, width, height, SWP_NOACTIVATE) == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
-}
+use crate::placement_win;
+use std::io;
+use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNORMAL, SetForegroundWindow, ShowWindow};
+
 
 pub(super) unsafe fn apply(window: HWND, placement_path: &std::path::Path) -> io::Result<()> {
     ShowWindow(window, SW_SHOWNORMAL);

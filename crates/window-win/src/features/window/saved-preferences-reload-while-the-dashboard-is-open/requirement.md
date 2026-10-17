@@ -1,0 +1,1 @@
+- Saved presentation order and worktree visibility reload while the dashboard is open.

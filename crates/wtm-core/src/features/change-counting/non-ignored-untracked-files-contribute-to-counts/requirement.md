@@ -1,0 +1,3 @@
+- Untracked files that are not ignored contribute additions and binary counts.
+- Git attributes determine text and binary handling.
+- Unsupported or inaccessible untracked entries report errors.
