@@ -1,16 +1,21 @@
 pub mod dashboard;
 pub mod order;
+#[path = "features/window/the-window-fades-outside-hover/users-can-select-opacity-in-five-percent-steps/opacity.rs"]
 pub mod opacity;
+#[path = "features/window/window-position-survives-restart/placement.rs"]
 pub mod placement;
 pub mod visibility;
 
 #[cfg(any(windows, test))]
+#[path = "features/window/design/layout-stays-compact-when-the-window-narrows/layout.rs"]
 mod layout;
 
 #[cfg(any(windows, test))]
+#[path = "features/window/design/all-text-shares-one-monospace-font-and-size/typography.rs"]
 mod typography;
 
 #[cfg(windows)]
+#[path = "features/window/window-position-survives-restart/placement_win.rs"]
 mod placement_win;
 
 #[cfg(windows)]

@@ -28,18 +28,70 @@ use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWi
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use wtm_core::{Counts, Monitor, MonitorUpdate, Service};
 
-const BACKGROUND: COLORREF = rgb(11, 16, 18);
-const GREEN: COLORREF = rgb(194, 249, 112);
-const TEAL: COLORREF = rgb(84, 213, 197);
-const RED: COLORREF = rgb(255, 131, 137);
-const WHITE: COLORREF = rgb(232, 239, 235);
-const MUTED: COLORREF = rgb(132, 150, 156);
+#[path = "features/window/design/all-text-shares-one-monospace-font-and-size/resources.rs"]
+mod font_resources;
+use font_resources::*;
+
+#[path = "features/window/design/layout-stays-compact-when-the-window-narrows/native.rs"]
+mod row_layout;
+use row_layout::*;
+
+#[path = "features/window/repo-list/worktree/indicators/count-indicators-hide-empty-optional-groups/native.rs"]
+mod count_indicators;
+use count_indicators::*;
+
+#[path = "features/window/repo-list/worktree/indicators/nonzero-line-change-indicators-stay-fully-opaque/native.rs"]
+mod opaque_indicators;
+use opaque_indicators::*;
+
+#[path = "features/window/repo-list/refresh-markers-identify-only-the-active-target/native.rs"]
+mod refresh_markers;
+use refresh_markers::*;
+
+#[path = "features/window/idle-indicator/idle-percentage-shows-unused-monitor-time-over-the-last-minute/native.rs"]
+mod idle_indicator;
+use idle_indicator::*;
+
+#[path = "features/window/visibility-controls/visibility-controls-appear-only-while-the-mouse-hovers-over-the-window/native.rs"]
+mod visibility_controls;
+use visibility_controls::*;
+
+#[path = "features/window/the-window-fades-outside-hover/native.rs"]
+mod window_fading;
+use window_fading::*;
+
+#[path = "features/window/users-can-move-the-window/native.rs"]
+mod window_movement;
+use window_movement::*;
+
+#[path = "features/window/window-position-survives-restart/reset-position-returns-the-window-to-defaults/native.rs"]
+mod reset_position;
+use reset_position::*;
+
+#[path = "features/window/design/the-dashboard-has-a-flat-terminal-appearance/native.rs"]
+mod window_appearance;
+use window_appearance::*;
+
+#[cfg(test)]
+#[path = "features/window/repo-list/worktree/indicators/count-indicators-hide-empty-optional-groups/native.test.rs"]
+mod count_indicator_tests;
+
+#[cfg(test)]
+#[path = "features/window/repo-list/worktree/indicators/nonzero-line-change-indicators-stay-fully-opaque/native.test.rs"]
+mod opaque_indicator_tests;
+
+#[cfg(test)]
+#[path = "features/window/repo-list/refresh-markers-identify-only-the-active-target/native.test.rs"]
+mod refresh_marker_tests;
+
+#[cfg(test)]
+#[path = "features/window/design/layout-stays-compact-when-the-window-narrows/native.test.rs"]
+mod row_layout_tests;
+
 const STATIC_OWNERDRAW: u32 = 13;
 const STATIC_NOTIFY: u32 = 256;
 const WM_SYNC_INDICATORS: u32 = WM_APP + 42;
 const APP_ICON: *const u16 = std::ptr::without_provenance(1);
-
-const fn rgb(red: u32, green: u32, blue: u32) -> COLORREF { red | (green << 8) | (blue << 16) }
 
 struct Resources {
     font: HFONT,
@@ -161,22 +213,6 @@ struct State {
     taskbar_created: u32,
 }
 
-unsafe fn reset_window_bounds(window: HWND) -> io::Result<()> {
-    let dpi = GetDpiForWindow(window).max(96) as i32;
-    let mut monitor: MONITORINFO = std::mem::zeroed();
-    monitor.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-    if GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &mut monitor) == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let work = monitor.rcWork;
-    let width = (640 * dpi / 96).min(work.right - work.left);
-    let height = (540 * dpi / 96).min(work.bottom - work.top);
-    if SetWindowPos(window, HWND_TOPMOST, work.left, work.top, width, height, SWP_NOACTIVATE) == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
-}
-
 unsafe fn context_menu(window: HWND, point: POINT, pointer: *mut State) -> Result<(), io::Error> {
     match notification_menu::show(window, point, (*pointer).opacity)? {
         Action::Hide => { ShowWindow(window, SW_HIDE); }
@@ -222,13 +258,6 @@ impl Drop for State {
 
 fn wide(text: &str) -> Vec<u16> { text.encode_utf16().chain(Some(0)).collect() }
 fn scaled(value: i32, dpi: i32) -> i32 { (value * dpi / 96).max(1) }
-fn content_inset(width: i32, dpi: i32, resources: &Resources) -> i32 {
-    (scaled(14, dpi) - resources.space_width).max(0).min(width.saturating_sub(1) / 2)
-}
-fn content_text_width(width: i32, dpi: i32, resources: &Resources) -> i32 {
-    (width - content_inset(width, dpi, resources) * 2).max(1)
-}
-
 unsafe fn set_item(card: &mut Card, display: DisplayItem) {
     if card.display != display {
         if matches!(card.display, DisplayItem::PendingWorktree { .. }) != matches!(display, DisplayItem::PendingWorktree { .. }) {
@@ -279,19 +308,6 @@ unsafe fn destroy_card(card: Card) {
     DestroyWindow(card.window);
 }
 
-unsafe fn update_action_caption(card: &mut Card, visibility: &Visibility) -> bool {
-    let Some(action) = card.action else { return false; };
-    let Some(ItemKey::Worktree(repository, worktree)) = &card.key else { return false; };
-    let hidden = visibility.contains(repository, worktree);
-    if card.action_hidden != Some(hidden) {
-        SetWindowTextW(action, wide(if hidden { "Unhide" } else { "Hide" }).as_ptr());
-        InvalidateRect(action, null(), 0);
-        card.action_hidden = Some(hidden);
-        return true;
-    }
-    false
-}
-
 unsafe fn reconcile(state: &mut State) -> bool {
     state.indicators_dirty = true;
     let Some(resources) = &state.resources else { return false; };
@@ -321,254 +337,6 @@ unsafe fn reconcile(state: &mut State) -> bool {
     succeeded
 }
 
-unsafe fn fonts(window: HWND, state: &mut State) -> bool {
-    state.indicators_dirty = true;
-    let dpi = GetDpiForWindow(window).max(96) as i32;
-    let Some(resources) = Resources::new(dpi) else { return false; };
-    for card in state.fixed.iter().chain(&state.cards) {
-        SendMessageW(card.window, WM_SETFONT, resources.font as WPARAM, 0);
-        if let Some(action) = card.action {
-            SendMessageW(action, WM_SETFONT, resources.font as WPARAM, 0);
-        }
-    }
-    if !state.show_all_button.is_null() {
-        SendMessageW(state.show_all_button, WM_SETFONT, resources.font as WPARAM, 0);
-    }
-    state.resources = Some(resources);
-    state.dpi = dpi;
-    true
-}
-
-unsafe fn wrapped_lines(dc: HDC, text: &str, width: i32, font: HFONT) -> Vec<String> {
-    typography::wrap(text, width, |value| wrapped_width(dc, value, font))
-}
-
-unsafe fn item_height(card: &Card, dc: HDC, width: i32, dpi: i32, resources: &Resources) -> i32 {
-    let lines = match &card.display {
-        DisplayItem::Repository { bare, .. } => 1 + usize::from(*bare),
-        DisplayItem::PendingWorktree { .. } => 2,
-        DisplayItem::Worktree { result, .. } => {
-            let text_width = content_text_width(width, dpi, resources);
-            match result {
-                Ok(_) => 2,
-                Err(error) => 2 + wrapped_lines(dc, &format!("ERROR ({:?}): {}", error.kind, error.message), text_width, resources.font).len(),
-            }
-        }
-        DisplayItem::Notice { message, .. } => 1 + if message.is_empty() { 0 } else {
-            let text_width = content_text_width(width, dpi, resources);
-            wrapped_lines(dc, message, text_width, resources.font).len()
-        },
-        _ => 1,
-    };
-    card.spacing.height(resources.typography, lines)
-}
-
-fn attached_rows(previous: &DisplayItem, next: &DisplayItem) -> bool {
-    matches!(previous, DisplayItem::Repository { .. } | DisplayItem::Worktree { .. } | DisplayItem::PendingWorktree { .. })
-        && matches!(next, DisplayItem::Worktree { .. } | DisplayItem::PendingWorktree { .. })
-}
-
-#[cfg(test)]
-mod row_tests {
-    use super::*;
-
-    #[test]
-    fn line_change_groups_keep_count_text_and_nonzero_opacity() {
-        use wtm_core::LineCounts;
-        for source in [LineCounts::default(), LineCounts { additions: 3, deletions: 0 }, LineCounts { additions: 0, deletions: 4 }] {
-            for test in [LineCounts::default(), LineCounts { additions: 5, deletions: 0 }] {
-                for extra in [LineCounts::default(), LineCounts { additions: 0, deletions: 6 }] {
-                    for binaries in [0, 7] {
-                        let counts = Counts { source, test, extra, binaries };
-                        let parts = count_parts(&counts);
-                        assert_eq!(parts.iter().map(|part| part.text.as_str()).collect::<String>(), counts.to_string());
-                        let source_changed = source.additions > 0 || source.deletions > 0;
-                        assert!(parts[..4].iter().all(|part| part.opaque == source_changed));
-                        assert_eq!(parts[1].color, if source_changed { GREEN } else { MUTED });
-                        assert_eq!(parts[3].color, if source_changed { RED } else { MUTED });
-                        assert!(parts.iter().filter(|part| part.text.starts_with(" · ")).all(|part| !part.opaque));
-                        for label in ["T ", "X "] {
-                            assert!(parts.iter().filter(|part| part.text.starts_with(label)).all(|part| part.opaque));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn opaque_counts_leave_zero_source_and_binary_text_transparent() {
-        use wtm_core::LineCounts;
-        unsafe {
-            let screen = GetDC(null_mut());
-            for dpi in [96, 144, 192] {
-                let resources = Resources::new(dpi).unwrap();
-                let counts = Counts { test: LineCounts { additions: 12, deletions: 0 },
-                    extra: LineCounts { additions: 0, deletions: 8 }, binaries: 9, ..Counts::default() };
-                let width = wrapped_width(screen, &counts.to_string(), resources.font);
-                let height = resources.typography.cell;
-                let bitmap = IndicatorBitmap::new(screen, width, height).unwrap();
-                let rect = RECT { left: 0, top: 0, right: width, bottom: height };
-                draw_counts(bitmap.dc, &counts, rect, &resources, false, CountLayer::Mask);
-                GdiFlush();
-                let source_end = wrapped_width(screen, "S +0/-0 · ", resources.font);
-                let test_end = source_end + wrapped_width(screen, "T +12/-0", resources.font);
-                let extra_start = test_end + wrapped_width(screen, " · ", resources.font);
-                let extra_end = extra_start + wrapped_width(screen, "X +0/-8", resources.font);
-                let pixels = std::slice::from_raw_parts(bitmap.pixels, bitmap.length);
-                let has_pixels = |start, end| (0..height).any(|y| (start..end).any(|x| pixels[(y * width + x) as usize] != 0));
-                assert!(!has_pixels(0, source_end));
-                assert!(has_pixels(source_end, test_end));
-                assert!(!has_pixels(test_end, extra_start));
-                assert!(has_pixels(extra_start, extra_end));
-                assert!(!has_pixels(extra_end, width));
-                let blank = IndicatorBitmap::new(screen, width, height).unwrap();
-                draw_counts(blank.dc, &Counts { binaries: 9, ..Counts::default() }, rect, &resources, false, CountLayer::Mask);
-                GdiFlush();
-                assert!(std::slice::from_raw_parts(blank.pixels, blank.length).iter().all(|pixel| *pixel == 0));
-            }
-            ReleaseDC(null_mut(), screen);
-        }
-    }
-
-    #[test]
-    fn refresh_marker_pixels_follow_displayed_name_by_one_space() {
-        unsafe {
-            let screen = GetDC(null_mut());
-            for dpi in [96, 120, 144, 192] {
-                let resources = Resources::new(dpi).unwrap();
-                for (name, suffix, displayed, narrow) in [
-                    ("repository", false, "repository", false),
-                    ("master", false, "master", false),
-                    ("repository-name", false, "repo…", true),
-                    ("C:\\work\\branch", true, "…branch", true),
-                ] {
-                    let actual = CreateCompatibleDC(screen);
-                    let expected = CreateCompatibleDC(screen);
-                    SelectObject(expected, resources.font);
-                    let mut name_size = std::mem::zeroed();
-                    let name_wide = wide(displayed);
-                    assert_ne!(GetTextExtentPoint32W(expected, name_wide.as_ptr(), (name_wide.len() - 1) as i32, &mut name_size), 0);
-                    let mut marker_size = std::mem::zeroed();
-                    assert_ne!(GetTextExtentPoint32W(expected, wide("*").as_ptr(), 1, &mut marker_size), 0);
-                    let mut space_size = std::mem::zeroed();
-                    assert_ne!(GetTextExtentPoint32W(expected, wide(" ").as_ptr(), 1, &mut space_size), 0);
-                    let width = if narrow { name_size.cx + space_size.cx + marker_size.cx } else { scaled(500, dpi) };
-                    let height = resources.typography.cell;
-                    let actual_bitmap = CreateCompatibleBitmap(screen, width, height);
-                    let expected_bitmap = CreateCompatibleBitmap(screen, width, height);
-                    let actual_old = SelectObject(actual, actual_bitmap);
-                    let expected_old = SelectObject(expected, expected_bitmap);
-                    let rect = RECT { left: 0, top: 0, right: width, bottom: height };
-                    fill(actual, rect, resources.background);
-                    fill(expected, rect, resources.background);
-                    draw_name(actual, name, rect, resources.font, WHITE, suffix, true);
-                    text(expected, displayed, RECT { right: name_size.cx, ..rect }, resources.font, WHITE, DT_SINGLELINE);
-                    text(expected, "*", RECT { left: name_size.cx + space_size.cx, right: name_size.cx + space_size.cx + marker_size.cx, ..rect }, resources.font, TEAL, DT_SINGLELINE);
-                    let mut marker_pixels = 0;
-                    for y in 0..height {
-                        for x in 0..width {
-                            let pixel = GetPixel(actual, x, y);
-                            assert_eq!(pixel, GetPixel(expected, x, y), "DPI {dpi}, {name}, pixel {x},{y}");
-                            if x >= name_size.cx + space_size.cx && pixel != BACKGROUND { marker_pixels += 1; }
-                        }
-                        for x in name_size.cx..name_size.cx + space_size.cx {
-                            assert_eq!(GetPixel(actual, x, y), BACKGROUND);
-                        }
-                    }
-                    assert!(marker_pixels > 0);
-                    SelectObject(actual, actual_old);
-                    SelectObject(expected, expected_old);
-                    DeleteObject(actual_bitmap);
-                    DeleteObject(expected_bitmap);
-                    DeleteDC(actual);
-                    DeleteDC(expected);
-                }
-            }
-            ReleaseDC(null_mut(), screen);
-        }
-    }
-
-    #[test]
-    fn content_padding_shrinks_by_one_font_space_at_each_dpi() {
-        unsafe {
-            let dc = CreateCompatibleDC(null_mut());
-            for dpi in [96, 120, 144, 192] {
-                let resources = Resources::new(dpi).unwrap();
-                let space_width = wrapped_width(dc, " ", resources.font);
-                let width = scaled(400, dpi);
-                let inset = content_inset(width, dpi, &resources);
-                assert_eq!(inset, scaled(14, dpi) - space_width);
-                assert_eq!(content_text_width(width, dpi, &resources), width - scaled(14, dpi) * 2 + space_width * 2);
-                for width in 1..scaled(28, dpi) {
-                    let inset = content_inset(width, dpi, &resources);
-                    assert!(inset >= 0);
-                    assert!(width - inset * 2 > 0);
-                }
-            }
-            DeleteDC(dc);
-        }
-    }
-
-    #[test]
-    fn narrowing_only_adds_height_for_wrapped_text() {
-        use wtm_core::{Counts, Error, ErrorKind, Head, WorktreeStats};
-        let items = [
-            DisplayItem::Repository { name: "repository".into(), bare: false },
-            DisplayItem::Repository { name: "bare".into(), bare: true },
-            DisplayItem::PendingWorktree { path: "branch".into() },
-            DisplayItem::Worktree { path: "branch".into(), result: Ok(WorktreeStats {
-                head: Head::Branch("master".into()), counts: Counts::default(),
-            }) },
-            DisplayItem::Worktree { path: "branch".into(), result: Err(Error {
-                kind: ErrorKind::Git, message: "failure".into(),
-            }) },
-        ];
-        for dpi in [96, 120, 144, 192] {
-            let resources = unsafe { Resources::new(dpi) }.unwrap();
-            let dc = unsafe { GetDC(null_mut()) };
-            for display in &items {
-                for attached_before in [false, true] {
-                    let card = Card { window: null_mut(), action: None, action_hidden: None, key: None,
-                        display: display.clone(), refreshing: false, top: 0, height: 0, action_rect: None,
-                        spacing: RowSpacing::new(resources.typography, attached_before, false) };
-                    let height = unsafe { item_height(&card, dc, scaled(800, dpi), dpi, &resources) };
-                    if matches!(display, DisplayItem::PendingWorktree { .. }) {
-                        assert_eq!(height, card.spacing.height(resources.typography, 2));
-                    }
-                    for width in [359, 360, 361] {
-                        assert_eq!(unsafe { item_height(&card, dc, scaled(width, dpi), dpi, &resources) }, height);
-                    }
-                    if matches!(display, DisplayItem::Worktree { result: Err(_), .. }) {
-                        assert!(unsafe { item_height(&card, dc, scaled(100, dpi), dpi, &resources) } > height);
-                    }
-                }
-            }
-            unsafe { ReleaseDC(null_mut(), dc); }
-        }
-    }
-
-    #[test]
-    fn attached_narrow_heading_keeps_refresh_inline() {
-        let repository = DisplayItem::Repository { name: "repository".into(), bare: false };
-        let branch = DisplayItem::PendingWorktree { path: PathBuf::from("branch") };
-        let notice = DisplayItem::Notice { title: "error".into(), message: "failure".into(), error: true };
-        assert!(attached_rows(&repository, &branch));
-        assert!(!attached_rows(&repository, &notice));
-        assert!(attached_rows(&branch, &branch));
-        assert!(!attached_rows(&branch, &repository));
-        for dpi in [96, 120, 144, 192] {
-            let resources = unsafe { Resources::new(dpi) }.unwrap();
-            let typography = resources.typography;
-            let spacing = RowSpacing::new(typography, false, true);
-            let card = Card { window: null_mut(), action: None, action_hidden: None, key: None,
-                display: repository.clone(), refreshing: false, top: 0, height: 0, action_rect: None, spacing };
-            assert_eq!(unsafe { item_height(&card, null_mut(), scaled(180, dpi), dpi, &resources) },
-                typography.padding + typography.cell.max(typography.advance));
-        }
-    }
-}
-
 fn anchor(state: &State) -> Option<(ItemKey, i32)> {
     state.cards.iter().find(|card| card.top + card.height > state.scroll)
         .and_then(|card| card.key.clone().map(|key| (key, state.scroll - card.top)))
@@ -594,13 +362,6 @@ unsafe fn position_cards(state: &State) {
     }
     for card in &state.cards { position_action(card); }
     InvalidateRect(state.viewport, null(), 0);
-}
-
-unsafe fn position_action(card: &Card) {
-    let Some(action) = card.action else { return; };
-    let Some(rect) = card.action_rect else { return; };
-    SetWindowPos(action, null_mut(), rect.left, rect.top, rect.width, rect.height,
-        SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
 }
 
 unsafe fn wake_scrollbar(state: &mut State) {
@@ -706,417 +467,10 @@ unsafe fn layout(window: HWND, state: &mut State, restore: Option<(ItemKey, i32)
     RedrawWindow(window, null(), null_mut(), RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME);
 }
 
-unsafe fn text(dc: HDC, value: &str, rect: RECT, font: HFONT, color: COLORREF, flags: u32) {
-    if rect.right <= rect.left || rect.bottom <= rect.top { return; }
-    SelectObject(dc, font);
-    SetTextColor(dc, color);
-    SetBkMode(dc, TRANSPARENT as i32);
-    let mut rect = rect;
-    let mut value = wide(value);
-    DrawTextW(dc, value.as_mut_ptr(), (value.len() - 1) as i32, &mut rect, flags | DT_NOPREFIX);
-}
-
-unsafe fn fill(dc: HDC, rect: RECT, brush: HBRUSH) { FillRect(dc, &rect, brush); }
-
-unsafe fn wrapped_text(dc: HDC, value: &str, rect: RECT, resources: &Resources, color: COLORREF) {
-    for (index, line) in wrapped_lines(dc, value, rect.right - rect.left, resources.font).iter().enumerate() {
-        let top = rect.top + index as i32 * resources.typography.advance;
-        text(dc, line, RECT { top, bottom: top + resources.typography.cell, ..rect }, resources.font, color, DT_SINGLELINE);
-    }
-}
-
-struct CountPart {
-    text: String,
-    color: COLORREF,
-    opaque: bool,
-}
-
-fn count_parts(counts: &Counts) -> Vec<CountPart> {
-    let changed = counts.source.additions > 0 || counts.source.deletions > 0;
-    let mut parts = vec![
-        CountPart { text: "S ".into(), color: MUTED, opaque: changed },
-        CountPart { text: format!("+{}", counts.source.additions), color: if changed { GREEN } else { MUTED }, opaque: changed },
-        CountPart { text: "/".into(), color: MUTED, opaque: changed },
-        CountPart { text: format!("-{}", counts.source.deletions), color: if changed { RED } else { MUTED }, opaque: changed },
-    ];
-    for (label, counts) in [("T", counts.test), ("X", counts.extra)] {
-        if counts.additions > 0 || counts.deletions > 0 {
-            parts.push(CountPart { text: " · ".into(), color: MUTED, opaque: false });
-            parts.push(CountPart { text: format!("{label} +{}/-{}", counts.additions, counts.deletions), color: MUTED, opaque: true });
-        }
-    }
-    if counts.binaries > 0 {
-        parts.push(CountPart { text: format!(" · binaries: {}", counts.binaries), color: MUTED, opaque: false });
-    }
-    parts
-}
-
-#[derive(Clone, Copy)]
-enum CountLayer { All, Faded, Opaque, Mask }
-
-unsafe fn draw_counts(dc: HDC, counts: &Counts, rect: RECT, resources: &Resources, dragging: bool, layer: CountLayer) {
-    let mut x = rect.left;
-    for part in count_parts(counts) {
-        let width = wrapped_width(dc, &part.text, resources.font).min(rect.right.saturating_sub(x));
-        let draw = match layer { CountLayer::All => true, CountLayer::Faded => !part.opaque,
-            CountLayer::Opaque | CountLayer::Mask => part.opaque };
-        if draw && width > 0 {
-            let font = if matches!(layer, CountLayer::Opaque | CountLayer::Mask) { resources.overlay_font } else { resources.font };
-            let color = if matches!(layer, CountLayer::Mask) { rgb(255, 255, 255) }
-                else if dragging { GREEN } else { part.color };
-            text(dc, &part.text, RECT { left: x, right: x + width, ..rect }, font, color, DT_SINGLELINE | DT_END_ELLIPSIS);
-        }
-        x = (x + width).min(rect.right);
-    }
-}
-
-struct IndicatorBitmap {
-    dc: HDC,
-    bitmap: HBITMAP,
-    previous: HGDIOBJ,
-    pixels: *mut u32,
-    length: usize,
-}
-
-impl IndicatorBitmap {
-    unsafe fn new(screen: HDC, width: i32, height: i32) -> Option<Self> {
-        let length = usize::try_from(width).ok()?.checked_mul(usize::try_from(height).ok()?)?;
-        let mut bitmap = Self { dc: CreateCompatibleDC(screen), bitmap: null_mut(), previous: null_mut(), pixels: null_mut(), length };
-        if bitmap.dc.is_null() { return None; }
-        let info = BITMAPINFO { bmiHeader: BITMAPINFOHEADER { biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: width, biHeight: -height, biPlanes: 1, biBitCount: 32, biCompression: BI_RGB, ..std::mem::zeroed() },
-            ..std::mem::zeroed() };
-        bitmap.bitmap = CreateDIBSection(screen, &info, DIB_RGB_COLORS, (&mut bitmap.pixels as *mut *mut u32).cast(), null_mut(), 0);
-        if bitmap.bitmap.is_null() || bitmap.pixels.is_null() { return None; }
-        bitmap.previous = SelectObject(bitmap.dc, bitmap.bitmap);
-        std::ptr::write_bytes(bitmap.pixels, 0, length);
-        Some(bitmap)
-    }
-}
-
-impl Drop for IndicatorBitmap {
-    fn drop(&mut self) {
-        unsafe {
-            if !self.previous.is_null() { SelectObject(self.dc, self.previous); }
-            if !self.bitmap.is_null() { DeleteObject(self.bitmap); }
-            if !self.dc.is_null() { DeleteDC(self.dc); }
-        }
-    }
-}
-
-unsafe fn draw_opaque_indicators(state: &State, dc: HDC, layer: CountLayer) {
-    let Some(resources) = &state.resources else { return; };
-    let root = GetAncestor(state.viewport, GA_ROOT);
-    let mut viewport: RECT = std::mem::zeroed();
-    if GetClientRect(state.viewport, &mut viewport) == 0 { return; }
-    MapWindowPoints(state.viewport, root, (&mut viewport as *mut RECT).cast(), 2);
-    let saved = SaveDC(dc);
-    IntersectClipRect(dc, viewport.left, viewport.top, viewport.right, viewport.bottom);
-    for card in &state.cards {
-        let DisplayItem::Worktree { result: Ok(stats), .. } = &card.display else { continue; };
-        if IsWindowVisible(card.window) == 0 { continue; }
-        let mut rect: RECT = std::mem::zeroed();
-        if GetClientRect(card.window, &mut rect) == 0 { continue; }
-        let width = rect.right;
-        MapWindowPoints(card.window, root, (&mut rect as *mut RECT).cast(), 2);
-        if intersection(rect, viewport).is_none() { continue; }
-        let inset = content_inset(width, state.dpi, resources);
-        let y = rect.top + card.spacing.top(resources.typography, 1);
-        let dragging = state.drag.as_ref().is_some_and(|drag| drag.source_handle == card.window);
-        draw_counts(dc, &stats.counts, RECT { left: rect.left + inset, top: y,
-            right: rect.left + inset + content_text_width(width, state.dpi, resources), bottom: y + resources.typography.cell },
-            resources, dragging, layer);
-    }
-    RestoreDC(dc, saved);
-}
-
-unsafe fn sync_indicators(window: HWND, state: &mut State) -> bool {
-    let overlay = state.indicator_overlay;
-    if overlay.is_null() { return true; }
-    if state.controls_visible || IsWindowVisible(window) == 0 || IsIconic(window) != 0 {
-        if IsWindowVisible(overlay) != 0 { ShowWindow(overlay, SW_HIDE); }
-        return true;
-    }
-    let mut rect: RECT = std::mem::zeroed();
-    if GetClientRect(window, &mut rect) == 0 { return false; }
-    let width = rect.right;
-    let height = rect.bottom;
-    if width <= 0 || height <= 0 { ShowWindow(overlay, SW_HIDE); return true; }
-    let mut origin = POINT { x: 0, y: 0 };
-    if ClientToScreen(window, &mut origin) == 0 { return false; }
-    let mut previous: RECT = std::mem::zeroed();
-    GetWindowRect(overlay, &mut previous);
-    if previous.right - previous.left != width || previous.bottom - previous.top != height { state.indicators_dirty = true; }
-    if state.indicators_dirty {
-        let screen = GetDC(null_mut());
-        let color = IndicatorBitmap::new(screen, width, height);
-        let mask = IndicatorBitmap::new(screen, width, height);
-        let success = if let (Some(color), Some(mask)) = (color, mask) {
-            draw_opaque_indicators(state, color.dc, CountLayer::Opaque);
-            draw_opaque_indicators(state, mask.dc, CountLayer::Mask);
-            GdiFlush();
-            let colors = std::slice::from_raw_parts_mut(color.pixels, color.length);
-            let masks = std::slice::from_raw_parts(mask.pixels, mask.length);
-            for (color, mask) in colors.iter_mut().zip(masks) {
-                let alpha = (mask & 255).max((mask >> 8) & 255).max((mask >> 16) & 255);
-                *color = (*color & 0xffffff) | (alpha << 24);
-            }
-            let size = windows_sys::Win32::Foundation::SIZE { cx: width, cy: height };
-            let source = POINT { x: 0, y: 0 };
-            let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
-            UpdateLayeredWindow(overlay, screen, &origin, &size, color.dc, &source, 0, &blend, ULW_ALPHA) != 0
-        } else { false };
-        ReleaseDC(null_mut(), screen);
-        if !success { return false; }
-        state.indicators_dirty = false;
-    } else if (previous.left != origin.x || previous.top != origin.y)
-        && SetWindowPos(overlay, null_mut(), origin.x, origin.y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE) == 0 { return false; }
-    if IsWindowVisible(overlay) == 0 { ShowWindow(overlay, SW_SHOWNOACTIVATE); }
-    true
-}
-
-unsafe extern "system" fn indicator_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    match message {
-        WM_NCHITTEST => HTTRANSPARENT as LRESULT,
-        WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
-        WM_ERASEBKGND => 1,
-        _ => DefWindowProcW(window, message, wparam, lparam),
-    }
-}
-
-unsafe fn paint_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
-    let width = draw.rcItem.right - draw.rcItem.left;
-    let height = draw.rcItem.bottom - draw.rcItem.top;
-    if width <= 0 || height <= 0 { return; }
-    let memory = CreateCompatibleDC(draw.hDC);
-    let bitmap = CreateCompatibleBitmap(draw.hDC, width, height);
-    if !memory.is_null() && !bitmap.is_null() {
-        let old = SelectObject(memory, bitmap);
-        let buffered = DRAWITEMSTRUCT { hDC: memory,
-            rcItem: RECT { left: 0, top: 0, right: width, bottom: height }, ..*draw };
-        draw_card(&buffered, card, state);
-        BitBlt(draw.hDC, draw.rcItem.left, draw.rcItem.top, width, height, memory, 0, 0, SRCCOPY);
-        SelectObject(memory, old);
-    } else { draw_card(draw, card, state); }
-    if !bitmap.is_null() { DeleteObject(bitmap); }
-    if !memory.is_null() { DeleteDC(memory); }
-}
-
-unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
-    let Some(resources) = &state.resources else { return; };
-    let dc = draw.hDC;
-    let saved = SaveDC(dc);
-    let rect = draw.rcItem;
-    let s = |value| scaled(value, state.dpi);
-    let width = rect.right - rect.left;
-    let height = rect.bottom - rect.top;
-    let line = DT_SINGLELINE | DT_END_ELLIPSIS;
-    let caption = card.display.caption();
-    let lines: Vec<_> = caption.lines().collect();
-    let bounds = |left, top, right, bottom| RECT { left: rect.left + left, top: rect.top + top,
-        right: rect.left + right, bottom: rect.top + bottom };
-    let typography = resources.typography;
-    let line_bounds = |left, index, right| {
-        let top = card.spacing.top(typography, index);
-        bounds(left, top, right, top + typography.cell)
-    };
-    let inset = content_inset(width, state.dpi, resources);
-    let right_padding = (s(12) - resources.space_width).max(0);
-    let heading_right = if matches!(card.display, DisplayItem::Repository { .. }) { width - right_padding }
-        else { card.action_rect.map_or(width - right_padding, |rect| rect.left - s(8)) };
-    let dragging = state.drag.as_ref().is_some_and(|drag| drag.source_handle == card.window);
-    fill(dc, rect, resources.background);
-    match &card.display {
-        DisplayItem::Status { health, .. } => {
-            let color = match health { Health::Live => GREEN, Health::Errors => RED, Health::Scanning => MUTED };
-            let y = (height - typography.cell) / 2;
-            text(dc, &caption, bounds(0, y, width, y + typography.cell), resources.font, color, line);
-        }
-        DisplayItem::Repository { bare, .. } => {
-            draw_name(dc, lines[0], line_bounds(inset, 0, heading_right), resources.font,
-                if dragging { GREEN } else { TEAL }, false, card.refreshing);
-            if *bare { text(dc, lines[1], line_bounds(inset, 1, width - right_padding), resources.font, MUTED, line); }
-        }
-        DisplayItem::Worktree { path, result } => {
-            let text_width = content_text_width(width, state.dpi, resources);
-            let right = inset + text_width;
-            let heading_width = (heading_right - inset).max(0).min(text_width);
-            let path = path.display().to_string();
-            match result {
-                Ok(stats) => {
-                    draw_name(dc, lines[0], line_bounds(inset, 0, inset + heading_width), resources.font,
-                        if dragging { GREEN } else { WHITE }, false, card.refreshing);
-                    let y = card.spacing.top(typography, 1);
-                    draw_counts(dc, &stats.counts, bounds(inset, y, right, y + typography.cell), resources, dragging,
-                        if state.controls_visible { CountLayer::All } else { CountLayer::Faded });
-                }
-                Err(error) => {
-                    draw_name(dc, &path, line_bounds(inset, 0, inset + heading_width), resources.font,
-                        if dragging { GREEN } else { MUTED }, true, card.refreshing);
-                    text(dc, lines[1], line_bounds(inset, 1, right), resources.font, MUTED, line);
-                    wrapped_text(dc, &format!("ERROR ({:?}): {}", error.kind, error.message), line_bounds(inset, 2, right), resources, RED);
-                }
-            }
-        }
-        DisplayItem::PendingWorktree { path } => {
-            let heading_width = (heading_right - inset).max(0);
-            draw_name(dc, &path.display().to_string(), line_bounds(inset, 0, inset + heading_width), resources.font,
-                if dragging { GREEN } else { MUTED }, true, card.refreshing);
-        }
-        DisplayItem::Notice { title, message, error } => {
-            text(dc, title, line_bounds(inset, 0, width - inset), resources.font, if *error { RED } else { WHITE }, line);
-            wrapped_text(dc, message, line_bounds(inset, 1, width - inset), resources, if *error { RED } else { MUTED });
-        }
-    }
-    if let Some(target) = state.drag.as_ref().and_then(|drag| drag.target.as_ref()) {
-        let y = if target.marker == card.top { Some(0) }
-            else if target.marker == card.top + card.height { Some(height - s(2)) } else { None };
-        if let Some(y) = y { fill(dc, bounds(0, y, width, y + s(2)), resources.teal); }
-    }
-    RestoreDC(dc, saved);
-}
-
-unsafe fn wrapped_width(dc: HDC, value: &str, font: HFONT) -> i32 {
-    let saved = SaveDC(dc);
-    SelectObject(dc, font);
-    let mut size = std::mem::zeroed();
-    let value = wide(value);
-    GetTextExtentPoint32W(dc, value.as_ptr(), (value.len() - 1) as i32, &mut size);
-    RestoreDC(dc, saved);
-    size.cx
-}
-
-unsafe fn draw_name(dc: HDC, value: &str, rect: RECT, font: HFONT, color: COLORREF, suffix: bool, refreshing: bool) {
-    let marker_width = wrapped_width(dc, "*", font);
-    let space_width = wrapped_width(dc, " ", font);
-    let available = (rect.right - rect.left - if refreshing { marker_width + space_width } else { 0 }).max(0);
-    let measure = |value: &str| wrapped_width(dc, value, font);
-    let fitted = if suffix { ellipsize_start(value, available, measure) }
-        else if measure(value) <= available { value.to_owned() }
-        else if measure("…") > available { String::new() }
-        else {
-            let mut fitted = "…".to_owned();
-            for (index, character) in value.char_indices() {
-                let candidate = format!("{}…", &value[..index + character.len_utf8()]);
-                if measure(&candidate) > available { break; }
-                fitted = candidate;
-            }
-            fitted
-        };
-    let name_right = rect.left + measure(&fitted);
-    text(dc, &fitted, RECT { right: name_right, ..rect }, font, color, DT_SINGLELINE);
-    if refreshing && !fitted.is_empty() {
-        text(dc, "*", RECT { left: name_right + space_width, right: name_right + space_width + marker_width, ..rect }, font, TEAL, DT_SINGLELINE);
-    }
-}
-
-unsafe fn button_caption(window: HWND) -> String {
-    let mut value = [0u16; 128];
-    let length = GetWindowTextW(window, value.as_mut_ptr(), value.len() as i32).max(0) as usize;
-    String::from_utf16_lossy(&value[..length.min(value.len())])
-}
-
-unsafe fn show_all_checked(state: &State) -> bool {
-    SendMessageW(state.show_all_button, BM_GETCHECK, 0, 0) == BST_CHECKED as LRESULT
-}
-
-unsafe fn paint_button(draw: &DRAWITEMSTRUCT, state: &State) {
-    let width = draw.rcItem.right - draw.rcItem.left;
-    let height = draw.rcItem.bottom - draw.rcItem.top;
-    if width <= 0 || height <= 0 { return; }
-    let memory = CreateCompatibleDC(draw.hDC);
-    let bitmap = CreateCompatibleBitmap(draw.hDC, width, height);
-    if !memory.is_null() && !bitmap.is_null() {
-        let old = SelectObject(memory, bitmap);
-        let buffered = DRAWITEMSTRUCT { hDC: memory,
-            rcItem: RECT { left: 0, top: 0, right: width, bottom: height }, ..*draw };
-        draw_button(&buffered, state);
-        BitBlt(draw.hDC, draw.rcItem.left, draw.rcItem.top, width, height, memory, 0, 0, SRCCOPY);
-        SelectObject(memory, old);
-    } else { draw_button(draw, state); }
-    if !bitmap.is_null() { DeleteObject(bitmap); }
-    if !memory.is_null() { DeleteDC(memory); }
-}
-
-unsafe fn draw_button(draw: &DRAWITEMSTRUCT, state: &State) {
-    let Some(resources) = &state.resources else { return; };
-    let saved = SaveDC(draw.hDC);
-    let rect = draw.rcItem;
-    let s = |value| scaled(value, state.dpi);
-    let disabled = draw.itemState & (ODS_DISABLED | ODS_GRAYED) != 0;
-    let pressed = draw.itemState & ODS_SELECTED != 0;
-    let focused = draw.itemState & ODS_FOCUS != 0;
-    let hot = draw.itemState & ODS_HOTLIGHT != 0;
-    let checked = draw.itemState & ODS_CHECKED != 0;
-    fill(draw.hDC, rect, resources.background);
-    let padding = s(8);
-    let text_top = rect.top + (rect.bottom - rect.top - resources.typography.cell).max(0) / 2;
-    let text_rect = RECT { left: rect.left + padding, top: text_top,
-        right: rect.right - padding, bottom: (text_top + resources.typography.cell).min(rect.bottom) };
-    let color = if disabled { MUTED } else if checked || pressed { GREEN }
-        else if focused || hot { TEAL } else { WHITE };
-    text(draw.hDC, &button_caption(draw.hwndItem), text_rect, resources.font, color,
-        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    RestoreDC(draw.hDC, saved);
-}
-
-unsafe fn draw_checkbox(dc: HDC, rect: RECT, window: HWND, state: &State) {
-    let Some(resources) = &state.resources else { return; };
-    let saved = SaveDC(dc);
-    let width = rect.right - rect.left;
-    let height = rect.bottom - rect.top;
-    if width > 0 && height > 0 {
-        fill(dc, rect, resources.background);
-        let checked = SendMessageW(window, BM_GETCHECK, 0, 0) == BST_CHECKED as LRESULT;
-        let focused = GetFocus() == window;
-        let disabled = IsWindowEnabled(window) == 0;
-        let pressed = SendMessageW(window, BM_GETSTATE, 0, 0) & BST_PUSHED as LRESULT != 0;
-        text(dc, if checked { "[x] Show all" } else { "[ ] Show all" }, rect,
-            resources.font, if disabled { MUTED } else if pressed { GREEN } else if focused { TEAL }
-                else if checked { GREEN } else { WHITE }, DT_SINGLELINE | DT_VCENTER);
-    }
-    RestoreDC(dc, saved);
-}
-
 fn intersection(left: RECT, right: RECT) -> Option<RECT> {
     let rect = RECT { left: left.left.max(right.left), top: left.top.max(right.top),
         right: left.right.min(right.right), bottom: left.bottom.min(right.bottom) };
     (rect.left < rect.right && rect.top < rect.bottom).then_some(rect)
-}
-
-unsafe fn paint_background(window: HWND, resources: &Resources, marker: Option<RECT>) {
-    let mut paint: PAINTSTRUCT = std::mem::zeroed();
-    let dc = BeginPaint(window, &mut paint);
-    let rect = paint.rcPaint;
-    let width = rect.right - rect.left;
-    let height = rect.bottom - rect.top;
-    let marker = marker.and_then(|marker| intersection(marker, rect)).map(|mut marker| {
-        marker.left -= rect.left;
-        marker.top -= rect.top;
-        marker.right -= rect.left;
-        marker.bottom -= rect.top;
-        marker
-    });
-    if width > 0 && height > 0 && !dc.is_null() {
-        let memory = CreateCompatibleDC(dc);
-        let bitmap = CreateCompatibleBitmap(dc, width, height);
-        if !memory.is_null() && !bitmap.is_null() {
-            let old = SelectObject(memory, bitmap);
-            fill(memory, RECT { left: 0, top: 0, right: width, bottom: height }, resources.background);
-            if let Some(marker) = marker.as_ref() { fill(memory, *marker, resources.teal); }
-            BitBlt(dc, rect.left, rect.top, width, height, memory, 0, 0, SRCCOPY);
-            SelectObject(memory, old);
-        } else {
-            fill(dc, rect, resources.background);
-            if let Some(marker) = marker.as_ref() {
-                fill(dc, RECT { left: marker.left + rect.left, top: marker.top + rect.top,
-                    right: marker.right + rect.left, bottom: marker.bottom + rect.top }, resources.teal);
-            }
-        }
-        if !bitmap.is_null() { DeleteObject(bitmap); }
-        if !memory.is_null() { DeleteDC(memory); }
-    }
-    EndPaint(window, &paint);
 }
 
 unsafe fn draw_item(state: &State, lparam: LPARAM) -> LRESULT {
@@ -1187,110 +541,6 @@ fn reorderable(state: &State, key: &ItemKey) -> bool {
 
 fn mouse_point(lparam: LPARAM) -> POINT {
     POINT { x: (lparam as u16 as i16) as i32, y: ((lparam >> 16) as u16 as i16) as i32 }
-}
-
-#[derive(Clone, Copy)]
-enum NativeHit {
-    Edge(LRESULT),
-    Child,
-    Empty,
-}
-
-unsafe fn resize_hit(window: HWND, point: POINT) -> Option<LRESULT> {
-    if IsZoomed(window) != 0 { return None; }
-    let mut rect: RECT = std::mem::zeroed();
-    if GetWindowRect(window, &mut rect) == 0 || point.x < rect.left || point.x >= rect.right
-        || point.y < rect.top || point.y >= rect.bottom { return None; }
-    let dpi = GetDpiForWindow(window).max(96) as i32;
-    let frame_x = (GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi as u32)
-        + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi as u32)).max(scaled(4, dpi));
-    let frame_y = (GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi as u32)
-        + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi as u32)).max(scaled(4, dpi));
-    let left = point.x < rect.left + frame_x;
-    let right = point.x >= rect.right - frame_x;
-    let top = point.y < rect.top + frame_y;
-    let bottom = point.y >= rect.bottom - frame_y;
-    Some(match (left, right, top, bottom) {
-        (true, _, true, _) => HTTOPLEFT as LRESULT,
-        (_, true, true, _) => HTTOPRIGHT as LRESULT,
-        (true, _, _, true) => HTBOTTOMLEFT as LRESULT,
-        (_, true, _, true) => HTBOTTOMRIGHT as LRESULT,
-        (_, _, true, _) => HTTOP as LRESULT,
-        (_, _, _, true) => HTBOTTOM as LRESULT,
-        (true, _, _, _) => HTLEFT as LRESULT,
-        (_, true, _, _) => HTRIGHT as LRESULT,
-        _ => return None,
-    })
-}
-
-unsafe fn native_hit_test(root: HWND, viewport: HWND, point: POINT) -> Option<NativeHit> {
-    if let Some(hit) = resize_hit(root, point) { return Some(NativeHit::Edge(hit)); }
-    let mut client = point;
-    if ScreenToClient(root, &mut client) == 0 { return None; }
-    let mut bounds: RECT = std::mem::zeroed();
-    if GetClientRect(root, &mut bounds) == 0 || client.x < 0 || client.x >= bounds.right
-        || client.y < 0 || client.y >= bounds.bottom { return None; }
-    let child = ChildWindowFromPointEx(root, client, CWP_SKIPINVISIBLE);
-    if child.is_null() { return None; }
-    if child == root || GetDlgCtrlID(child) == 1002 { return Some(NativeHit::Empty); }
-    if child == viewport {
-        let mut viewport_point = point;
-        if ScreenToClient(viewport, &mut viewport_point) == 0 { return None; }
-        let nested = ChildWindowFromPointEx(viewport, viewport_point, CWP_SKIPINVISIBLE);
-        if nested.is_null() || nested == viewport { Some(NativeHit::Empty) } else { Some(NativeHit::Child) }
-    } else {
-        Some(NativeHit::Child)
-    }
-}
-
-unsafe fn edge_hit_transparent(window: HWND, point: POINT) -> bool {
-    let root = GetAncestor(window, GA_ROOT);
-    resize_hit(root, point).is_some()
-}
-
-unsafe fn update_hover_state(window: HWND, state: &mut State) {
-    let mut point: POINT = std::mem::zeroed();
-    let visible = IsWindowVisible(window) != 0 && IsIconic(window) == 0 && GetCursorPos(&mut point) != 0
-        && { let hit = GetAncestor(WindowFromPoint(point), GA_ROOT); hit == window || hit == state.indicator_overlay };
-    if visible == state.controls_visible { return; }
-    if SetLayeredWindowAttributes(window, 0, if visible { 255 } else { state.opacity.alpha() }, LWA_ALPHA) == 0 {
-        state.failure = Some(io::Error::last_os_error());
-        PostMessageW(window, WM_CLOSE, 0, 0);
-        return;
-    }
-    state.controls_visible = visible;
-    if visible && !state.indicator_overlay.is_null() { ShowWindow(state.indicator_overlay, SW_HIDE); }
-    let focus = GetFocus();
-    if !visible && (focus == state.show_all_button || state.cards.iter().any(|card| card.action == Some(focus))) {
-        SetFocus(if GetForegroundWindow() == window && IsIconic(window) == 0 { state.viewport } else { null_mut() });
-    }
-    ShowWindow(state.show_all_button, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE });
-    for card in &state.cards {
-        if let Some(action) = card.action { ShowWindow(action, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE }); }
-    }
-    layout(window, state, None, false);
-}
-
-unsafe fn track_hover(window: HWND, message: u32) {
-    if !matches!(message, WM_MOUSEMOVE | WM_NCMOUSEMOVE | WM_MOUSELEAVE | WM_NCMOUSELEAVE) { return; }
-    if matches!(message, WM_MOUSEMOVE | WM_NCMOUSEMOVE) {
-        let mut tracking = TRACKMOUSEEVENT { cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
-            dwFlags: TME_LEAVE | if message == WM_NCMOUSEMOVE { TME_NONCLIENT } else { 0 },
-            hwndTrack: window, dwHoverTime: 0 };
-        TrackMouseEvent(&mut tracking);
-    }
-    let root = GetAncestor(window, GA_ROOT);
-    let pointer = GetWindowLongPtrW(root, GWLP_USERDATA) as *mut State;
-    if !pointer.is_null() { update_hover_state(root, &mut *pointer); }
-}
-
-unsafe extern "system" fn edge_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
-    track_hover(window, message);
-    if message == WM_NCDESTROY { RemoveWindowSubclass(window, Some(edge_procedure), 1); }
-    if message == WM_NCHITTEST && (GetDlgCtrlID(window) == 1002 || edge_hit_transparent(window, mouse_point(lparam))) {
-        return HTTRANSPARENT as LRESULT;
-    }
-    DefSubclassProc(window, message, wparam, lparam)
 }
 
 unsafe fn draw_scrollbar_chevron(dc: HDC, rect: RECT, up: bool) {
@@ -1478,27 +728,6 @@ unsafe fn move_drag(state: &mut State, point: POINT) {
     }
 }
 
-unsafe fn set_status(state: &mut State) {
-    if let Some(card) = state.fixed.get_mut(0) {
-        set_item(card, DisplayItem::Status { health: state.view.health,
-            polling_time_last_minute: state.latest.as_ref().map_or(Duration::ZERO, |update| update.polling_time_last_minute) });
-    }
-}
-
-unsafe fn refresh_indicators(state: &mut State) {
-    if let Some(update) = &state.latest {
-        state.refreshing = state.refresh_tracker.update(&update.scan_activities, Instant::now());
-    }
-    for card in &mut state.cards {
-        let refreshing = card.key.as_ref().is_some_and(|key| state.refreshing.contains(key));
-        if card.refreshing != refreshing {
-            card.refreshing = refreshing;
-            SetWindowTextW(card.window, wide(&card.display.caption_with_refresh(refreshing)).as_ptr());
-            InvalidateRect(card.window, null(), 0);
-        }
-    }
-}
-
 unsafe fn refresh(window: HWND, state: &mut State) {
     let mut view = if let Some(update) = &state.latest {
         let mut targets = update.scan_targets.clone();
@@ -1645,30 +874,6 @@ unsafe extern "system" fn card_procedure(window: HWND, message: u32, wparam: WPA
         }
     }
     DefSubclassProc(window, message, wparam, lparam)
-}
-
-unsafe extern "system" fn show_all_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, data: usize) -> LRESULT {
-    track_hover(window, message);
-    if message == WM_ERASEBKGND { return 1; }
-    if message == WM_NCDESTROY { RemoveWindowSubclass(window, Some(show_all_procedure), 1); }
-    if message == WM_NCHITTEST && edge_hit_transparent(window, mouse_point(lparam)) {
-        return HTTRANSPARENT as LRESULT;
-    }
-    if message == WM_PAINT || message == WM_PRINTCLIENT {
-        let mut paint: PAINTSTRUCT = std::mem::zeroed();
-        let dc = if message == WM_PAINT { BeginPaint(window, &mut paint) } else { wparam as HDC };
-        let mut rect: RECT = std::mem::zeroed();
-        if !dc.is_null() && GetClientRect(window, &mut rect) != 0 {
-            draw_checkbox(dc, rect, window, &*(data as *const State));
-        }
-        if message == WM_PAINT { EndPaint(window, &paint); }
-        return 0;
-    }
-    let result = DefSubclassProc(window, message, wparam, lparam);
-    if matches!(message, WM_SETFOCUS | WM_KILLFOCUS | WM_ENABLE | BM_SETCHECK | BM_SETSTATE) {
-        InvalidateRect(window, null(), 0);
-    }
-    result
 }
 
 unsafe extern "system" fn viewport_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {

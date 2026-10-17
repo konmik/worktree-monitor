@@ -1,9 +1,14 @@
-use std::collections::{HashMap, HashSet};
+#[path = "features/window/repo-list/refresh-markers-identify-only-the-active-target/refresh.rs"]
+mod refresh;
+pub use refresh::RefreshTracker;
+#[path = "features/window/idle-indicator/idle-percentage-shows-unused-monitor-time-over-the-last-minute/idle.rs"]
+mod idle;
+
 use std::path::{Path, PathBuf};
 use crate::order::identity;
 use crate::visibility::Visibility;
-use wtm_core::{Error, Head, ScanActivity, ScanTarget, Snapshot, WorktreeStats};
-use std::time::{Duration, Instant};
+use wtm_core::{Error, Head, ScanTarget, Snapshot, WorktreeStats};
+use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Health { Scanning, Live, Errors }
@@ -18,34 +23,6 @@ pub enum ItemKey {
     Repository(PathBuf),
     RepositoryError(PathBuf),
     Worktree(PathBuf, PathBuf),
-}
-
-#[derive(Default)]
-pub struct RefreshTracker {
-    entries: HashMap<ItemKey, (u64, Instant)>,
-}
-
-impl RefreshTracker {
-    pub fn update(&mut self, activities: &[ScanActivity], now: Instant) -> HashSet<ItemKey> {
-        let mut present = HashSet::new();
-        let mut refreshing = HashSet::new();
-        for activity in activities {
-            let key = match &activity.target {
-                ScanTarget::Repository { common_dir, .. } => ItemKey::Repository(identity(common_dir)),
-                ScanTarget::Worktree { repository, path } => ItemKey::Worktree(identity(repository), identity(path)),
-            };
-            present.insert(key.clone());
-            let entry = self.entries.entry(key.clone()).or_insert_with(|| (activity.generation, now + Duration::from_secs(1)));
-            if entry.0 != activity.generation {
-                *entry = (activity.generation, now + Duration::from_secs(1));
-            }
-            if activity.finished_at.is_none() || now < entry.1 {
-                refreshing.insert(key);
-            }
-        }
-        self.entries.retain(|key, _| present.contains(key));
-        refreshing
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -89,10 +66,7 @@ impl DisplayItem {
 
     pub fn caption(&self) -> String {
         match self {
-            Self::Status { polling_time_last_minute, .. } => {
-                let percent = 100 - (polling_time_last_minute.as_millis().saturating_add(300) / 600).min(100);
-                format!("[idle: {percent}%]")
-            }
+            Self::Status { polling_time_last_minute, .. } => idle::caption(*polling_time_last_minute),
             Self::Repository { name, bare } => {
                 let mut text = name.clone();
                 if *bare { text.push_str("\nNo working trees (bare repository)."); }
