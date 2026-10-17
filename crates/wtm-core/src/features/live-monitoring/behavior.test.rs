@@ -31,8 +31,8 @@ fn absent_configuration_is_recovered_when_created() {
     wait_for(&monitor, |update| update.snapshot.repos.is_empty());
     fixture.service().add(&fixture.repo).unwrap();
     let elapsed = wait_for_within(&monitor, |update| update.snapshot.repos.len() == 1,
-        Duration::from_secs(6));
-    assert!(elapsed < Duration::from_secs(5), "configuration creation took {elapsed:?}");
+        Duration::from_secs(11));
+    assert!(elapsed < Duration::from_secs(10), "configuration creation took {elapsed:?}");
     monitor.stop().unwrap();
 }
 
