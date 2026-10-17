@@ -1,6 +1,6 @@
 # Window position survives restart
 
-Contract: Remember and restore the window position when the app restarts.
+Contract: The window retains its position across app restarts.
 
 Acceptance criteria:
 

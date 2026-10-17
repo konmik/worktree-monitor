@@ -1,6 +1,6 @@
 # Worktree counts include branch changes
 
-Contract: Include changes from main or master as well as uncommitted worktree changes.
+Contract: Worktree counts include changes from main or master as well as uncommitted changes.
 
 Acceptance criteria:
 

@@ -1,9 +1,8 @@
 # Loading reserves count space without placeholder messages
 
-Contract: Reserve room for counts while the app scans without displaying confusing pending messages.
+Contract: Count space remains reserved while scanning, without pending messages.
 
 Acceptance criteria:
 
-- Keep the count line reserved before lines have been counted.
-- Do not show pending messages during startup.
-- The window has its intended size from the start and does not resize after scans complete.
+- The count line occupies its space before lines have been counted.
+- Startup displays no pending messages.

@@ -1,8 +1,8 @@
 # Refresh markers identify only the active target
 
-Contract: Place scan indicators beside the repository or worktree being refreshed.
+Contract: Scan indicators identify the repository or worktree being refreshed.
 
 Acceptance criteria:
 
-- Place the indicator one character space after the repository or worktree name.
-- Do not show a repository refresh indicator merely because one of its worktrees is refreshing.
+- The indicator appears one character space after the repository or worktree name.
+- A repository refresh indicator appears only when the repository itself is refreshing.

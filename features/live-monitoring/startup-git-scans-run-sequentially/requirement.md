@@ -1,7 +1,7 @@
 # Startup Git scans run sequentially
 
-Contract: Check worktrees sequentially at startup.
+Contract: Worktree Git checks run sequentially at startup.
 
 Acceptance criteria:
 
-- Startup Git checks do not run in parallel.
+- Startup Git checks do not overlap.

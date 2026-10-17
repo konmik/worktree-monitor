@@ -1,8 +1,8 @@
 # Monitoring starts without hanging the app
 
-Contract: Start scanning when the app opens and keep Git work off the interface thread.
+Contract: Monitoring starts when the app opens, with Git work outside the interface thread.
 
 Acceptance criteria:
 
-- Startup begins monitoring and refreshing rather than hanging.
+- Monitoring and refreshing begin at startup without hanging the app.
 - Git work runs in a separate thread or process from the interface.

@@ -1,6 +1,6 @@
 # The window fades outside hover
 
-Contract: Make the window 20% opaque and fully opaque on hover.
+Contract: The window is 20% opaque by default outside hover and fully opaque on hover.
 
 Acceptance criteria:
 

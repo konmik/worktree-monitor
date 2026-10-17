@@ -1,8 +1,9 @@
 # The dashboard has a flat terminal appearance
 
-Contract: Present repositories and worktrees in a compact, flat terminal-style interface.
+Contract: The dashboard has a flat terminal-style appearance.
 
 Acceptance criteria:
 
-- Use one monospace font and size throughout.
-- Use color for emphasis without decorative cards, frames, or shadows.
+- The interface has no decorative frames, card backgrounds, or shadows.
+- Color provides visual emphasis.
+- The app icon matches the terminal style.

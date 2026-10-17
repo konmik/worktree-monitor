@@ -1,9 +1,8 @@
-# The project uses the WTM name and includes user documentation
+# The project uses the WTM name and MIT license
 
-Contract: Use the WTM name throughout the app and provide the requested public project materials.
+Contract: The app uses the WTM name and includes the unmodified MIT license.
 
 Acceptance criteria:
 
-- Replace WTS with WTM throughout the app and executable names.
-- Include the unmodified MIT license.
-- Include a README for users.
+- The app and executable names use WTM instead of WTS.
+- The project includes the unmodified MIT license.

@@ -1,9 +1,9 @@
 # Count indicators hide empty optional groups
 
-Contract: Hide a change category when both of its counters are zero, except for S.
+Contract: Change-category indicators are visible only when at least one counter is nonzero, except for S.
 
 Acceptance criteria:
 
-- Keep S visible when both source counters are zero and render it grey.
-- Keep nonzero S indicators colored.
-- Hide the other change-category indicators when both of their counters are zero.
+- S remains visible and grey when both source counters are zero.
+- Nonzero S indicators are colored.
+- Other change-category indicators are hidden when both counters are zero.

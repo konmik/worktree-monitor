@@ -1,6 +1,6 @@
 # Directory watchers filter Git-ignored updates
 
-Contract: Watch directories and filter Git-ignored updates rather than keeping every individual file path in memory.
+Contract: Monitoring uses directory watchers that filter Git-ignored updates.
 
 Acceptance criteria:
 
