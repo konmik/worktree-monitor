@@ -4,6 +4,19 @@ use std::ptr::null;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
+#[path = "users-can-select-opacity-in-five-percent-steps/menu.rs"]
+mod opacity;
+
+#[path = "users-can-hide-or-show-the-window/menu.rs"]
+mod visibility;
+pub(crate) use visibility::show_window;
+
+#[path = "reset-position-returns-the-window-to-defaults/menu.rs"]
+mod reset_position;
+
+#[path = "users-can-exit-the-app/menu.rs"]
+mod exit;
+
 struct Menu(HMENU);
 
 pub(crate) enum Action {
@@ -19,30 +32,12 @@ impl Menu {
     unsafe fn new(visible: bool, opacity: Opacity) -> io::Result<Self> {
         let menu = CreatePopupMenu();
         if menu.is_null() { return Err(io::Error::last_os_error()); }
-        let opacity_menu = CreatePopupMenu();
-        if opacity_menu.is_null() {
-            let error = io::Error::last_os_error();
-            DestroyMenu(menu);
-            return Err(error);
-        }
-        let populated = (5..=100).step_by(5).all(|percent| {
-            AppendMenuW(opacity_menu, MF_STRING, percent, wide(&format!("{percent}%")).as_ptr()) != 0
-        }) && CheckMenuRadioItem(opacity_menu, 5, 100, u32::from(opacity.percent()), MF_BYCOMMAND) != 0;
-        if !populated || AppendMenuW(menu, MF_POPUP, opacity_menu as usize, wide("Opacity").as_ptr()) == 0 {
-            let error = io::Error::last_os_error();
-            DestroyMenu(opacity_menu);
-            DestroyMenu(menu);
-            return Err(error);
-        }
-        let populated = AppendMenuW(menu, MF_STRING, 1, wide(if visible { "Hide" } else { "Show" }).as_ptr()) != 0
-            && AppendMenuW(menu, MF_STRING, 3, wide("Reset position").as_ptr()) != 0
-            && AppendMenuW(menu, MF_STRING, 2, wide("Exit").as_ptr()) != 0;
-        if !populated {
-            let error = io::Error::last_os_error();
-            DestroyMenu(menu);
-            return Err(error);
-        }
-        Ok(Self(menu))
+        let menu = Self(menu);
+        opacity::append(menu.0, opacity)?;
+        visibility::append(menu.0, visible)?;
+        reset_position::append(menu.0)?;
+        exit::append(menu.0)?;
+        Ok(menu)
     }
 }
 
@@ -61,11 +56,10 @@ pub(crate) unsafe fn show(window: HWND, point: POINT, opacity: Opacity) -> io::R
     let command = TrackPopupMenu(menu.0, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
         point.x, point.y, 0, window, null());
     Ok(match command {
-        1 if visible => Action::Hide,
-        1 => Action::Show,
-        2 => Action::Exit,
-        3 => Action::ResetPosition,
-        command => u8::try_from(command).ok().and_then(Opacity::new).map(Action::Opacity).unwrap_or(Action::None),
+        command if command == visibility::COMMAND as i32 => visibility::action(visible),
+        command if command == exit::COMMAND as i32 => Action::Exit,
+        command if command == reset_position::COMMAND as i32 => Action::ResetPosition,
+        command => opacity::action(command),
     })
 }
 

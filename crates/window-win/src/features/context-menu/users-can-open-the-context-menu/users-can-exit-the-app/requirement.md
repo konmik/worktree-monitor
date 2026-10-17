@@ -1,0 +1,2 @@
+- The context menu contains Exit.
+- Selecting Exit closes the app.

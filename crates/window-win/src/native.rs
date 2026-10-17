@@ -3,7 +3,7 @@ use crate::order::{Order, OrderMove};
 use crate::opacity::Opacity;
 use crate::placement::ShowState;
 use crate::placement_win;
-use crate::notification_icon::{self, show_from_tray, TrayIcon, WM_TRAY_ICON};
+use crate::notification_icon::{self, TrayIcon, WM_TRAY_ICON};
 use crate::context_menu::{self, Action};
 use crate::layout::{self, Rect, RowSize};
 use crate::visibility::Visibility;
@@ -64,13 +64,10 @@ use window_fading::*;
 mod window_movement;
 use window_movement::*;
 
-#[path = "features/window/window-position-survives-restart/reset-position-returns-the-window-to-defaults/native.rs"]
-mod reset_position;
-use reset_position::*;
-
 #[path = "features/context-menu/users-can-open-the-context-menu/native.rs"]
 mod context_menu_actions;
 use context_menu_actions::*;
+use context_menu_actions::reset_position::reset_window_bounds;
 
 #[path = "features/window/design/the-dashboard-has-a-flat-terminal-appearance/native.rs"]
 mod window_appearance;

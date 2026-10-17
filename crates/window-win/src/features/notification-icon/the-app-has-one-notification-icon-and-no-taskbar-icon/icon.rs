@@ -20,8 +20,8 @@ pub(crate) unsafe fn restart_message() -> io::Result<u32> {
 pub(crate) unsafe fn callback(window: HWND, wparam: WPARAM, lparam: LPARAM) {
     if lparam as u32 >> 16 != 1 { return; }
     match lparam as u32 & 0xffff {
-        NIN_SELECT => show_from_tray(window),
-        event if event == NIN_SELECT | NINF_KEY => show_from_tray(window),
+        NIN_SELECT => context_menu::show_window(window),
+        event if event == NIN_SELECT | NINF_KEY => context_menu::show_window(window),
         WM_CONTEXTMENU => {
             context_menu::request(window, wparam as LPARAM);
         }
@@ -80,10 +80,5 @@ impl Drop for TrayIcon {
             DestroyIcon(self.data.hIcon);
         }
     }
-}
-
-pub(crate) unsafe fn show_from_tray(window: HWND) {
-    ShowWindow(window, if IsIconic(window) != 0 { SW_RESTORE } else { SW_SHOWNOACTIVATE });
-    SetForegroundWindow(window);
 }
 

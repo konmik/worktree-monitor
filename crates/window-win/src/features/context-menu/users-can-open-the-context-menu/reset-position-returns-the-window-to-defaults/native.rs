@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) unsafe fn reset_window_bounds(window: HWND) -> io::Result<()> {
+pub(in crate::native) unsafe fn reset_window_bounds(window: HWND) -> io::Result<()> {
     let dpi = GetDpiForWindow(window).max(96) as i32;
     let mut monitor: MONITORINFO = std::mem::zeroed();
     monitor.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
@@ -16,3 +16,10 @@ pub(super) unsafe fn reset_window_bounds(window: HWND) -> io::Result<()> {
     Ok(())
 }
 
+pub(super) unsafe fn apply(window: HWND, placement_path: &std::path::Path) -> io::Result<()> {
+    ShowWindow(window, SW_SHOWNORMAL);
+    reset_window_bounds(window)?;
+    SetForegroundWindow(window);
+    placement_win::save(window, placement_path)?;
+    Ok(())
+}

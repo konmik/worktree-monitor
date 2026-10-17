@@ -1,0 +1,3 @@
+- The menu shows Hide while the window is visible and Show while it is hidden or minimized.
+- Selecting Hide hides the window.
+- Selecting Show restores and brings the window to the foreground.

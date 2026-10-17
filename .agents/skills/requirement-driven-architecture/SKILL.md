@@ -48,8 +48,6 @@ features/
 - The rejection cause is shown to the user
 ```
 
-Use relative references to code and tests in this requirement folder or its descendants. Do not duplicate these mappings in comments or external trackers.
-
 ## Rules
 
 - Every application behavior has an owning requirement, and its implementation lives in that requirement's directory.
