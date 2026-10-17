@@ -1,5 +1,5 @@
 use super::count_indicators::{count_parts};
-use super::window_appearance::{GREEN, MUTED, RED};
+use crate::rendering::{GREEN, MUTED, RED};
 use wtm_core::{Counts};
 
 

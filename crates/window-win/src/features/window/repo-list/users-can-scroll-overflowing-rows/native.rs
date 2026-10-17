@@ -1,17 +1,19 @@
 use super::row_layout::{position_cards};
 use super::row_ordering::{project_marker};
 use super::runtime::{State, mouse_point, scaled};
-use super::window_appearance::{MUTED, fill, intersection};
+use super::window_appearance::{MUTED, intersection};
 use super::window_fading::{track_hover};
 use super::window_movement::{edge_hit_transparent};
 use std::ptr::{null, null_mut};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::{BeginPaint, CreatePen, DeleteObject, EndPaint, HDC, InvalidateRect, LineTo, MoveToEx, PAINTSTRUCT, PS_SOLID, ScreenToClient, SelectObject, UpdateWindow};
+use windows_sys::Win32::Graphics::Gdi::{BeginPaint, FillRect, HBRUSH, CreatePen, DeleteObject, EndPaint, HDC, InvalidateRect, LineTo, MoveToEx, PAINTSTRUCT, PS_SOLID, ScreenToClient, SelectObject, UpdateWindow};
 use windows_sys::Win32::UI::Controls::{SetScrollInfo, WM_MOUSELEAVE};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetCapture;
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetClientRect, GetScrollBarInfo, GetScrollInfo, GetWindowRect, HTCLIENT, HTTRANSPARENT, OBJID_CLIENT, SB_BOTTOM, SB_CTL, SB_LINEDOWN, SB_LINEUP, SB_PAGEDOWN, SB_PAGEUP, SB_THUMBPOSITION, SB_THUMBTRACK, SB_TOP, SCROLLBARINFO, SCROLLINFO, SIF_PAGE, SIF_POS, SIF_RANGE, SIF_TRACKPOS, SW_HIDE, SW_SHOWNOACTIVATE, ShowWindow, WM_CANCELMODE, WM_CAPTURECHANGED, WM_ERASEBKGND, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCDESTROY, WM_NCHITTEST, WM_PAINT, WM_PRINTCLIENT, WM_SETFOCUS};
+unsafe fn fill(dc: HDC, rect: RECT, brush: HBRUSH) { FillRect(dc, &rect, brush); }
+
 pub(super) unsafe fn wake_scrollbar(state: &mut State) {
     if state.scrolling.control.is_null() { return; }
     if state.scrolling.content > state.scrolling.page {

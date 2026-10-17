@@ -1,33 +1,21 @@
+pub(super) use crate::rendering::CountLayer;
+use crate::rendering::render_counts;
+use super::buffer_presentation;
 use windows_sys::Win32::UI::WindowsAndMessaging::WM_APP;
-use super::window_appearance::rgb;
-use super::count_indicators::{count_parts};
-use super::font_resources::{Resources, wrapped_width};
+use super::font_resources::Resources;
 use super::row_layout::{content_inset, content_text_width};
 use super::runtime::{State};
-use super::window_appearance::{GREEN, intersection, text};
+use super::window_appearance::intersection;
 use crate::dashboard::DisplayItem;
 use std::ptr::null_mut;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::{AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, ClientToScreen, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DT_END_ELLIPSIS, DT_SINGLELINE, DeleteDC, DeleteObject, GdiFlush, GetDC, HBITMAP, HDC, HGDIOBJ, IntersectClipRect, MapWindowPoints, ReleaseDC, RestoreDC, SaveDC, SelectObject};
+use windows_sys::Win32::Graphics::Gdi::{AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, ClientToScreen, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GdiFlush, GetDC, HBITMAP, HDC, HGDIOBJ, MapWindowPoints, ReleaseDC, SelectObject, SaveDC, RestoreDC, IntersectClipRect};
 use windows_sys::Win32::UI::WindowsAndMessaging::{DefWindowProcW, GA_ROOT, GetAncestor, GetClientRect, GetWindowRect, HTTRANSPARENT, IsIconic, IsWindowVisible, MA_NOACTIVATE, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, SetWindowPos, ShowWindow, ULW_ALPHA, UpdateLayeredWindow, WM_ERASEBKGND, WM_MOUSEACTIVATE, WM_NCHITTEST};
 use wtm_core::Counts;
-#[derive(Clone, Copy)]
-pub(super) enum CountLayer { All, Faded, Opaque, Mask }
-
 pub(super) unsafe fn draw_counts(dc: HDC, counts: &Counts, rect: RECT, resources: &Resources, dragging: bool, layer: CountLayer) {
-    let mut x = rect.left;
-    for part in count_parts(counts) {
-        let width = wrapped_width(dc, &part.text, resources.font).min(rect.right.saturating_sub(x));
-        let draw = match layer { CountLayer::All => true, CountLayer::Faded => !part.opaque,
-            CountLayer::Opaque | CountLayer::Mask => part.opaque };
-        if draw && width > 0 {
-            let font = if matches!(layer, CountLayer::Opaque | CountLayer::Mask) { resources.overlay_font } else { resources.font };
-            let color = if matches!(layer, CountLayer::Mask) { rgb(255, 255, 255) }
-                else if dragging { GREEN } else { part.color };
-            text(dc, &part.text, RECT { left: x, right: x + width, ..rect }, font, color, DT_SINGLELINE | DT_END_ELLIPSIS);
-        }
-        x = (x + width).min(rect.right);
-    }
+    let buffer = render_counts(counts, buffer_presentation::columns(rect.right - rect.left, resources), dragging, layer);
+    buffer_presentation::present_at(&buffer, dc, resources, rect.left, rect.top,
+        if matches!(layer, CountLayer::Opaque | CountLayer::Mask) { resources.overlay_font } else { resources.font });
 }
 
 pub(super) struct IndicatorBitmap {
@@ -142,10 +130,6 @@ pub(super) unsafe extern "system" fn indicator_procedure(window: HWND, message: 
         WM_ERASEBKGND => 1,
         _ => DefWindowProcW(window, message, wparam, lparam),
     }
-}
-
-pub(super) fn line_counts_stay_opaque(counts: wtm_core::LineCounts) -> bool {
-    counts.additions > 0 || counts.deletions > 0
 }
 
 pub(super) const WM_SYNC_INDICATORS: u32 = WM_APP + 42;

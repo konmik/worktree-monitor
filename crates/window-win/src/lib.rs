@@ -1,3 +1,19 @@
+#[path = "features/window/repo-list/worktree/indicators/loading-reserves-count-space-without-placeholder-messages/native.rs"]
+mod loading_rows;
+
+#[path = "features/window/repo-list/worktree/indicators/source-count-indicators-stay-visible-and-highlight-nonzero-changes/native.rs"]
+mod count_indicators;
+#[path = "features/window/repo-list/worktree/indicators/count-indicators-hide-empty-optional-groups/native.rs"]
+mod optional_count_indicators;
+#[path = "features/window/repo-list/worktree/indicators/nonzero-line-change-indicators-stay-fully-opaque/opacity.rs"]
+mod count_opacity;
+
+#[path = "features/window/repo-list/users-can-view-repository-and-worktree-status/rendering.rs"]
+pub mod rendering;
+
+#[path = "features/render-buffer/application-renders-into-a-render-buffer/buffer.rs"]
+pub mod render_buffer;
+
 #[path = "features/window/repo-list/users-can-view-repository-and-worktree-status/dashboard.rs"]
 pub mod dashboard;
 #[path = "features/window/repo-list/users-can-reorder-rows/order.rs"]
@@ -39,7 +55,6 @@ mod native;
 #[cfg(windows)]
 pub use native::run;
 
-#[cfg(any(windows, test))]
 #[path = "features/window/design/layout-stays-compact-when-the-window-narrows/name-fitting.rs"]
 mod name_fitting;
 
@@ -50,7 +65,6 @@ mod spacing;
 #[path = "features/window/repo-list/users-can-view-repository-and-worktree-status/scan.rs"]
 mod scan_projection;
 
-#[cfg(any(windows, test))]
 #[path = "features/window/design/layout-stays-compact-when-the-window-narrows/wrapping.rs"]
 mod wrapping;
 

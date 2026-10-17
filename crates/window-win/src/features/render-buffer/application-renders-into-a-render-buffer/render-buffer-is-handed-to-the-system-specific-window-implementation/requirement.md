@@ -1,0 +1,1 @@
+- The application hands its character grid to the system-specific window implementation for display.

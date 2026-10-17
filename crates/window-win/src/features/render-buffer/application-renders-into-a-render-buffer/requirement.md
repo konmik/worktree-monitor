@@ -1,0 +1,3 @@
+- The application renders its content into a character grid.
+- Each cell contains a character and its text color.
+- The character grid can be read without a system-specific window implementation.

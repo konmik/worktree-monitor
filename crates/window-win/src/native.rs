@@ -1,11 +1,11 @@
+#[path = "features/render-buffer/application-renders-into-a-render-buffer/render-buffer-is-handed-to-the-system-specific-window-implementation/native.rs"]
+mod buffer_presentation;
+
 #[path = "features/window/design/all-text-shares-one-monospace-font-and-size/resources.rs"]
 mod font_resources;
 
 #[path = "features/window/design/layout-stays-compact-when-the-window-narrows/native.rs"]
 mod row_layout;
-
-#[path = "features/window/repo-list/worktree/indicators/source-count-indicators-stay-visible-and-highlight-nonzero-changes/native.rs"]
-mod count_indicators;
 
 #[path = "features/window/repo-list/worktree/indicators/nonzero-line-change-indicators-stay-fully-opaque/native.rs"]
 mod opaque_indicators;
@@ -34,6 +34,8 @@ mod window_appearance;
 #[cfg(test)]
 #[path = "features/window/repo-list/worktree/indicators/source-count-indicators-stay-visible-and-highlight-nonzero-changes/native.test.rs"]
 mod count_indicator_tests;
+#[cfg(test)]
+use crate::count_indicators;
 
 #[cfg(test)]
 #[path = "features/window/repo-list/worktree/indicators/nonzero-line-change-indicators-stay-fully-opaque/native.test.rs"]
@@ -72,8 +74,6 @@ mod window_resizing;
 #[path = "features/window/saved-preferences-reload-while-the-dashboard-is-open/native.rs"]
 mod saved_preferences;
 
-#[path = "features/window/repo-list/worktree/indicators/loading-reserves-count-space-without-placeholder-messages/native.rs"]
-mod loading_rows;
 
 #[path = "features/notification-icon/the-app-has-one-notification-icon/native.rs"]
 mod notification_lifecycle;
@@ -98,6 +98,3 @@ mod dashboard_opening;
 
 #[path = "features/window/closing-the-dashboard-stops-its-monitor/native.rs"]
 mod dashboard_closing;
-
-#[path = "features/window/repo-list/worktree/indicators/count-indicators-hide-empty-optional-groups/native.rs"]
-mod optional_count_indicators;

@@ -1,3 +1,5 @@
+use unicode_segmentation::UnicodeSegmentation;
+
 pub(crate) fn wrap(value: &str, width: i32, mut measure: impl FnMut(&str) -> i32) -> Vec<String> {
     let mut lines = Vec::new();
     for paragraph in value.split('\n') {
@@ -6,11 +8,11 @@ pub(crate) fn wrap(value: &str, width: i32, mut measure: impl FnMut(&str) -> i32
         while !remaining.is_empty() {
             let mut fit = 0;
             let mut boundary = None;
-            for (index, character) in remaining.char_indices() {
-                let end = index + character.len_utf8();
+            for (index, character) in remaining.grapheme_indices(true) {
+                let end = index + character.len();
                 if measure(&remaining[..end]) > width.max(1) && fit > 0 { break; }
                 fit = end;
-                if character.is_whitespace() && index > 0 { boundary = Some(index); }
+                if character.chars().all(char::is_whitespace) && index > 0 { boundary = Some(index); }
             }
             if fit == remaining.len() {
                 lines.push(remaining.to_owned());

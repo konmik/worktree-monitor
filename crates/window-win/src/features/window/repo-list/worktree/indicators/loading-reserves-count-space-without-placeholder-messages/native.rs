@@ -1,3 +1,3 @@
 
 
-pub(super) fn pending_row_lines() -> usize { 2 }
+pub(crate) fn pending_row_lines() -> usize { 2 }

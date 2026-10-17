@@ -1,56 +1,33 @@
-use super::dashboard_rows::{Card, draw_card};
+use super::dashboard_rows::{Card, render_card};
 use super::font_resources::{Resources};
-use super::row_layout::{wrapped_lines};
-use super::runtime::{State, wide};
+use super::runtime::State;
+use super::buffer_presentation;
 use super::visibility_controls::{paint_button};
 use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT};
-use windows_sys::Win32::Graphics::Gdi::{BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DT_NOPREFIX, DT_SINGLELINE, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, HBRUSH, HDC, HFONT, PAINTSTRUCT, SRCCOPY, SelectObject, SetBkMode, SetTextColor, TRANSPARENT};
+use windows_sys::Win32::Graphics::Gdi::{BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, FillRect, HBRUSH, PAINTSTRUCT, SRCCOPY, SelectObject};
 use windows_sys::Win32::UI::Controls::{DRAWITEMSTRUCT, ODT_BUTTON, ODT_STATIC};
 pub(super) const BACKGROUND: COLORREF = rgb(11, 16, 18);
-pub(super) const GREEN: COLORREF = rgb(194, 249, 112);
 pub(super) const TEAL: COLORREF = rgb(84, 213, 197);
-pub(super) const RED: COLORREF = rgb(255, 131, 137);
 pub(super) const WHITE: COLORREF = rgb(232, 239, 235);
 pub(super) const MUTED: COLORREF = rgb(132, 150, 156);
 pub(super) const fn rgb(red: u32, green: u32, blue: u32) -> COLORREF { red | (green << 8) | (blue << 16) }
 
-pub(super) unsafe fn text(dc: HDC, value: &str, rect: RECT, font: HFONT, color: COLORREF, flags: u32) {
-    if rect.right <= rect.left || rect.bottom <= rect.top { return; }
-    SelectObject(dc, font);
-    SetTextColor(dc, color);
-    SetBkMode(dc, TRANSPARENT as i32);
-    let mut rect = rect;
-    let mut value = wide(value);
-    DrawTextW(dc, value.as_mut_ptr(), (value.len() - 1) as i32, &mut rect, flags | DT_NOPREFIX);
-}
-
-pub(super) unsafe fn fill(dc: HDC, rect: RECT, brush: HBRUSH) { FillRect(dc, &rect, brush); }
-
-pub(super) unsafe fn wrapped_text(dc: HDC, value: &str, rect: RECT, resources: &Resources, color: COLORREF) {
-    for (index, line) in wrapped_lines(dc, value, rect.right - rect.left, resources.font).iter().enumerate() {
-        let top = rect.top + index as i32 * resources.typography.advance;
-        text(dc, line, RECT { top, bottom: top + resources.typography.cell, ..rect }, resources.font, color, DT_SINGLELINE);
+pub(super) unsafe fn paint_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
+    let Some(resources) = &state.resources else { return; };
+    let Some((buffer, left, top)) = render_card(card, state, draw.rcItem.right - draw.rcItem.left) else { return; };
+    let top = if matches!(card.display, crate::dashboard::DisplayItem::Status { .. }) {
+        (draw.rcItem.bottom - draw.rcItem.top - resources.typography.cell) / 2
+    } else { top };
+    buffer_presentation::paint_at(&buffer, draw.hDC, draw.rcItem, resources, draw.rcItem.left + left, draw.rcItem.top + top);
+    if let Some(target) = state.ordering.drag.as_ref().and_then(|drag| drag.target.as_ref()) {
+        let thickness = super::runtime::scaled(2, state.dpi);
+        let y = if target.marker == card.top { Some(draw.rcItem.top) }
+            else if target.marker == card.top + card.height { Some(draw.rcItem.bottom - thickness) } else { None };
+        if let Some(y) = y {
+            FillRect(draw.hDC, &RECT { top: y, bottom: y + thickness, ..draw.rcItem }, resources.palette.teal);
+        }
     }
 }
-
-pub(super) unsafe fn paint_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
-    let width = draw.rcItem.right - draw.rcItem.left;
-    let height = draw.rcItem.bottom - draw.rcItem.top;
-    if width <= 0 || height <= 0 { return; }
-    let memory = CreateCompatibleDC(draw.hDC);
-    let bitmap = CreateCompatibleBitmap(draw.hDC, width, height);
-    if !memory.is_null() && !bitmap.is_null() {
-        let old = SelectObject(memory, bitmap);
-        let buffered = DRAWITEMSTRUCT { hDC: memory,
-            rcItem: RECT { left: 0, top: 0, right: width, bottom: height }, ..*draw };
-        draw_card(&buffered, card, state);
-        BitBlt(draw.hDC, draw.rcItem.left, draw.rcItem.top, width, height, memory, 0, 0, SRCCOPY);
-        SelectObject(memory, old);
-    } else { draw_card(draw, card, state); }
-    if !bitmap.is_null() { DeleteObject(bitmap); }
-    if !memory.is_null() { DeleteDC(memory); }
-}
-
 
 pub(super) unsafe fn paint_background(window: HWND, resources: &Resources, marker: Option<RECT>) {
     let mut paint: PAINTSTRUCT = std::mem::zeroed();
@@ -70,14 +47,14 @@ pub(super) unsafe fn paint_background(window: HWND, resources: &Resources, marke
         let bitmap = CreateCompatibleBitmap(dc, width, height);
         if !memory.is_null() && !bitmap.is_null() {
             let old = SelectObject(memory, bitmap);
-            fill(memory, RECT { left: 0, top: 0, right: width, bottom: height }, resources.palette.background);
-            if let Some(marker) = marker.as_ref() { fill(memory, *marker, resources.palette.teal); }
+            FillRect(memory, &RECT { left: 0, top: 0, right: width, bottom: height }, resources.palette.background);
+            if let Some(marker) = marker.as_ref() { FillRect(memory, marker, resources.palette.teal); }
             BitBlt(dc, rect.left, rect.top, width, height, memory, 0, 0, SRCCOPY);
             SelectObject(memory, old);
         } else {
-            fill(dc, rect, resources.palette.background);
+            FillRect(dc, &rect, resources.palette.background);
             if let Some(marker) = marker.as_ref() {
-                fill(dc, RECT { left: marker.left + rect.left, top: marker.top + rect.top,
+                FillRect(dc, &RECT { left: marker.left + rect.left, top: marker.top + rect.top,
                     right: marker.right + rect.left, bottom: marker.bottom + rect.top }, resources.palette.teal);
             }
         }

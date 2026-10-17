@@ -1,15 +1,15 @@
 use super::optional_count_indicators;
-use super::opaque_indicators::{line_counts_stay_opaque};
-use super::window_appearance::{GREEN, MUTED, RED};
-use windows_sys::Win32::Foundation::COLORREF;
+use crate::count_opacity::line_counts_stay_opaque;
+use crate::rendering::{GREEN, MUTED, RED};
+use crate::render_buffer::Color;
 use wtm_core::Counts;
-pub(super) struct CountPart {
-    pub(super) text: String,
-    pub(super) color: COLORREF,
-    pub(super) opaque: bool,
+pub(crate) struct CountPart {
+    pub(crate) text: String,
+    pub(crate) color: Color,
+    pub(crate) opaque: bool,
 }
 
-pub(super) fn count_parts(counts: &Counts) -> Vec<CountPart> {
+pub(crate) fn count_parts(counts: &Counts) -> Vec<CountPart> {
     let changed = line_counts_stay_opaque(counts.source);
     let mut parts = vec![
         CountPart { text: "S ".into(), color: MUTED, opaque: changed },

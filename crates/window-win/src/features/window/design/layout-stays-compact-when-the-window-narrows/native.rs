@@ -1,7 +1,6 @@
 use crate::layout;
 use super::dashboard_rows::{Card};
 use super::font_resources::{Resources, wrapped_width};
-use super::loading_rows::{pending_row_lines};
 use super::row_scrolling::{set_scroll_info, update_scrollbar};
 use super::scroll_anchor::restore_anchor;
 use super::runtime::{State, scaled};
@@ -11,7 +10,7 @@ use crate::layout::RowSize;
 use crate::spacing::RowSpacing;
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::Foundation::{HWND, RECT};
-use windows_sys::Win32::Graphics::Gdi::{GetDC, HDC, HFONT, InvalidateRect, RDW_ALLCHILDREN, RDW_FRAME, RDW_INVALIDATE, RedrawWindow, ReleaseDC};
+use windows_sys::Win32::Graphics::Gdi::{GetDC, HDC, InvalidateRect, RDW_ALLCHILDREN, RDW_FRAME, RDW_INVALIDATE, RedrawWindow, ReleaseDC};
 use windows_sys::Win32::UI::WindowsAndMessaging::{BeginDeferWindowPos, DeferWindowPos, EndDeferWindowPos, GetClientRect, MoveWindow, PostMessageW, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOZORDER, SetWindowPos, WM_CLOSE};
 pub(super) fn content_inset(width: i32, dpi: i32, resources: &Resources) -> i32 {
     (scaled(14, dpi) - resources.space_width).max(0).min(width.saturating_sub(1) / 2)
@@ -20,27 +19,16 @@ pub(super) fn content_text_width(width: i32, dpi: i32, resources: &Resources) ->
     (width - content_inset(width, dpi, resources) * 2).max(1)
 }
 
-pub(super) unsafe fn wrapped_lines(dc: HDC, text: &str, width: i32, font: HFONT) -> Vec<String> {
-    crate::wrapping::wrap(text, width, |value| wrapped_width(dc, value, font))
-}
-
-pub(super) unsafe fn item_height(card: &Card, dc: HDC, width: i32, dpi: i32, resources: &Resources) -> i32 {
-    let lines = match &card.display {
-        DisplayItem::Repository { bare, .. } => 1 + usize::from(*bare),
-        DisplayItem::PendingWorktree { .. } => pending_row_lines(),
-        DisplayItem::Worktree { result, .. } => {
-            let text_width = content_text_width(width, dpi, resources);
-            match result {
-                Ok(_) => 2,
-                Err(error) => 2 + wrapped_lines(dc, &format!("ERROR ({:?}): {}", error.kind, error.message), text_width, resources.font).len(),
-            }
-        }
-        DisplayItem::Notice { message, .. } => 1 + if message.is_empty() { 0 } else {
-            let text_width = content_text_width(width, dpi, resources);
-            wrapped_lines(dc, message, text_width, resources.font).len()
-        },
-        _ => 1,
+pub(super) unsafe fn item_height(card: &Card, _dc: HDC, width: i32, dpi: i32, resources: &Resources) -> i32 {
+    let inset = content_inset(width, dpi, resources);
+    let right_padding = (scaled(12, dpi) - resources.space_width).max(0);
+    let text_width = match card.display {
+        DisplayItem::Status { .. } => width,
+        DisplayItem::Worktree { .. } => content_text_width(width, dpi, resources),
+        _ => width - inset - right_padding,
     };
+    let columns = super::buffer_presentation::columns(text_width, resources);
+    let lines = crate::rendering::render_row(&card.display, columns, Default::default()).rows();
     card.spacing.height(resources.typography, lines)
 }
 

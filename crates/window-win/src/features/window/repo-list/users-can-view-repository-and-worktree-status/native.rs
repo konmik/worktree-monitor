@@ -1,24 +1,24 @@
+use crate::render_buffer::RenderBuffer;
+use crate::rendering::{render_row, RowOptions, CountLayer};
+use super::buffer_presentation;
 use super::font_resources::{Resources};
 use super::idle_indicator::{set_status};
-use super::opaque_indicators::{CountLayer, draw_counts};
-use super::refresh_markers::{draw_name, refresh_indicators};
+use super::refresh_markers::refresh_indicators;
 use super::row_layout::{content_inset, content_text_width, layout};
 use super::row_ordering::{card_procedure};
 use super::runtime::{State, scaled, wide};
 use super::scroll_anchor::{anchor};
-use super::window_appearance::{GREEN, MUTED, RED, TEAL, WHITE, fill, text, wrapped_text};
 use super::window_movement::{edge_procedure};
 use super::worktree_visibility::{show_all_checked, update_action_caption};
-use crate::dashboard::{DashboardView, DisplayItem, Health, ItemKey};
+use crate::dashboard::{DashboardView, DisplayItem, ItemKey};
 use crate::layout::Rect;
 use crate::spacing::RowSpacing;
 use std::io;
 use std::collections::HashMap;
 use std::ptr::null;
-use windows_sys::Win32::Foundation::{HWND, RECT, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::{DT_END_ELLIPSIS, DT_SINGLELINE, InvalidateRect, RestoreDC, SaveDC};
+use windows_sys::Win32::Foundation::{HWND, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::InvalidateRect;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Controls::DRAWITEMSTRUCT;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows_sys::Win32::UI::Shell::SetWindowSubclass;
 use windows_sys::Win32::UI::WindowsAndMessaging::{BS_OWNERDRAW, CreateWindowExW, DestroyWindow, PostMessageW, SW_HIDE, SW_SHOWNOACTIVATE, SendMessageW, SetWindowTextW, ShowWindow, WM_CLOSE, WM_SETFONT, WS_CHILD, WS_CLIPCHILDREN, WS_EX_CONTROLPARENT, WS_TABSTOP, WS_VISIBLE};
@@ -130,78 +130,25 @@ pub(super) unsafe fn refresh(window: HWND, state: &mut State) {
     set_status(state);
 }
 
-pub(super) unsafe fn draw_card(draw: &DRAWITEMSTRUCT, card: &Card, state: &State) {
-    let Some(resources) = &state.resources else { return; };
-    let dc = draw.hDC;
-    let saved = SaveDC(dc);
-    let rect = draw.rcItem;
-    let s = |value| scaled(value, state.dpi);
-    let width = rect.right - rect.left;
-    let height = rect.bottom - rect.top;
-    let line = DT_SINGLELINE | DT_END_ELLIPSIS;
-    let caption = card.display.caption();
-    let lines: Vec<_> = caption.lines().collect();
-    let bounds = |left, top, right, bottom| RECT { left: rect.left + left, top: rect.top + top,
-        right: rect.left + right, bottom: rect.top + bottom };
-    let typography = resources.typography;
-    let line_bounds = |left, index, right| {
-        let top = card.spacing.top(typography, index);
-        bounds(left, top, right, top + typography.cell)
-    };
+pub(super) fn render_card(card: &Card, state: &State, width: i32) -> Option<(RenderBuffer, i32, i32)> {
+    let resources = state.resources.as_ref()?;
     let inset = content_inset(width, state.dpi, resources);
-    let right_padding = (s(12) - resources.space_width).max(0);
+    let right_padding = (scaled(12, state.dpi) - resources.space_width).max(0);
     let heading_right = if matches!(card.display, DisplayItem::Repository { .. }) { width - right_padding }
-        else { card.action_rect.map_or(width - right_padding, |rect| rect.left - s(8)) };
+        else { card.action_rect.map_or(width - right_padding, |rect| rect.left - scaled(8, state.dpi)) };
+    let text_width = match card.display {
+        DisplayItem::Status { .. } => width,
+        DisplayItem::Worktree { .. } => content_text_width(width, state.dpi, resources),
+        _ => width - inset - right_padding,
+    };
     let dragging = state.ordering.drag.as_ref().is_some_and(|drag| drag.source_handle == card.window);
-    fill(dc, rect, resources.palette.background);
-    match &card.display {
-        DisplayItem::Status { health, .. } => {
-            let color = match health { Health::Live => GREEN, Health::Errors => RED, Health::Scanning => MUTED };
-            let y = (height - typography.cell) / 2;
-            text(dc, &caption, bounds(0, y, width, y + typography.cell), resources.font, color, line);
-        }
-        DisplayItem::Repository { bare, .. } => {
-            draw_name(dc, lines[0], line_bounds(inset, 0, heading_right), resources.font,
-                if dragging { GREEN } else { TEAL }, false, card.refreshing);
-            if *bare { text(dc, lines[1], line_bounds(inset, 1, width - right_padding), resources.font, MUTED, line); }
-        }
-        DisplayItem::Worktree { path, result } => {
-            let text_width = content_text_width(width, state.dpi, resources);
-            let right = inset + text_width;
-            let heading_width = (heading_right - inset).max(0).min(text_width);
-            let path = path.display().to_string();
-            match result {
-                Ok(stats) => {
-                    draw_name(dc, lines[0], line_bounds(inset, 0, inset + heading_width), resources.font,
-                        if dragging { GREEN } else { WHITE }, false, card.refreshing);
-                    let y = card.spacing.top(typography, 1);
-                    draw_counts(dc, &stats.counts, bounds(inset, y, right, y + typography.cell), resources, dragging,
-                        if state.controls_visible { CountLayer::All } else { CountLayer::Faded });
-                }
-                Err(error) => {
-                    draw_name(dc, &path, line_bounds(inset, 0, inset + heading_width), resources.font,
-                        if dragging { GREEN } else { MUTED }, true, card.refreshing);
-                    text(dc, lines[1], line_bounds(inset, 1, right), resources.font, MUTED, line);
-                    wrapped_text(dc, &format!("ERROR ({:?}): {}", error.kind, error.message), line_bounds(inset, 2, right), resources, RED);
-                }
-            }
-        }
-        DisplayItem::PendingWorktree { path } => {
-            let heading_width = (heading_right - inset).max(0);
-            draw_name(dc, &path.display().to_string(), line_bounds(inset, 0, inset + heading_width), resources.font,
-                if dragging { GREEN } else { MUTED }, true, card.refreshing);
-        }
-        DisplayItem::Notice { title, message, error } => {
-            text(dc, title, line_bounds(inset, 0, width - inset), resources.font, if *error { RED } else { WHITE }, line);
-            wrapped_text(dc, message, line_bounds(inset, 1, width - inset), resources, if *error { RED } else { MUTED });
-        }
-    }
-    if let Some(target) = state.ordering.drag.as_ref().and_then(|drag| drag.target.as_ref()) {
-        let y = if target.marker == card.top { Some(0) }
-            else if target.marker == card.top + card.height { Some(height - s(2)) } else { None };
-        if let Some(y) = y { fill(dc, bounds(0, y, width, y + s(2)), resources.palette.teal); }
-    }
-    RestoreDC(dc, saved);
+    let buffer = render_row(&card.display, buffer_presentation::columns(text_width, resources), RowOptions {
+        refreshing: card.refreshing, dragging,
+        heading_columns: Some(buffer_presentation::columns(heading_right - inset, resources)),
+        counts: if state.controls_visible { CountLayer::All } else { CountLayer::Faded },
+    });
+    let left = if matches!(card.display, DisplayItem::Status { .. }) { 0 } else { inset };
+    Some((buffer, left, card.spacing.top(resources.typography, 0)))
 }
 
 pub(super) struct Card {
