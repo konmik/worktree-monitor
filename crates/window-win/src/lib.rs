@@ -26,7 +26,7 @@ mod placement_win;
 mod notification_icon;
 
 #[cfg(windows)]
-#[path = "features/notification-icon/the-app-has-no-taskbar-icon/style.rs"]
+#[path = "features/window/the-app-has-no-taskbar-icon/style.rs"]
 mod taskbar_icon;
 
 #[cfg(windows)]
