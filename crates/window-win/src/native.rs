@@ -57,7 +57,7 @@ impl Resources {
             teal: CreateSolidBrush(TEAL), muted: CreateSolidBrush(MUTED) };
         let dc = CreateCompatibleDC(null_mut());
         if dc.is_null() { return None; }
-        for face in ["Berkeley Mono", "Berkeley Mono Variable", "Consolas", "Cascadia Mono", "Courier New"] {
+        for face in ["Berkeley Mono", "Berkeley Mono Variable", "JetBrains Mono", "Consolas", "Cascadia Mono", "Courier New", ""] {
             let font = CreateFontW(-(FONT_SIZE * dpi / 96), 0, 0, 0, 400, 0, 0, 0,
                 DEFAULT_CHARSET as u32, 0, 0, CLEARTYPE_QUALITY as u32, (FIXED_PITCH | FF_MODERN) as u32,
                 wide(face).as_ptr());
@@ -69,7 +69,7 @@ impl Resources {
             let monospaced = GetTextMetricsW(dc, &mut metrics) != 0 && metrics.tmPitchAndFamily & TMPF_FIXED_PITCH == 0;
             SelectObject(dc, old);
             let actual = String::from_utf16_lossy(&actual[..length.min(actual.len())]);
-            if actual.trim_end_matches('\0').eq_ignore_ascii_case(face) && monospaced {
+            if (face.is_empty() || actual.trim_end_matches('\0').eq_ignore_ascii_case(face)) && monospaced {
                 resources.font = font;
                 resources.typography = Typography::new(dpi, metrics.tmHeight);
                 resources.space_width = metrics.tmAveCharWidth;
