@@ -5,16 +5,16 @@ use std::io;
 use super::runtime::State;
 use windows_sys::Win32::Foundation::{HWND, POINT};
 use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_NULL};
-#[path = "../users-can-select-opacity-in-five-percent-steps/native.rs"]
+#[path = "../users-can-select-opacity-in-five-percent-steps/selection.rs"]
 pub(super) mod opacity;
 
-#[path = "../users-can-hide-or-show-the-window/native.rs"]
+#[path = "../users-can-hide-or-show-the-window/visibility.rs"]
 pub(super) mod visibility;
 
-#[path = "../reset-position-returns-the-window-to-defaults/native.rs"]
+#[path = "../reset-position-returns-the-window-to-defaults/reset.rs"]
 pub(super) mod reset_position;
 
-#[path = "../users-can-exit-the-app/native.rs"]
+#[path = "../users-can-exit-the-app/exit.rs"]
 pub(super) mod exit;
 
 pub(super) unsafe fn context_menu(window: HWND, point: POINT, pointer: *mut State) -> Result<(), io::Error> {

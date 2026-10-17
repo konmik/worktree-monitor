@@ -60,7 +60,7 @@ pub(super) unsafe fn paint_at(buffer: &RenderBuffer, dc: HDC, rect: RECT, resour
 
 
 #[cfg(test)]
-#[path = "native.test.rs"]
+#[path = "presentation.test.rs"]
 mod tests;
 
 #[cfg(test)]

@@ -38,5 +38,5 @@ impl Drop for CellFonts {
 }
 
 #[cfg(test)]
-#[path = "native.test.rs"]
+#[path = "fonts.test.rs"]
 mod tests;

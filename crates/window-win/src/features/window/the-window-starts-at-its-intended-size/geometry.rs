@@ -10,7 +10,7 @@ use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFO, MONITOR_DE
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::{HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos};
 
-pub(in crate::native) unsafe fn reset_window_bounds(window: HWND) -> io::Result<()> {
+pub(in crate::window) unsafe fn reset_window_bounds(window: HWND) -> io::Result<()> {
     let dpi = GetDpiForWindow(window).max(96) as i32;
     let mut monitor: MONITORINFO = std::mem::zeroed();
     monitor.cbSize = std::mem::size_of::<MONITORINFO>() as u32;

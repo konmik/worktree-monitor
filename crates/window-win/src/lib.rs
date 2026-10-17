@@ -1,9 +1,9 @@
-#[path = "features/window/repo-list/worktree/indicators/loading-reserves-count-space-without-placeholder-messages/native.rs"]
+#[path = "features/window/repo-list/worktree/indicators/loading-reserves-count-space-without-placeholder-messages/spacing.rs"]
 mod loading_rows;
 
-#[path = "features/window/repo-list/worktree/indicators/source-count-indicators-stay-visible-and-highlight-nonzero-changes/native.rs"]
+#[path = "features/window/repo-list/worktree/indicators/source-count-indicators-stay-visible-and-highlight-nonzero-changes/counts.rs"]
 mod count_indicators;
-#[path = "features/window/repo-list/worktree/indicators/count-indicators-hide-empty-optional-groups/native.rs"]
+#[path = "features/window/repo-list/worktree/indicators/count-indicators-hide-empty-optional-groups/counts.rs"]
 mod optional_count_indicators;
 #[path = "features/window/repo-list/worktree/indicators/nonzero-line-change-indicators-stay-fully-opaque/opacity.rs"]
 mod count_opacity;
@@ -50,10 +50,10 @@ mod taskbar_icon;
 mod context_menu;
 
 #[cfg(windows)]
-mod native;
+mod window;
 
 #[cfg(windows)]
-pub use native::run;
+pub use window::run;
 
 #[path = "features/window/design/layout-stays-compact-when-the-window-narrows/name-fitting.rs"]
 mod name_fitting;

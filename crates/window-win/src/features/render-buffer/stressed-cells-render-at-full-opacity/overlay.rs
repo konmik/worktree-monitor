@@ -138,5 +138,5 @@ pub(super) unsafe fn create_indicator_overlay(window: HWND, instance: HINSTANCE,
 }
 
 #[cfg(test)]
-#[path = "native.test.rs"]
+#[path = "overlay.test.rs"]
 mod tests;

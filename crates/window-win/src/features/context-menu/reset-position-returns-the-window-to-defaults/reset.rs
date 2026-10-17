@@ -1,4 +1,4 @@
-use crate::native::initial_geometry::reset_window_bounds;
+use crate::window::initial_geometry::reset_window_bounds;
 
 use crate::placement_win;
 use std::io;
