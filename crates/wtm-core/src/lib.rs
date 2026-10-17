@@ -1,9 +1,16 @@
+#[path = "features/change-counting/worktree-counts-include-branch-changes/model.rs"]
+mod count_model;
 mod config;
 mod git;
 mod model;
+#[path = "features/live-monitoring/poll.rs"]
 mod poll;
+#[path = "features/live-monitoring/process.rs"]
 mod process;
+#[path = "features/live-monitoring/ignored-directories-do-not-cause-background-scans/watch.rs"]
 mod watch;
+#[path = "features/live-monitoring/service.rs"]
+mod monitoring_service;
 
 pub use model::{Counts, Error, ErrorKind, Head, LineCounts, RepoEntry, Snapshot, WorktreeEntry, WorktreeStats};
 pub use poll::{Monitor, MonitorUpdate, ScanActivity, ScanTarget};
@@ -42,14 +49,6 @@ impl Service {
             Ok(repos) => git::scan(&repos, None, cancel),
             Err(error) => Snapshot { repos: Vec::new(), config_error: Some(error) },
         }
-    }
-
-    pub fn monitor(self) -> Result<Monitor, Error> {
-        Monitor::start(self, None)
-    }
-
-    pub fn monitor_from(self, launch_directory: PathBuf) -> Result<Monitor, Error> {
-        Monitor::start(self, Some(launch_directory))
     }
 
     pub fn config_path(&self) -> &Path {
