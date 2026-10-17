@@ -1,0 +1,1 @@
+- Dragging the top line moves the whole window.

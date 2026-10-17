@@ -1,0 +1,3 @@
+- The context menu contains the Reset position command.
+- The command is labeled Reset position.
+- Selecting Reset position repositions the window to its default placement.

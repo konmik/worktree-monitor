@@ -1,0 +1,1 @@
+- Right-clicking the app or notification icon opens its context menu.

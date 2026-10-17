@@ -1,0 +1,2 @@
+- Reopening the app restores its previous window position.
+- The window starts at its intended size without resizing after scan completion.

@@ -1,0 +1,3 @@
+- The idle percentage is displayed on the status line.
+- The status indicator has the form [idle: N%].
+- The displayed percentage equals 100% minus the scan-time percentage over the last minute.

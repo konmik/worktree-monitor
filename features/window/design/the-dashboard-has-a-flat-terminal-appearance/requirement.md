@@ -1,0 +1,4 @@
+- The dashboard has a flat terminal-style appearance.
+- The interface has no decorative frames, card backgrounds, or shadows.
+- Color provides visual emphasis.
+- The app icon matches the terminal style.

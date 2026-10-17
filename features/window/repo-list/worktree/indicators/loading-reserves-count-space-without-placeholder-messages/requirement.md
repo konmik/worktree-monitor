@@ -1,0 +1,2 @@
+- The count line occupies its space before lines have been counted.
+- Startup displays no pending messages.

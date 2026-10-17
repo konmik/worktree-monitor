@@ -1,0 +1,3 @@
+- Hide and Show all are visible while the mouse is over the window.
+- Those controls are hidden when the mouse leaves the window.
+- Hidden controls occupy no width needed for worktree names.

@@ -1,0 +1,3 @@
+- S remains visible and grey when both source counters are zero.
+- Nonzero S indicators are colored.
+- Other change-category indicators are hidden when both counters are zero.

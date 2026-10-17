@@ -1,0 +1,2 @@
+- Outside hover, the default window opacity is 20%.
+- While the mouse hovers over the window, opacity is 100%.

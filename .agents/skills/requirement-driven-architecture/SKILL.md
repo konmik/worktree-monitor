@@ -44,8 +44,6 @@ features/
 ## Requirement file
 
 ```markdown
-# Email must be valid
-
 - Invalid addresses are rejected with an error
 - The rejection cause is shown to the user
 ```

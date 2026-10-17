@@ -1,0 +1,3 @@
+- An Opacity submenu contains the available opacity choices.
+- Opacity choices use five-percent steps.
+- The currently selected opacity is highlighted.

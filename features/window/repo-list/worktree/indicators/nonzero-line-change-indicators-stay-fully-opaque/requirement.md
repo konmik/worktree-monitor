@@ -1,0 +1,2 @@
+- A line-change indicator containing a nonzero count is 100% opaque.
+- Other indicators follow the window opacity.

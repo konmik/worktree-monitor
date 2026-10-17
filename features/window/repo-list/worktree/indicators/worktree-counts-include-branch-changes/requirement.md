@@ -1,0 +1,2 @@
+- Counts include uncommitted changes.
+- Counts also include changes from the main or master branch.
