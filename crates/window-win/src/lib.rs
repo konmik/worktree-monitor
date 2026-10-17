@@ -2,7 +2,7 @@
 pub mod dashboard;
 #[path = "features/window/repo-list/users-can-reorder-rows/order.rs"]
 pub mod order;
-#[path = "features/context-menu/users-can-open-the-context-menu/users-can-select-opacity-in-five-percent-steps/opacity.rs"]
+#[path = "features/context-menu/users-can-select-opacity-in-five-percent-steps/opacity.rs"]
 pub mod opacity;
 #[path = "features/window/window-position-survives-restart/placement.rs"]
 pub mod placement;

@@ -23,4 +23,4 @@ path = "src/features/window/window-position-survives-restart/placement.test.rs"
 
 [[test]]
 name = "opacity"
-path = "src/features/context-menu/users-can-open-the-context-menu/users-can-select-opacity-in-five-percent-steps/opacity.test.rs"
+path = "src/features/context-menu/users-can-select-opacity-in-five-percent-steps/opacity.test.rs"

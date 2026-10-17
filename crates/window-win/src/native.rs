@@ -93,10 +93,10 @@ mod preference_failures;
 #[path = "features/window/the-window-starts-at-its-intended-size/native.rs"]
 mod initial_geometry;
 
-#[path = "features/window/users-can-view-the-live-dashboard/dashboard-opens-above-other-windows-without-taking-focus/native.rs"]
+#[path = "features/window/dashboard-opens-above-other-windows-without-taking-focus/native.rs"]
 mod dashboard_opening;
 
-#[path = "features/window/users-can-view-the-live-dashboard/closing-the-dashboard-stops-its-monitor/native.rs"]
+#[path = "features/window/closing-the-dashboard-stops-its-monitor/native.rs"]
 mod dashboard_closing;
 
 #[path = "features/window/repo-list/worktree/indicators/count-indicators-hide-empty-optional-groups/native.rs"]

@@ -4,17 +4,17 @@ use std::ptr::null;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-#[path = "users-can-select-opacity-in-five-percent-steps/menu.rs"]
+#[path = "../users-can-select-opacity-in-five-percent-steps/menu.rs"]
 mod opacity;
 
-#[path = "users-can-hide-or-show-the-window/menu.rs"]
+#[path = "../users-can-hide-or-show-the-window/menu.rs"]
 mod visibility;
 pub(crate) use visibility::show_window;
 
-#[path = "reset-position-returns-the-window-to-defaults/menu.rs"]
+#[path = "../reset-position-returns-the-window-to-defaults/menu.rs"]
 mod reset_position;
 
-#[path = "users-can-exit-the-app/menu.rs"]
+#[path = "../users-can-exit-the-app/menu.rs"]
 mod exit;
 
 struct Menu(HMENU);

@@ -1,4 +1,4 @@
-#[path = "fatal-startup-errors-are-visible/errors.rs"]
+#[path = "../fatal-startup-errors-are-visible/errors.rs"]
 mod errors;
 
 use std::process::ExitCode;

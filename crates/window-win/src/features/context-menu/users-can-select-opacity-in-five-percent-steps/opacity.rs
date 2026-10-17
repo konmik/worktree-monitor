@@ -13,8 +13,8 @@ impl Opacity {
 
 }
 
-#[path = "selected-opacity-survives-restart/storage.rs"]
+#[path = "../selected-opacity-survives-restart/storage.rs"]
 mod storage;
 
-#[path = "../../../window/the-window-fades-outside-hover/opacity.rs"]
+#[path = "../../window/the-window-fades-outside-hover/opacity.rs"]
 mod fading;

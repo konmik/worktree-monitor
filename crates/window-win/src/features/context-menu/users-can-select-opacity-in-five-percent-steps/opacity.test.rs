@@ -13,5 +13,5 @@ fn opacity_accepts_only_visible_five_percent_steps() {
     assert_eq!(Opacity::new(100).unwrap().alpha(), 255);
 }
 
-#[path = "selected-opacity-survives-restart/tests.rs"]
+#[path = "../selected-opacity-survives-restart/tests.rs"]
 mod persistence_tests;
