@@ -11,7 +11,7 @@ $CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wtm.exe')).P
 $Output = [IO.Path]::GetFullPath($Output)
 New-Item -ItemType Directory -Path $Output -Force | Out-Null
 
-Add-Type -TypeDefinition @'
+Add-Type -TypeDefinition (@'
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -345,7 +345,7 @@ public static class WtmVisibilityNativeProbe {
         if (SendInput(2, inputs, Marshal.SizeOf<Input>()) != 2) throw new InvalidOperationException("Mouse click input was not delivered");
     }
 }
-'@
+'@ + (Get-Content -LiteralPath "$PSScriptRoot/native-probe.cs" -Raw))
 
 function Wait-For([scriptblock]$Condition, [string]$Label, [int]$Seconds = 30) {
     $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
@@ -614,6 +614,7 @@ function Find-VisibilityTopButton([string]$Caption) {
 }
 
 function Assert-NativeVisibilitySurface([array]$Rows, [string]$HiddenKey, [bool]$Checked = $false) {
+    [WtmNative]::Hover($script:handle)
     $buttons = @(Get-NativeButtons)
     if ($buttons.Count -eq 0) { throw 'Native visibility buttons are not present' }
     if (@($buttons | Where-Object { $_.Class -ine 'Button' }).Count -ne 0) { throw 'Visibility controls are not native Button windows' }
@@ -799,7 +800,7 @@ function Get-ButtonScreenSamplePoint($Button) {
     $bounds = [WtmVisibilityNativeProbe]::WindowBounds($Button.Handle)
     $dpi = [Math]::Max(96, [int][WtmVisibilityNativeProbe]::GetDpiForWindow($script:handle))
     $inset = [Math]::Max(1, [int][Math]::Ceiling(4 * $dpi / 96))
-    $x = $bounds.Left + $inset
+    $x = $bounds.Right - $inset
     $y = [int](($bounds.Top + $bounds.Bottom) / 2)
     if ($x -ge $bounds.Right -or $y -le $bounds.Top -or $y -ge $bounds.Bottom) { throw 'Visibility button has no usable background sample point' }
     [pscustomobject]@{
@@ -840,8 +841,11 @@ function Invoke-VisibilityFrameProbe($Button, [bool]$BaselineMode) {
             Wait-For {
                 [WtmVisibilityNativeProbe]::IsWindow($handle) -and [WtmVisibilityNativeProbe]::Text($handle) -ceq $expected
             } "BM_CLICK caption $expected" 10
-            if (-not (Rect-Same $initialBounds ([WtmVisibilityNativeProbe]::WindowBounds($handle)))) {
-                throw 'Visibility button bounds changed while Show all was enabled'
+            $currentBounds = [WtmVisibilityNativeProbe]::WindowBounds($handle)
+            $expectedWidth = [WtmNative]::Measure($handle, $expected).Width + [int](16 * [WtmVisibilityNativeProbe]::GetDpiForWindow($handle) / 96)
+            if ($currentBounds.Right -ne $initialBounds.Right -or $currentBounds.Top -ne $initialBounds.Top -or
+                $currentBounds.Bottom -ne $initialBounds.Bottom -or $currentBounds.Right - $currentBounds.Left -ne $expectedWidth) {
+                throw 'Visibility button lost its alignment or label width while Show all was enabled'
             }
             [void]$captions.Add($expected)
             $completed++
@@ -1093,6 +1097,7 @@ function Invoke-EdgeScrollTest {
     $scale = [int][WtmVisibilityNativeProbe]::GetDpiForWindow($script:handle)
     if (-not [WtmVisibilityNativeProbe]::SetWindowPos($script:handle, [IntPtr]::Zero, 0, 0, [int](760 * $scale / 96), [int](400 * $scale / 96), 0x16)) { throw 'Edge-scroll fixture resize failed' }
     try {
+        [WtmNative]::RequireOverflow($script:handle)
         [void][WtmVisibilityNativeProbe]::Send($script:viewport, 0x0115, [IntPtr]6, [IntPtr]::Zero)
         $cards = @(Get-Cards)
         $source = @((Get-RowSnapshot $cards) | Where-Object Kind -eq 'worktree')[0].Card
@@ -1140,7 +1145,8 @@ function Invoke-MetricPaintTest([array]$Cards, [string]$Path) {
     Run-Git $repo @('config', 'filter.wtm-metric.clean', 'sleep 1; cat')
     [IO.File]::WriteAllText($attributes, "lines.txt filter=wtm-metric`n")
     try {
-    Clear-Paint $Cards
+    [WtmNative]::Hover($script:handle)
+    Settle-Paint $Cards
     $statusBefore = Get-StatusText
     $initialMetric = [regex]::Match($statusBefore, '\[idle: (100|[0-9]{1,2})%\]')
     if (-not $initialMetric.Success) { throw 'Initial idle percentage is missing' }
@@ -1150,6 +1156,7 @@ function Invoke-MetricPaintTest([array]$Cards, [string]$Path) {
     $statusChanges = 0
     $samples = 0
     $badViewport = 0
+    $paintTrace = [Collections.Generic.List[object]]::new()
     $badCards = 0
     $minimumDeadline = [DateTime]::UtcNow.AddMilliseconds(1400)
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
@@ -1163,7 +1170,10 @@ function Invoke-MetricPaintTest([array]$Cards, [string]$Path) {
         $scale = [Math]::Max(96, [int][WtmVisibilityNativeProbe]::GetDpiForWindow($script:handle))
         $viewportUpdate = [WtmVisibilityNativeProbe]::Update($script:viewport)
         $viewportClient = [WtmVisibilityNativeProbe]::ClientBounds($script:viewport)
-        if ($viewportUpdate.Pending -and -not (Is-NarrowStrip $viewportUpdate $viewportClient $scale)) { $badViewport++ }
+        if ($viewportUpdate.Pending -and -not (Is-NarrowStrip $viewportUpdate $viewportClient $scale)) {
+            $badViewport++
+            $paintTrace.Add(@{ status = Get-StatusText; viewport = $viewportClient; update = $viewportUpdate; controls_visible = [WtmVisibilityNativeProbe]::IsWindowVisible([WtmVisibilityNativeProbe]::GetDlgItem($script:handle, 1004)) })
+        }
         if ($viewportUpdate.Pending) { [void][WtmVisibilityNativeProbe]::UpdateWindow($script:viewport) }
         foreach ($Card in @($Cards)) {
             $update = [WtmVisibilityNativeProbe]::Update($Card.Handle)
@@ -1180,6 +1190,7 @@ function Invoke-MetricPaintTest([array]$Cards, [string]$Path) {
         Start-Sleep -Milliseconds 50
     }
     Clear-Paint $Cards
+    $paintTrace | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $Output 'metric-paint.json')
     if ($badViewport -gt 0 -or $badCards -gt 0) { throw "Metric-only updates produced broad paint invalidation (viewport=$badViewport cards=$badCards)" }
     if (-not $metricAdvanced) { throw 'No decrease in idle percentage was observed during the paint check' }
     [ordered]@{

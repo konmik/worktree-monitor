@@ -115,16 +115,19 @@ pub(crate) fn dashboard(width: i32, height: i32, dpi: i32, typography: Typograph
         YGNodeStyleSetFlexGrow(body, 1.0);
         YGNodeStyleSetMinHeight(body, 0.0);
         YGNodeStyleSetMargin(body, YGEdgeLeft, left as f32);
-        YGNodeStyleSetMargin(body, YGEdgeRight, right as f32);
         let viewport = tree.child(body)?;
         YGNodeStyleSetFlexGrow(viewport, 1.0);
         YGNodeStyleSetMinWidth(viewport, 0.0);
-        let scrollbar = tree.child(body)?;
-        let scrollbar_width = s(8).min(right.max(1));
+        let gutter = tree.child(body)?;
+        let gutter_width = right.max(s(8)).min(width - left);
+        YGNodeStyleSetWidth(gutter, gutter_width as f32);
+        YGNodeStyleSetFlexShrink(gutter, 0.0);
+        let scrollbar = tree.child(gutter)?;
+        let scrollbar_width = s(8).min(gutter_width);
         YGNodeStyleSetPositionType(scrollbar, YGPositionTypeAbsolute);
         YGNodeStyleSetPosition(scrollbar, YGEdgeTop, 0.0);
         YGNodeStyleSetPosition(scrollbar, YGEdgeBottom, 0.0);
-        YGNodeStyleSetPosition(scrollbar, YGEdgeRight, -((right + scrollbar_width) / 2) as f32);
+        YGNodeStyleSetPosition(scrollbar, YGEdgeLeft, ((gutter_width - scrollbar_width) / 2) as f32);
         YGNodeStyleSetWidth(scrollbar, scrollbar_width as f32);
         YGNodeCalculateLayout(tree.root, width as f32, height as f32, YGDirectionLTR);
         let header_rect = rect(header);
@@ -133,7 +136,7 @@ pub(crate) fn dashboard(width: i32, height: i32, dpi: i32, typography: Typograph
             status: rect(status).offset(header_rect),
             toggle: rect(toggle).offset(header_rect),
             viewport: rect(viewport).offset(body_rect),
-            scrollbar: rect(scrollbar).offset(body_rect),
+            scrollbar: rect(scrollbar).offset(rect(gutter)).offset(body_rect),
         })
     }
 }
@@ -189,6 +192,18 @@ mod tests {
                 assert_eq!(layout.status.left + layout.status.width, layout.toggle.left);
                 assert!(layout.viewport.top >= layout.toggle.top + layout.toggle.height);
                 assert!(layout.viewport.height > 0);
+            }
+        }
+    }
+
+    #[test]
+    fn scrollbar_has_a_gutter_when_compact_padding_is_smaller_than_a_character() {
+        for dpi in [96, 120, 144, 192] {
+            for height in [90, 130, 250] {
+                let layout = dashboard(600, height, dpi, Typography::new(dpi, 15 * dpi / 96), 11 * dpi / 96, 0).unwrap();
+                assert!(layout.scrollbar.left >= layout.viewport.left + layout.viewport.width);
+                assert!(layout.scrollbar.width >= 1);
+                assert!(layout.scrollbar.left + layout.scrollbar.width <= 600);
             }
         }
     }

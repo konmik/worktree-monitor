@@ -2,7 +2,7 @@ param([string]$Binary = "$PSScriptRoot/../target/debug/wtm.exe")
 
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
-Add-Type -TypeDefinition @'
+Add-Type -TypeDefinition (@'
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -124,8 +124,11 @@ public static class WtmDragProbe {
         Rect rect;
         if (!GetClientRect(source, out rect)) { throw new InvalidOperationException("Card bounds unavailable"); }
         int scale = (int)GetDpiForWindow(source);
-        return new Point { X = region == "right" ? rect.Right - 20 * scale / 96 : 50 * scale / 96,
-            Y = (region == "counts" || (region == "right" && rect.Bottom > 40 * scale / 96) ? 44 : 20) * scale / 96 };
+        int cell = WtmNative.Measure(source, "Mg").Height;
+        int advance = (int)Math.Round(12 * 1.2 * scale / 96, MidpointRounding.AwayFromZero);
+        bool worktree = Text(source).Contains("\nS ");
+        return new Point { X = region == "right" ? rect.Right - 20 * scale / 96 : Math.Min(rect.Right / 2, 50 * scale / 96),
+            Y = Math.Min(rect.Bottom - 1, worktree && (region == "counts" || region == "right") ? advance + cell / 2 : cell / 2) };
     }
     private static IntPtr Begin(IntPtr source, Point start) {
         var screen = start;
@@ -152,6 +155,7 @@ public static class WtmDragProbe {
         if (Captured(source) != IntPtr.Zero) { throw new InvalidOperationException("Click left capture active"); }
     }
     public static void ClickAction(IntPtr source) {
+        WtmNative.Hover(GetAncestor(source, 2));
         IntPtr button = IntPtr.Zero;
         EnumChildWindows(source, (handle, data) => {
             if (GetParent(handle) == source && (Text(handle) == "Hide" || Text(handle) == "Unhide")) { button = handle; return false; }
@@ -210,7 +214,7 @@ public static class WtmDragProbe {
         if (Captured(root) != IntPtr.Zero) { throw new InvalidOperationException("Drag left the mouse captured"); }
     }
 }
-'@
+'@ + (Get-Content -LiteralPath "$PSScriptRoot/native-probe.cs" -Raw))
 
 function Wait-For([scriptblock]$Condition, [string]$Label, [int]$Seconds = 25) {
     $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
@@ -512,7 +516,8 @@ try {
     $env:PATH = ''
     Start-Dashboard 2
     $failureText = [WtmDragProbe]::AllText($script:handle)
-    if ($failureText -notmatch '(?m)^ERROR\b' -or $failureText -notmatch 'Could not start Git') { throw 'Launch discovery failure is not visible as an error' }
+    [IO.File]::WriteAllText((Join-Path $fixture 'missing-git-error.txt'), $failureText)
+    if ($failureText -notmatch '(?m)^Launch repository discovery error\r?$' -or $failureText -notmatch 'Could not start Git') { throw 'Launch discovery failure is not visible as an error' }
     if (Test-Path (Join-Path $missingGitHome '.config/wtm/config.json')) { throw 'Failed launch discovery wrote registrations' }
     Close-Dashboard
     $env:PATH = $oldPath

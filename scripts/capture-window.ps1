@@ -16,7 +16,7 @@ $Binary = (Resolve-Path $Binary).Path
 $CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wtm.exe')).Path
 $Output = [IO.Path]::GetFullPath($Output)
 Add-Type -AssemblyName System.Drawing
-Add-Type -TypeDefinition @'
+Add-Type -TypeDefinition (@'
 using System;
 using System.Text;
 using System.Runtime.InteropServices;
@@ -78,7 +78,7 @@ public static class WtmCapture {
         return all.ToString();
     }
 }
-'@
+'@ + (Get-Content -LiteralPath "$PSScriptRoot/native-probe.cs" -Raw))
 
 function Invoke-FixtureGit([string]$Repo, [string[]]$Arguments) {
     & git -c core.fsmonitor=false -c core.autocrlf=false -c commit.gpgsign=false -c "core.hooksPath=$fixture" -C $Repo @Arguments
@@ -106,6 +106,7 @@ $previousDpiContext = [WtmCapture]::SetThreadDpiAwarenessContext([IntPtr](-4))
 try {
     $env:HOME = Join-Path $fixture 'unix-home'
     $env:USERPROFILE = $fixtureHome
+    if ($VerifyScrollbar) { [WtmNative]::Opaque($fixtureHome) }
     foreach ($spec in @(
         @{ Name = 'signal-core'; Added = 42; Deleted = 8; Binaries = 1 },
         @{ Name = 'edge-gateway'; Added = 18; Deleted = 12; Binaries = 0 },
@@ -186,6 +187,10 @@ foreach (`$item in `$items) { `$item.Current.Name }
         $height = [Math]::Min($Height, $area.Bottom - $area.Top - 32)
         if (-not [WtmCapture]::SetWindowPos($handle, [IntPtr]::Zero, $area.Left + 16, $area.Top + 16, $bounds.Right - $bounds.Left, $height, 20)) { throw 'Capture layout resize failed' }
         if (-not [WtmCapture]::GetWindowRect($handle, [ref]$bounds)) { throw 'Resized window bounds unavailable' }
+    }
+    if ($VerifyScrollbar) {
+        [WtmNative]::RequireOverflow($handle)
+        if (-not [WtmCapture]::GetWindowRect($handle, [ref]$bounds)) { throw 'Scrollable window bounds unavailable' }
     }
     if ($Client) {
         if (-not $Screen) { throw 'Client capture requires screen capture' }

@@ -8,7 +8,7 @@ $Binary = (Resolve-Path $Binary).Path
 $CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wtm.exe')).Path
 New-Item -ItemType Directory -Path $Output -Force | Out-Null
 Add-Type -AssemblyName System.Drawing
-Add-Type -TypeDefinition @'
+Add-Type -TypeDefinition (@'
 using System;
 using System.Text;
 using System.Drawing;
@@ -37,8 +37,6 @@ public static class WtmResizeProbe {
     [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr handle, IntPtr dc);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int DrawText(IntPtr dc, string text, int length, ref Rect rect, uint flags);
     [DllImport("gdi32.dll")] public static extern IntPtr SelectObject(IntPtr dc, IntPtr handle);
-    [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr CreateFontW(int height, int width, int escapement, int orientation, int weight, uint italic, uint underline, uint strikeout, uint charset, uint outputPrecision, uint clipPrecision, uint quality, uint pitchAndFamily, string face);
-    [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern int GetTextFaceW(IntPtr dc, int count, StringBuilder face);
     [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr handle);
     [DllImport("gdi32.dll")] public static extern int SetBkMode(IntPtr dc, int mode);
     [DllImport("gdi32.dll")] public static extern uint SetTextColor(IntPtr dc, uint color);
@@ -129,21 +127,10 @@ public static class WtmResizeProbe {
             Rect card;
             if (!GetClientRect(handle, out card)) throw new InvalidOperationException("Error bounds unavailable");
             int dpi = (int)GetDpiForWindow(handle);
-            int inset = Math.Min(14 * dpi / 96, (card.Right - 1) / 2);
+            int inset = WtmNative.Inset(handle, card.Right);
             var measured = new Rect { Right = Math.Max(1, card.Right - inset * 2) };
             var dc = GetDC(handle);
-            var font = IntPtr.Zero;
-            foreach (var face in new[] { "Berkeley Mono", "Berkeley Mono Variable", "Consolas", "Cascadia Mono", "Courier New" }) {
-                font = CreateFontW(-12 * dpi / 96, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 49, face);
-                var previous = SelectObject(dc, font);
-                var actual = new StringBuilder(64);
-                GetTextFaceW(dc, actual.Capacity, actual);
-                SelectObject(dc, previous);
-                if (actual.ToString().Equals(face, StringComparison.OrdinalIgnoreCase)) break;
-                DeleteObject(font);
-                font = IntPtr.Zero;
-            }
-            if (font == IntPtr.Zero) throw new InvalidOperationException("Terminal font unavailable");
+            var font = WtmNative.CloneFont(handle);
             var old = SelectObject(dc, font);
             try {
                 var error = caption.Substring(start).Replace("\nRefreshing", "");
@@ -215,7 +202,7 @@ public static class WtmResizeProbe {
         return changed;
     }
 }
-'@ -ReferencedAssemblies System.Drawing.Common, System.Drawing.Primitives, System.Collections, System.Private.Windows.GdiPlus, System.Private.Windows.Core
+'@ + (Get-Content -LiteralPath "$PSScriptRoot/native-probe.cs" -Raw)) -ReferencedAssemblies System.Drawing.Common, System.Drawing.Primitives, System.Collections, System.Private.Windows.GdiPlus, System.Private.Windows.Core, System.Threading.Thread
 
 function Wait-For([scriptblock]$Condition, [string]$Label) {
     $deadline = [DateTime]::UtcNow.AddSeconds(25)
@@ -232,6 +219,7 @@ function Run-Git([string[]]$Arguments) {
 }
 
 function Compare-Repaint([string]$Name) {
+    [WtmNative]::WaitForPresentation($script:handle)
     [void][WtmResizeProbe]::RedrawWindow($script:handle, [IntPtr]::Zero, [IntPtr]::Zero, 0x0180)
     [void][WtmResizeProbe]::DwmFlush()
     $status = [WtmResizeProbe]::GetDlgItem($script:handle, 1002)
@@ -274,6 +262,7 @@ $results = [System.Collections.Generic.List[object]]::new()
 try {
     $env:HOME = Join-Path $Output 'unix-home'
     $env:USERPROFILE = $fixtureHome
+    [WtmNative]::Opaque($fixtureHome)
     foreach ($name in @('signal-core', 'edge-gateway', 'infra-tools')) {
         $repo = Join-Path $Output $name
         New-Item -ItemType Directory -Path $repo | Out-Null

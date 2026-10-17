@@ -11,7 +11,7 @@ $repo = Join-Path $Output 'repo'
 $fixtureHome = Join-Path $Output 'home'
 New-Item -ItemType Directory -Path $repo, $fixtureHome -Force | Out-Null
 Add-Type -AssemblyName System.Drawing
-Add-Type -TypeDefinition @'
+Add-Type -TypeDefinition (@'
 using System;
 using System.Drawing;
 using System.Runtime.InteropServices;
@@ -55,7 +55,6 @@ public static class WtmFeatureProbe {
     [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr window, IntPtr dc);
     [DllImport("gdi32.dll")] public static extern IntPtr SelectObject(IntPtr dc, IntPtr handle);
     [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern int GetTextFaceW(IntPtr dc, int count, StringBuilder face);
-    [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr CreateFontW(int height, int width, int escapement, int orientation, int weight, uint italic, uint underline, uint strikeout, uint charset, uint outputPrecision, uint clipPrecision, uint quality, uint pitchAndFamily, string face);
     [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr handle);
     [DllImport("gdi32.dll")] public static extern int SetBkMode(IntPtr dc, int mode);
     [DllImport("gdi32.dll")] public static extern uint SetTextColor(IntPtr dc, uint color);
@@ -121,7 +120,7 @@ public static class WtmFeatureProbe {
     public static int Measure(IntPtr window, string text) {
         var dc = GetDC(window);
         if (dc == IntPtr.Zero) throw new InvalidOperationException("Text DC unavailable");
-        var font = TerminalFont(window, dc);
+        var font = WtmNative.CloneFont(window);
         var old = SelectObject(dc, font);
         try {
             Size size;
@@ -133,23 +132,11 @@ public static class WtmFeatureProbe {
             ReleaseDC(window, dc);
         }
     }
-    public static IntPtr TerminalFont(IntPtr window, IntPtr dc) {
-        foreach (var face in new[] { "Berkeley Mono", "Berkeley Mono Variable", "Consolas", "Cascadia Mono", "Courier New" }) {
-            var font = CreateFontW(-12 * (int)GetDpiForWindow(window) / 96, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 49, face);
-            var old = SelectObject(dc, font);
-            var actual = new StringBuilder(64);
-            GetTextFaceW(dc, actual.Capacity, actual);
-            SelectObject(dc, old);
-            if (actual.ToString().Equals(face, StringComparison.OrdinalIgnoreCase)) return font;
-            DeleteObject(font);
-        }
-        throw new InvalidOperationException("Terminal font unavailable");
-    }
     public static void AssertNameWidth(IntPtr root, IntPtr row, bool controlsVisible) {
         Rect bounds;
         GetWindowRect(row, out bounds);
         int dpi = (int)GetDpiForWindow(row);
-        int left = 14 * dpi / 96;
+        int left = WtmNative.Inset(row, bounds.Right - bounds.Left);
         int right = bounds.Right - bounds.Left - left;
         if (controlsVisible) {
             Rect button;
@@ -169,7 +156,7 @@ public static class WtmFeatureProbe {
         }
         int height = (int)Math.Ceiling(24.0 * dpi / 96);
         var dc = GetDC(row);
-        var font = TerminalFont(row, dc);
+        var font = WtmNative.CloneFont(row);
         ReleaseDC(row, dc);
         try {
             RedrawWindow(root, IntPtr.Zero, IntPtr.Zero, 0x0181);
@@ -220,7 +207,7 @@ public static class WtmFeatureProbe {
             return true;
         }, IntPtr.Zero);
         var dc = GetDC(sample);
-        var localFont = TerminalFont(sample, dc);
+        var localFont = WtmNative.CloneFont(sample);
         var old = SelectObject(dc, localFont);
         try {
             var face = new StringBuilder(64);
@@ -309,7 +296,7 @@ public static class WtmFeatureProbe {
         }
     }
 }
-'@ -ReferencedAssemblies System.Drawing.Common, System.Drawing.Primitives, System.Private.Windows.GdiPlus, System.Private.Windows.Core, System.Threading.Thread
+'@ + (Get-Content -LiteralPath "$PSScriptRoot/native-probe.cs" -Raw)) -ReferencedAssemblies System.Drawing.Common, System.Drawing.Primitives, System.Private.Windows.GdiPlus, System.Private.Windows.Core, System.Threading.Thread
 
 function Wait-For([scriptblock]$Condition, [string]$Label) {
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
@@ -489,10 +476,11 @@ function Assert-Hover {
 }
 
 function Assert-Colors {
+    [WtmNative]::Hover($script:window)
     $outer = Bounds $script:window
     $card = Bounds $script:card
     $dpi = [WtmFeatureProbe]::GetDpiForWindow($script:card)
-    $x = $card.Left - $outer.Left + [int][Math]::Floor(14 * $dpi / 96)
+    $x = $card.Left - $outer.Left + [WtmNative]::Inset($script:card, $card.Right - $card.Left)
     $top = $card.Top - $outer.Top + [int][Math]::Round(12 * 1.2 * $dpi / 96)
     $bottom = $card.Bottom - $outer.Top - [int][Math]::Floor(8 * $dpi / 96)
     $image = [Drawing.Bitmap]::new($outer.Right - $outer.Left, $outer.Bottom - $outer.Top)
@@ -541,6 +529,7 @@ $script:process = $null
 $proof = [ordered]@{ result = 'FAIL'; binary = $Binary; sha256 = (Get-FileHash $Binary).Hash; checks = @(); runs = @() }
 try {
     $env:USERPROFILE = $fixtureHome
+    [WtmNative]::Opaque($fixtureHome)
     $env:HOME = $fixtureHome
     $env:GIT_CONFIG_GLOBAL = Join-Path $Output 'empty-gitconfig'
     $env:GIT_CONFIG_NOSYSTEM = '1'

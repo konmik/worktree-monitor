@@ -48,6 +48,8 @@ Window settings are remembered. Hover makes the window fully opaque.
 
 Counts include branch commits, staged and unstaged changes, and untracked files, excluding ignored files. The comparison starts at the common ancestor with the local `main` branch, or `master` if `main` is absent. If neither provides a common ancestor, it compares with `HEAD`.
 
+Changes inside Git-ignored folders do not trigger scans. Tracked files and changes to ignore rules are still monitored.
+
 ## License
 
 [MIT](LICENSE).

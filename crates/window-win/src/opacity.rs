@@ -7,7 +7,7 @@ pub struct Opacity(u8);
 
 impl Opacity {
     pub fn new(percent: u8) -> Option<Self> {
-        (percent >= 5 && percent <= 100 && percent % 5 == 0).then_some(Self(percent))
+        ((5..=100).contains(&percent) && percent.is_multiple_of(5)).then_some(Self(percent))
     }
 
     pub fn percent(self) -> u8 { self.0 }

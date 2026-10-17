@@ -5,7 +5,7 @@ use window_win::opacity::Opacity;
 #[test]
 fn opacity_accepts_only_visible_five_percent_steps() {
     for percent in 0..=255 {
-        assert_eq!(Opacity::new(percent).is_some(), percent >= 5 && percent <= 100 && percent % 5 == 0);
+        assert_eq!(Opacity::new(percent).is_some(), (5..=100).step_by(5).any(|value| value == percent));
     }
     assert_eq!(Opacity::default().percent(), 20);
     assert_eq!(Opacity::default().alpha(), 51);

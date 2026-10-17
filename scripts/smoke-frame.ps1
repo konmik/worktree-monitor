@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
 New-Item -ItemType Directory -Path $Output -Force | Out-Null
 Add-Type -AssemblyName System.Drawing
-Add-Type -TypeDefinition @'
+Add-Type -TypeDefinition (@'
 using System;
 using System.Text;
 using System.Runtime.InteropServices;
@@ -54,7 +54,7 @@ public static class WtmFrameProbe {
         return found;
     }
 }
-'@
+'@ + (Get-Content -LiteralPath "$PSScriptRoot/native-probe.cs" -Raw))
 
 function Capture-Frame([string]$Name) {
     [void][WtmFrameProbe]::DwmFlush()
@@ -97,13 +97,21 @@ function Focus-Window([IntPtr]$Window) {
     $point = [WtmFrameProbe+Point]::new()
     $point.X = $X
     $point.Y = $Y
-    if ([WtmFrameProbe]::GetAncestor([WtmFrameProbe]::WindowFromPoint($point), 2) -ne $Window) { throw 'Focus click target is not the fixture' }
-    [void][WtmFrameProbe]::SetForegroundWindow($Window)
-    [void][WtmFrameProbe]::SetCursorPos($X, $Y)
-    [WtmFrameProbe]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
-    [WtmFrameProbe]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
-    for ($i = 0; $i -lt 15; $i++) { [WtmFrameProbe]::Pump(); Start-Sleep -Milliseconds 20 }
-    if ([WtmFrameProbe]::GetForegroundWindow() -ne $Window) { throw 'Fixture did not receive focus' }
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+        if (-not [WtmFrameProbe]::SetWindowPos($Window, [IntPtr](-1), 0, 0, 0, 0, 0x13)) { throw 'Focus fixture could not be brought forward' }
+        if ([WtmFrameProbe]::GetAncestor([WtmFrameProbe]::WindowFromPoint($point), 2) -ne $Window) { throw 'Focus click target is not the fixture' }
+        [void][WtmFrameProbe]::SetForegroundWindow($Window)
+        [void][WtmFrameProbe]::SetCursorPos($X, $Y)
+        [WtmFrameProbe]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+        [WtmFrameProbe]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+        for ($i = 0; $i -lt 10; $i++) {
+            [WtmFrameProbe]::Pump()
+            if ([WtmFrameProbe]::GetForegroundWindow() -eq $Window) { return }
+            Start-Sleep -Milliseconds 20
+        }
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw 'Fixture did not receive focus'
 }
 
 $oldHome = $env:HOME
@@ -123,6 +131,7 @@ try {
     $env:HOME = Join-Path $Output 'unix-home'
     $env:USERPROFILE = Join-Path $Output 'home'
     New-Item -ItemType Directory -Path $env:USERPROFILE -Force | Out-Null
+    [WtmNative]::Opaque($env:USERPROFILE)
     $process = Start-Process -FilePath $Binary -WorkingDirectory $env:USERPROFILE -PassThru
     $script:handle = [IntPtr]::Zero
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
