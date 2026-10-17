@@ -14,7 +14,7 @@ One coordinator owns worktree scan schedules and pending filesystem changes. Nat
 
 At most four jobs run at once. Discovery and scans retain capacity for each other, and overdue jobs run in deadline order. A worktree never overlaps its own scan. Removed jobs are canceled and joined. Ready worktrees appear without waiting for slower initial scans.
 
-The status shows elapsed polling work within the previous 60 seconds. Waiting between scans does not count. Concurrent scans contribute their durations separately, so the total can exceed 60 seconds.
+The status shows idle percentage over the previous 60 seconds. It subtracts recorded polling work from the full minute and clamps the result to 0–100%. Concurrent scans contribute their durations separately. This measures monitor work, not system CPU usage.
 
 ## Synthesis
 
@@ -41,7 +41,7 @@ Line counts are grouped into source, tests, and scripts or tooling when Git's nu
 
 The visual design uses charcoal surfaces, monospace typography, acid-green additions, coral-red deletions and errors, and teal branch labels. Native owner-drawn controls retain real captions for accessibility. A clipped native viewport owns scrolling, while the header stays fixed. Dragging a repository header moves its whole section. Dragging a worktree card reorders it within its section. Saved display order does not change registrations or create worktrees. There are no invented history charts, activity scores, or decorative animations.
 
-Drag movement redraws only the source card and changed drop-marker strips. Edge scrolling batches child-window moves and buffers each card before display. Polling-time updates redraw the fixed status row without rebuilding the list. Native Hide and Unhide buttons support keyboard activation, and Show all temporarily overrides the visibility filter.
+Drag movement redraws only the source card and changed drop-marker strips. Edge scrolling batches child-window moves and buffers each card before display. Idle-percentage updates redraw the fixed status row without rebuilding the list. Native Hide and Unhide buttons support keyboard activation, and Show all temporarily overrides the visibility filter.
 
 Monitor updates carry scan targets and retained scan activities separately from completed snapshots. Activity starts before discovery or worktree scanning and finishes with the result. Repository activity includes scans of its worktrees. The dashboard holds each refresh icon for at least one second without delaying the scanner or clearing prior counts.
 
@@ -72,4 +72,4 @@ The initial release provides a Windows live window. Other platforms can use the 
 
 ## Verification
 
-Core tests exercise real temporary Git repositories and literal expected counts. Scheduler tests check scan lifecycle, recovery backoff, pending changes, and the rolling polling duration. CLI smoke checks exercise the executable with an isolated registry. The Windows smoke check reads the actual visible controls, verifies topmost behavior, changes a file, checks the polling-time label, reloads the registry, and closes the real window. A separate read-only check compares discovered paths against existing Git worktrees. The release measurement example and benchmark script compare published rolling-minute durations across unchanged repository snapshots.
+Core tests exercise real temporary Git repositories and literal expected counts. Scheduler tests check scan lifecycle, recovery backoff, pending changes, and the rolling polling duration. CLI smoke checks exercise the executable with an isolated registry. The Windows smoke check reads the actual visible controls, verifies topmost behavior, changes a file, checks the idle-percentage label, reloads the registry, and closes the real window. A separate read-only check compares discovered paths and counts against existing Git worktrees. The release measurement example and benchmark script compare published rolling-minute durations across unchanged repository snapshots.

@@ -2,11 +2,23 @@
 
 An always-on-top Windows dashboard showing branches and changed lines across Git repositories and their worktrees. Updates automatically without taking focus from your editor.
 
+![Worktree Monitor dashboard](docs/dashboard.png)
+
 ## Install
 
-Requires [Rust](https://www.rust-lang.org/tools/install) and [Git](https://git-scm.com/downloads). From the repository root:
+### Windows download
+
+Download the Windows x64 ZIP from [Releases](https://github.com/konmik/worktree-monitor/releases), extract it, and run `wtm-ui.exe`. [Git](https://git-scm.com/downloads) must be on your `PATH`. Add the extracted folder to your `PATH` to use `wtm` from a terminal.
+
+### Build from source
+
+Requires Windows x64, [Git](https://git-scm.com/downloads), stable [Rust](https://www.rust-lang.org/tools/install) with the MSVC toolchain, and [Visual Studio Build Tools](https://learn.microsoft.com/en-us/windows/dev-environment/rust/setup) with **Desktop development with C++** and a Windows SDK. The layout dependency compiles C++ code.
+
+Clone the repository, then install both executables:
 
 ```powershell
+git clone https://github.com/konmik/worktree-monitor.git
+cd worktree-monitor
 cargo install --path crates/wtm --locked --bins
 ```
 
@@ -50,6 +62,17 @@ Counts include branch commits, staged and unstaged changes, and untracked files,
 
 Changes inside Git-ignored folders do not trigger scans. Tracked files and changes to ignore rules are still monitored.
 
+## Development
+
+Run the Rust tests and lint checks:
+
+```powershell
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+```
+
+Desktop smoke checks require PowerShell 7 and an interactive Windows desktop. See [testing and releases](docs/development.md).
+
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE). Release ZIPs include dependency licenses and notices.

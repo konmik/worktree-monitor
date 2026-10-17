@@ -2,6 +2,9 @@
 name = "wtm-core"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Git repository discovery, change counting, and monitoring for Worktree Monitor"
 
 [dependencies]
 dunce = "1"

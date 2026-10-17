@@ -2,6 +2,9 @@
 name = "wtm"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "An always-on-top Windows dashboard for Git repositories and worktrees"
 default-run = "wtm"
 
 [dependencies]

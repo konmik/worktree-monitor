@@ -3,6 +3,9 @@ param(
     [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wtm-dashboard.png",
     [switch]$Screen = $true,
     [int]$Height = 0,
+    [int]$Width = 0,
+    [switch]$Opaque,
+    [switch]$MultipleWorktrees,
     [switch]$Client,
     [switch]$ShowAll,
     [switch]$VerifyScrollbar,
@@ -106,11 +109,11 @@ $previousDpiContext = [WtmCapture]::SetThreadDpiAwarenessContext([IntPtr](-4))
 try {
     $env:HOME = Join-Path $fixture 'unix-home'
     $env:USERPROFILE = $fixtureHome
-    if ($VerifyScrollbar) { [WtmNative]::Opaque($fixtureHome) }
+    if ($VerifyScrollbar -or $Opaque) { [WtmNative]::Opaque($fixtureHome) }
     foreach ($spec in @(
-        @{ Name = 'signal-core'; Added = 42; Deleted = 8; Binaries = 1 },
-        @{ Name = 'edge-gateway'; Added = 18; Deleted = 12; Binaries = 0 },
-        @{ Name = 'infra-tools'; Added = 8; Deleted = 0; Binaries = 0 }
+        @{ Name = 'signal-core'; Added = 42; Deleted = 8; Binaries = 1; Branches = @('feat/streaming', 'fix/reconnect') },
+        @{ Name = 'edge-gateway'; Added = 18; Deleted = 12; Binaries = 0; Branches = @('feat/http-cache', 'fix/timeouts') },
+        @{ Name = 'infra-tools'; Added = 8; Deleted = 0; Binaries = 0; Branches = @('feat/deploy-checks', 'chore/dependencies') }
     )) {
         $repo = Join-Path $fixture $spec.Name
         New-Item -ItemType Directory -Path $repo | Out-Null
@@ -128,6 +131,27 @@ try {
         $branch = (Invoke-FixtureGit $repo @('branch', '--show-current') | Out-String).Trim()
         $binaryCounts = if ($spec.Binaries -gt 0) { " · binaries: $($spec.Binaries)" } else { '' }
         $script:expectedRows += [pscustomobject]@{ Branch = $branch; Path = $repo; Added = $spec.Added; Counts = "S\s+\+$($spec.Added)/-$($spec.Deleted)$binaryCounts\r?$" }
+        if ($MultipleWorktrees) {
+            for ($index = 0; $index -lt $spec.Branches.Count; $index++) {
+                $worktreeBranch = $spec.Branches[$index]
+                $worktree = Join-Path $fixture "$($spec.Name)-$($worktreeBranch.Replace('/', '-'))"
+                Invoke-FixtureGit $repo @('worktree', 'add', '--quiet', '-b', $worktreeBranch, $worktree)
+                $added = 0
+                $deleted = 0
+                $testCounts = ''
+                if ($index -eq 0) {
+                    $added = 14
+                    $deleted = 3
+                    $worktreeLines = @($before | Select-Object -Skip $deleted) + @(1..$added | ForEach-Object { "worktree line $_" })
+                    [IO.File]::WriteAllLines((Join-Path $worktree 'source.txt'), $worktreeLines)
+                    $testDirectory = Join-Path $worktree 'tests'
+                    [void][IO.Directory]::CreateDirectory($testDirectory)
+                    [IO.File]::WriteAllLines((Join-Path $testDirectory 'behavior.rs'), @(1..6 | ForEach-Object { "test line $_" }))
+                    $testCounts = ' · T\s+\+6/-0'
+                }
+                $script:expectedRows += [pscustomobject]@{ Branch = $worktreeBranch; Path = $worktree; Added = $added; Counts = "S\s+\+$added/-$deleted$testCounts\r?$" }
+            }
+        }
         & $CliBinary add $repo
         if ($LASTEXITCODE -ne 0) { throw 'Visual fixture registration failed' }
     }
@@ -147,7 +171,7 @@ try {
         }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
-    if ($handle -eq [IntPtr]::Zero -or -not (Has-FixtureData $text)) { throw 'Dashboard did not show all three real fixture counts' }
+    if ($handle -eq [IntPtr]::Zero -or -not (Has-FixtureData $text)) { throw 'Dashboard did not show all real fixture counts' }
     if ($VerifyRefresh) {
         foreach ($expected in $script:expectedRows) {
             [IO.File]::AppendAllText((Join-Path $expected.Path 'source.txt'), "refresh line`n")
@@ -159,7 +183,7 @@ try {
             if (Has-FixtureData $text) { break }
             Start-Sleep -Milliseconds 100
         } while ([DateTime]::UtcNow -lt $deadline)
-        if (-not (Has-FixtureData $text)) { throw 'Dashboard did not refresh all three edited worktree counts' }
+        if (-not (Has-FixtureData $text)) { throw 'Dashboard did not refresh all edited worktree counts' }
         Write-Output 'PASS. Initial counts and subsequent edits appear in the running dashboard.'
     }
     if ($text -cmatch 'REPOSITORIES|WORKTREES|LINE CHANGES') { throw 'Dashboard still shows summary totals' }
@@ -181,11 +205,12 @@ foreach (`$item in `$items) { `$item.Current.Name }
     }
     $bounds = New-Object WtmCapture+Rect
     if (-not [WtmCapture]::GetWindowRect($handle, [ref]$bounds)) { throw 'Window bounds unavailable' }
-    if ($Height -gt 0) {
+    if ($Height -gt 0 -or $Width -gt 0) {
         $area = New-Object WtmCapture+Rect
         if (-not [WtmCapture]::SystemParametersInfo(0x0030, 0, [ref]$area, 0)) { throw 'Monitor work area unavailable' }
-        $height = [Math]::Min($Height, $area.Bottom - $area.Top - 32)
-        if (-not [WtmCapture]::SetWindowPos($handle, [IntPtr]::Zero, $area.Left + 16, $area.Top + 16, $bounds.Right - $bounds.Left, $height, 20)) { throw 'Capture layout resize failed' }
+        $captureHeight = if ($Height -gt 0) { [Math]::Min($Height, $area.Bottom - $area.Top - 32) } else { $bounds.Bottom - $bounds.Top }
+        $captureWidth = if ($Width -gt 0) { [Math]::Min($Width, $area.Right - $area.Left - 32) } else { $bounds.Right - $bounds.Left }
+        if (-not [WtmCapture]::SetWindowPos($handle, [IntPtr]::Zero, $area.Left + 16, $area.Top + 16, $captureWidth, $captureHeight, 20)) { throw 'Capture layout resize failed' }
         if (-not [WtmCapture]::GetWindowRect($handle, [ref]$bounds)) { throw 'Resized window bounds unavailable' }
     }
     if ($VerifyScrollbar) {
@@ -202,6 +227,7 @@ foreach (`$item in `$items) { `$item.Current.Name }
         $bounds.Right = $origin.X + $clientBounds.Right
         $bounds.Bottom = $origin.Y + $clientBounds.Bottom
     }
+    [WtmNative]::WaitForPresentation($handle)
     $bitmap = [Drawing.Bitmap]::new($bounds.Right - $bounds.Left, $bounds.Bottom - $bounds.Top)
     if (-not [WtmCapture]::RedrawWindow($handle, [IntPtr]::Zero, [IntPtr]::Zero, 0x0181)) { throw 'Capture repaint failed' }
     $graphics = [Drawing.Graphics]::FromImage($bitmap)

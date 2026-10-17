@@ -2,6 +2,9 @@
 name = "window-win"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Native Windows dashboard for Worktree Monitor"
 
 [dependencies]
 wtm-core.workspace = true
