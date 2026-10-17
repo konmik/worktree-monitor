@@ -1,0 +1,1 @@
+- `wtm --live` shows the render buffer as a live TUI in the current terminal.

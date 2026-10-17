@@ -33,6 +33,8 @@ wtm-ui
 
 All worktrees of a registered repository are included. The dashboard also includes the repository you launch it from.
 
+Run `wtm --live` to show the live render buffer in your current terminal. Scroll with Up, Down, Page Up, Page Down, Home, and End. Press `q`, Escape, or Ctrl+C to exit.
+
 Stop monitoring a repository:
 
 ```powershell

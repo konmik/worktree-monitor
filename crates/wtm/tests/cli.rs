@@ -9,3 +9,6 @@ mod registration;
 
 #[path = "../src/features/command-line/users-can-run-terminal-commands/tests.rs"]
 mod commands;
+
+#[path = "../src/features/command-line/users-can-view-the-render-buffer-live-in-the-terminal/cli.test.rs"]
+mod live;

@@ -1,5 +1,7 @@
 #[path = "../users-can-register-repositories/commands.rs"]
 mod registration;
+#[path = "../users-can-view-the-render-buffer-live-in-the-terminal/live.rs"]
+mod live;
 
 use clap::Parser;
 use registration::Registration;
@@ -7,15 +9,21 @@ use std::process::ExitCode;
 use wtm_core::Service;
 
 #[derive(Parser)]
-#[command(version, about = "Track changed lines across Git repositories and worktrees", arg_required_else_help = true)]
+#[command(version, about = "Track changed lines across Git repositories and worktrees", arg_required_else_help = true, args_conflicts_with_subcommands = true)]
 struct Arguments {
     #[command(subcommand)]
-    command: Registration,
+    command: Option<Registration>,
+    #[arg(long, exclusive = true, help = "Show the live dashboard in this terminal")]
+    live: bool,
 }
 
 fn execute(arguments: Arguments) -> Result<(), Box<dyn std::error::Error>> {
-    let service = Service::user()?;
-    registration::execute(&service, arguments.command)
+    if arguments.live { return live::run(); }
+    if let Some(command) = arguments.command {
+        let service = Service::user()?;
+        return registration::execute(&service, command);
+    }
+    unreachable!()
 }
 
 pub(crate) fn run() -> ExitCode {
