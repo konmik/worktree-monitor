@@ -13,8 +13,8 @@ The dashboard includes the launch repository without registering it. Users drag 
 
 ## How to get to it (user POV)
 
-- Run `wtm-ui` or the `wtm --live` shortcut inside a repository or its nested directory, or outside Git for registered repositories only.
-- Drag the handle on a repository heading or a worktree card. Press Escape to cancel a drag.
+- Run `wtm-ui` inside a repository or its nested directory, or outside Git for registered repositories only.
+- Drag a repository heading or a worktree card. Press Escape to cancel a drag.
 - Register or remove the launch repository through `wtm add` and `wtm remove` while the window remains open.
 - Close and reopen the dashboard to verify saved order.
 
@@ -24,7 +24,7 @@ Preconditions:
 
 - Complete Launch and Doctor from the skill. Reserve the desktop and allow at least 180 seconds.
 
-- **Drive all entries.** Run `pwsh -NoProfile -File scripts/smoke-dashboard.ps1 -Binary target/debug/wtm.exe`. The harness resolves cards by their captions, sends native drag events, cancels drags, edits real files, and restarts owned windows.
+- **Drive all entries.** Run `pwsh -NoProfile -File .cursor/skills/verify-wtm/scripts/drive.ps1 -Check ordering`. The adapted harness directly launches the UI, resolves cards by caption, sends native drag events, cancels drags, edits real files, and restarts owned windows.
 - **Check visible order.** Require every PASS assertion and exit zero. Read `initial-order.txt`, `final-order.txt`, and `proof.json` in the printed evidence directory.
 - **Check persistence and side effects.** Read `registrations.json` and `saved-order.json`. Reordering must leave registrations unchanged, and restarting must restore the selected group and worktree order.
 - **Check failure states.** The harness makes preferences read-only or malformed and hides Git from its own child environment. Require visible warnings, unchanged saved order on failure, recovery after repair, and no registration write during failed discovery.

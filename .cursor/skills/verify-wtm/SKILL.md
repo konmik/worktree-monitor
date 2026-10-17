@@ -1,11 +1,11 @@
 ---
 name: verify-wtm
-description: Verify the WTM Windows dashboard and CLI after behavior changes. Use for terminal release, repository counts, live updates, ordering, resizing, and native accessibility checks.
+description: Verify the WTM Windows dashboard and CLI after behavior changes. Use for registrations, snapshots, launch, live updates, ordering, resizing, accessibility, and stressed text opacity.
 ---
 
 # Verify WTM
 
-Read [the feature map](features/README.md), then the relevant feature file. Use the checked-in PowerShell harnesses against the built executable. The primary interface is the native Win32 dashboard. The CLI manages registrations and prints snapshots. There is no web server, port, account, or seed service.
+Read [the feature map](features/README.md), then the requested feature file. The primary interface is the native Win32 dashboard. The CLI manages registrations and prints snapshots. There is no web server, port, account, or seed service.
 
 ## Launch
 
@@ -16,98 +16,56 @@ cargo build --locked
 if ($LASTEXITCODE -ne 0) { throw 'WTM build failed' }
 ```
 
-Use `target/debug/wtm.exe` for CLI commands and `target/debug/wtm-ui.exe` for direct GUI checks, not installed copies from PATH. Both are built by `cargo build`. Each harness creates its own repositories and overrides HOME and USERPROFILE for its child processes. Each starts and closes its own app instances. A visible window with a title starting with `WTM`, owned by the launched UI PID, is the GUI readiness signal. Harnesses also wait for their fixture counts before interacting.
+Use the checkout's `target/debug/wtm.exe` and `target/debug/wtm-ui.exe`. Build both before verification. `wtm-ui` directly owns its console-free window. The removed `wtm --live` argument is invalid usage and exits with code 2.
 
-`wtm-ui` directly owns its window and uses the Windows GUI subsystem. Public `wtm --live` starts the sibling UI executable and exits. Its launcher PID is not the window PID. Direct GUI checks do not prove compatibility-launcher behavior. The old hidden `--live-child` flag no longer exists.
+Only one UI can run in a Windows session. Isolated HOME and USERPROFILE values do not bypass that limit. A pre-existing dashboard blocks GUI checks. Close it only with existing user authorization, record its exact PID and executable, and restart it after the run. Leave unrelated windows alone.
 
-Run GUI checks serially. They share the Windows desktop, topmost stacking, focus, and input even with isolated profiles. Keep each target visible. Leave the user's windows alone. CLI fixtures can coexist with separate profiles.
+Use one fresh PowerShell process per drive. The driver launches a fresh isolated fixture session and each harness owns its windows through the check, including any necessary restarts. Run GUI drives serially on an unlocked desktop reserved for verification. A visible WTM window owned by the launched UI PID, followed by expected fixture captions, is readiness.
 
 ## Doctor
 
-Run this read-only check before driving and whenever the binary or environment looks wrong.
+Run the doctor for the selected drive before interacting, and again after any failed drive:
 
 ```powershell
-& ./target/debug/wtm.exe --version
-if ($LASTEXITCODE -ne 0) { throw 'WTM version check failed' }
-Get-FileHash -LiteralPath ./target/debug/wtm.exe -Algorithm SHA256
-Get-FileHash -LiteralPath ./target/debug/wtm-ui.exe -Algorithm SHA256
-git rev-parse HEAD
-git status --short
+pwsh -NoProfile -File .cursor/skills/verify-wtm/scripts/drive.ps1 -Check launch -DoctorOnly
 ```
 
-Require the checkout's expected CLI version from `Cargo.toml`, readable hashes for both executables, and a recorded source revision and working-tree state. Build first to establish which source produced the binaries. Version and hashes alone do not establish freshness. A missing binary or failed build blocks verification. Do not run `wtm-ui --version`; the UI entry point is not the CLI.
+Replace `launch` with the selected check from the feature map. The driver also runs this doctor before every live drive. It checks the expected version from Cargo metadata, both binary hashes, the source revision, dirty state, and the single-instance prerequisite. A missing binary or failed build blocks verification. Version and hashes alone do not establish freshness; build first.
 
-The fixture Git commands expect no inherited repository overrides such as GIT_DIR or GIT_WORK_TREE. If fixture initialization fails, inspect those variables in the verification shell. Preserve the user's global environment.
+`-ValidateOnly` checks metadata and parses the harness adapter without interacting with the app. Neither `-ValidateOnly` nor `-DoctorOnly` proves a feature live. Do not run `wtm-ui --version`; it is not the CLI.
+
+If a healthy process leaves the UI in an unexpected state, close the owned fixture and start a fresh session. The driver does not stop a pre-existing dashboard. If fixture Git commands fail, inspect inherited overrides such as GIT_DIR and GIT_WORK_TREE while preserving the user's global environment.
 
 ## Drive
 
-Choose the exact command from the feature map. A script's nonzero exit is a failed check, even if earlier lines say PASS. Preserve the full output and the artifact directory it prints. Use a fresh PowerShell process for each harness because its native probe types have fixed names.
-
-This complete recipe verifies direct GUI launch. Run it after Launch. It records the doctor, action, result, and cleanup. The UI harness closes its own window in `finally`, including failed checks. The feature map also requires the separate `wtm --live` entry before claiming complete launch coverage.
+Choose the exact driver command from the feature file. Use a new output directory for each attempt:
 
 ```powershell
-$binary = (Resolve-Path ./target/debug/wtm-ui.exe).Path
-$run = Join-Path $env:LOCALAPPDATA "Temp/opencode/verify-wtm-$([Guid]::NewGuid().ToString('N'))"
-New-Item -ItemType Directory -Path $run | Out-Null
-$fixture = $null
-$code = $null
-Start-Transcript -Path (Join-Path $run 'session.txt') | Out-Null
-try {
-    & ./target/debug/wtm.exe --version
-    if ($LASTEXITCODE -ne 0) { throw 'WTM version check failed' }
-    Get-FileHash -LiteralPath $binary -Algorithm SHA256
-    Get-FileHash -LiteralPath ./target/debug/wtm.exe -Algorithm SHA256
-    git rev-parse HEAD
-    git status --short
-    Write-Output 'feature=detached-launch entry=wtm-ui'
-    Write-Output "Action: pwsh -NoProfile -File scripts/smoke-ui.ps1 -Binary $binary"
-    $output = @(& pwsh -NoProfile -File scripts/smoke-ui.ps1 -Binary $binary 2>&1)
-    $code = $LASTEXITCODE
-    $output | Tee-Object -FilePath (Join-Path $run 'drive.txt')
-    $location = @($output | Where-Object { "$_" -like 'Evidence at *' }) | Select-Object -Last 1
-    if ($location) {
-        $fixture = "$location".Substring('Evidence at '.Length)
-        $fixture | Set-Content -LiteralPath (Join-Path $run 'fixture-path.txt')
-    }
-    if ($code -ne 0) { throw "UI verification failed with exit $code" }
-    if (-not $fixture) { throw 'UI check did not identify its evidence' }
-    Get-Content -LiteralPath (Join-Path $fixture 'proof.json')
-} finally {
-    try {
-        if ($fixture) {
-            foreach ($name in @('home', 'profile', 'work')) {
-                $scratch = Join-Path $fixture $name
-                if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force }
-            }
-            if ($code -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $fixture 'proof.json'))) { throw 'Cleanup lost UI evidence' }
-        }
-    } finally {
-        Stop-Transcript | Out-Null
-        Write-Output "Verification transcript at $run"
-    }
-}
+pwsh -NoProfile -File .cursor/skills/verify-wtm/scripts/drive.ps1 -Check launch -Output "$env:LOCALAPPDATA/Temp/opencode/verify-wtm-launch-$([Guid]::NewGuid().ToString('N'))"
 ```
 
-Require PE subsystem 2, a visible window owned by the direct UI process, no attachment to the launching console, and clean UI exit after closing. Read the proof rather than trusting the script's final line alone. The compatibility check separately requires launcher exit, released stdin, stdout and stderr EOF, and a different surviving UI PID.
+Require exit zero, `result.json` with `result` equal to `PASS`, and the feature's recorded observations. Earlier PASS lines do not override a later failure. Preserve failed output and inspect native proof files rather than trusting the last line.
+
+The driver reuses checked-in smoke harnesses. Guarded adapters replace obsolete compatibility-launcher calls with direct UI launches, update CLI help assertions, and add the second-instance check. A changed source pattern fails explicitly instead of silently skipping an adaptation. Product scripts are not edited.
 
 ## Evidence
 
-The standard recipe stores its session and action output under `%LOCALAPPDATA%/Temp/opencode/`, in a directory named `verify-wtm-` followed by a generated GUID. Its `fixture-path.txt` points to the harness evidence directory.
+Each live output directory contains `session.txt`, `drive.txt`, `adapted-harness.ps1`, and `result.json`. The result records the feature check, binary paths and hashes, source revision and dirty state, harness path and hash, outcome, and emitted fixture directories. Doctor-only attempts have no drive log and are marked as not driven.
 
-Harnesses leave transcripts, `proof.json`, visible text, saved registrations, order files, or PNGs under the same OpenCode temporary parent. Record the feature ID, entry point, binary path and hash, source revision, dirty state, command, exit code, and emitted artifact path.
+Read the source harness's proof, text observations, and images at the recorded artifact locations. Pair real commands and native window messages with resulting state. Registration proof includes the saved registry. Ordering proof includes saved preferences and a restart. Counts use real Git fixtures. Normal rendering must be clean before a capture forces repaint.
 
-Exercise real commands and native window messages. Pair each action with the resulting state. Registration proof includes the saved registry. Ordering proof includes saved preferences and a restart. Counts use real Git fixtures, not injected snapshots. Visual proof includes normal rendering after the action, not only a screenshot forced to repaint by the capture tool. Use no mocks for these local paths.
+The driver preserves configuration under each fixture's `preserved-configs/` directory before successful scratch cleanup. It checks that root-level evidence files survive. Failed fixture state remains available for diagnosis. Capture places `dashboard.png` in the driver output directory and text observations in a separately recorded fixture directory; retain both.
 
-Cover every entry point listed for the requested feature. Label a skipped entry point as unverified. Unit tests and compilation supplement these checks; they do not replace driving the app. The app has no verification dry-run mode. Checks create real temporary repositories and configuration, and some invoke local Git commits or worktree commands.
+Cover every entry point listed for the requested feature. Label skipped entries as unverified. Unit and integration tests supplement live checks. Bold and underline currently have renderer APIs but no dashboard control; their pixel tests do not establish a user route that does not exist.
 
 ## Cleanup
 
-Let each harness finish its `finally` block. It restores its environment and closes or terminates only processes it launched. Never kill by executable name. If a check is interrupted outside its cleanup, establish ownership from that run's recorded PID and executable before closing anything. If ownership cannot be established, report cleanup incomplete and leave unrelated processes alone.
+Let each harness finish its `finally` block. The driver closes any remaining direct child processes whose executable matches the tested CLI or UI, records that as failed cleanup, and preserves evidence. Never kill processes by executable name.
 
-For the standard direct-UI recipe, cleanup removes only that run's isolated `home`, `profile`, and `work` directories. Keep `proof.json`, `session.txt`, `drive.txt`, and `fixture-path.txt`. Confirm they still exist after cleanup. On a failed iteration, run the same scoped cleanup. If failure occurs before an artifact path is emitted, recover the path from the recorded run before deleting anything.
+Successful drives remove only the scratch children listed in the feature map, after preserving configuration. Failed attempts retain fixture files for diagnosis, but no owned process may remain running. If a drive is interrupted, establish ownership from its recorded run before closing anything. Report incomplete cleanup when ownership cannot be established.
 
-For other mapped checks, first preserve registry and order files under the artifact root. Then remove only the scratch directories listed in the feature index for that specific run. Retain root-level transcripts, JSON proofs, text observations, and all images. A failed check's evidence survives cleanup too.
+Restore any user-authorized dashboard temporarily closed after the last drive, including harness re-proofs. Keep transcripts, JSON proofs, text observations, preserved configuration, and all images.
 
 ## Helpers
 
-No additional runner is needed. The feature files show executable `pwsh -NoProfile -File` invocations for every reused script. Native probes use window ownership and control handles, with viewport control ID `1001`. Dashboard drags resolve cards by caption before computing coordinates. Read the relevant script when extending an interaction instead of inventing screen coordinates.
+All supported drives use this skill's `scripts/drive.ps1`. Each feature file documents an executable invocation. The driver uses the repository's PowerShell harnesses and native probes; it adds no application test mode. UI fixtures share the actual desktop, focus, and input. Desktop interference remains a failed or blocked check; do not weaken an assertion to turn it into a pass.
