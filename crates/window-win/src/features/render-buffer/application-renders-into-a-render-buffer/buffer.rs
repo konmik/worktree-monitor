@@ -14,7 +14,7 @@ enum CellContent {
     Continuation,
 }
 
-#[path = "cells-bear-stressed-bold-and-underline-flags/flags.rs"]
+#[path = "../cells-bear-stressed-bold-and-underline-flags/flags.rs"]
 mod flags;
 pub use flags::CellFlags;
 
@@ -77,21 +77,8 @@ impl RenderBuffer {
     pub fn put(&mut self, column: usize, row: usize, character: char, color: Color) {
         self.write(column, row, character.encode_utf8(&mut [0; 4]), color);
     }
-    pub fn put_styled(&mut self, column: usize, row: usize, character: char, color: Color, flags: CellFlags) {
-        self.write_styled(column, row, character.encode_utf8(&mut [0; 4]), color, flags);
-    }
     pub fn write(&mut self, column: usize, row: usize, value: &str, color: Color) {
         self.write_styled(column, row, value, color, CellFlags::default());
-    }
-    pub fn write_styled(&mut self, column: usize, row: usize, value: &str, color: Color, flags: CellFlags) {
-        if column >= self.columns || row >= self.rows { return; }
-        let mut x = column;
-        for grapheme in value.graphemes(true) {
-            let width = display_width(grapheme);
-            if width > self.columns - x { break; }
-            self.put_grapheme(x, row, grapheme, color, flags);
-            x += width;
-        }
     }
     pub fn blit(&mut self, column: usize, row: usize, source: &Self) {
         for y in 0..source.rows.min(self.rows.saturating_sub(row)) {
@@ -106,7 +93,3 @@ impl RenderBuffer {
 #[cfg(test)]
 #[path = "buffer.test.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "cells-bear-stressed-bold-and-underline-flags/buffer.test.rs"]
-mod flag_tests;

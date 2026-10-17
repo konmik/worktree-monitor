@@ -24,7 +24,7 @@ pub(super) unsafe fn present_at(buffer: &RenderBuffer, dc: HDC, resources: &Reso
             if cell.text().is_empty() || (cell.text() == " " && !cell.flags.underline) { continue; }
             if match layer { TextLayer::All => false, TextLayer::Faded => cell.flags.stressed,
                 TextLayer::Stressed | TextLayer::Mask => !cell.flags.stressed } { continue; }
-            SelectObject(dc, resources.cell_font(cell.flags, matches!(layer, TextLayer::Stressed | TextLayer::Mask)));
+            SelectObject(dc, resources.cell_fonts.font(resources.font, cell.flags, matches!(layer, TextLayer::Stressed | TextLayer::Mask)));
             let x = left + column as i32 * resources.space_width;
             let y = top + row as i32 * resources.typography.advance;
             let mut rect = RECT { left: x, top: y, right: x + cell.width() as i32 * resources.space_width, bottom: y + resources.typography.cell };
@@ -64,5 +64,5 @@ pub(super) unsafe fn paint_at(buffer: &RenderBuffer, dc: HDC, rect: RECT, resour
 mod tests;
 
 #[cfg(test)]
-#[path = "../cells-bear-stressed-bold-and-underline-flags/native.test.rs"]
-mod flag_tests;
+#[path = "test-support.rs"]
+pub(super) mod test_support;

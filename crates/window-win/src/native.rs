@@ -1,5 +1,8 @@
-#[path = "features/render-buffer/application-renders-into-a-render-buffer/render-buffer-is-handed-to-the-system-specific-window-implementation/native.rs"]
+#[path = "features/render-buffer/render-buffer-is-handed-to-the-system-specific-window-implementation/native.rs"]
 mod buffer_presentation;
+
+#[path = "features/render-buffer/cells-bear-stressed-bold-and-underline-flags/native.rs"]
+mod cell_fonts;
 
 #[path = "features/window/design/all-text-shares-one-monospace-font-and-size/resources.rs"]
 mod font_resources;
@@ -7,7 +10,7 @@ mod font_resources;
 #[path = "features/window/design/layout-stays-compact-when-the-window-narrows/native.rs"]
 mod row_layout;
 
-#[path = "features/render-buffer/application-renders-into-a-render-buffer/cells-bear-stressed-bold-and-underline-flags/stressed-cells-render-at-full-opacity/native.rs"]
+#[path = "features/render-buffer/stressed-cells-render-at-full-opacity/native.rs"]
 mod opaque_indicators;
 
 #[path = "features/window/repo-list/refresh-markers-identify-only-the-active-target/native.rs"]

@@ -1,10 +1,10 @@
 use super::runtime::{State, wide};
 use super::window_appearance::Palette;
-use crate::render_buffer::CellFlags;
+use super::cell_fonts::CellFonts;
 use crate::typography::{FONT_SIZE, Typography};
 use std::ptr::null_mut;
 use windows_sys::Win32::Foundation::{HWND, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::{ANTIALIASED_QUALITY, CLEARTYPE_QUALITY, CreateCompatibleDC, CreateFontIndirectW, CreateFontW, DEFAULT_CHARSET, DeleteDC, DeleteObject, FF_MODERN, FIXED_PITCH, GetObjectW, GetTextExtentPoint32W, GetTextFaceW, GetTextMetricsW, HDC, HFONT, LOGFONTW, RestoreDC, SaveDC, SelectObject, TEXTMETRICW, TMPF_FIXED_PITCH};
+use windows_sys::Win32::Graphics::Gdi::{CLEARTYPE_QUALITY, CreateCompatibleDC, CreateFontW, DEFAULT_CHARSET, DeleteDC, DeleteObject, FF_MODERN, FIXED_PITCH, GetTextExtentPoint32W, GetTextFaceW, GetTextMetricsW, HDC, HFONT, RestoreDC, SaveDC, SelectObject, TEXTMETRICW, TMPF_FIXED_PITCH};
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_SETFONT};
 pub(super) unsafe fn fonts(window: HWND, state: &mut State) -> bool {
@@ -37,20 +37,15 @@ pub(super) unsafe fn wrapped_width(dc: HDC, value: &str, font: HFONT) -> i32 {
 
 pub(super) struct Resources {
     pub(super) font: HFONT,
-    styled_fonts: [HFONT; 8],
+    pub(super) cell_fonts: CellFonts,
     pub(super) typography: Typography,
     pub(super) space_width: i32,
     pub(super) palette: Palette,
 }
 
 impl Resources {
-    pub(super) fn cell_font(&self, flags: CellFlags, overlay: bool) -> HFONT {
-        if !flags.bold && !flags.underline && !overlay { return self.font; }
-        self.styled_fonts[usize::from(flags.bold) | (usize::from(flags.underline) << 1) | (usize::from(overlay) << 2)]
-    }
-
     pub(super) unsafe fn new(dpi: i32) -> Option<Self> {
-        let mut resources = Self { font: null_mut(), styled_fonts: [null_mut(); 8], typography: Typography::new(dpi, 1), space_width: 1, palette: Palette::new() };
+        let mut resources = Self { font: null_mut(), cell_fonts: CellFonts::empty(), typography: Typography::new(dpi, 1), space_width: 1, palette: Palette::new() };
         let dc = CreateCompatibleDC(null_mut());
         if dc.is_null() { return None; }
         for face in ["Berkeley Mono", "Berkeley Mono Variable", "JetBrains Mono", "Consolas", "Cascadia Mono", "Courier New", ""] {
@@ -73,22 +68,13 @@ impl Resources {
             }
             DeleteObject(font);
         }
-        if !resources.font.is_null() {
-            let mut font: LOGFONTW = std::mem::zeroed();
-            if GetObjectW(resources.font, std::mem::size_of::<LOGFONTW>() as i32, (&mut font as *mut LOGFONTW).cast()) != 0 {
-                font.lfWidth = resources.space_width;
-                for index in 0..8 {
-                    font.lfWeight = if index & 1 != 0 { 700 } else { 400 };
-                    font.lfUnderline = u8::from(index & 2 != 0);
-                    font.lfQuality = if index & 4 != 0 { ANTIALIASED_QUALITY } else { CLEARTYPE_QUALITY };
-                    resources.styled_fonts[index] = CreateFontIndirectW(&font);
-                }
-            }
-        }
         DeleteDC(dc);
-        if resources.font.is_null() || resources.styled_fonts.iter().any(|font| font.is_null()) || !resources.palette.is_valid() {
+        if resources.font.is_null() || !resources.palette.is_valid() {
             None
-        } else { Some(resources) }
+        } else {
+            resources.cell_fonts = CellFonts::new(resources.font, resources.space_width)?;
+            Some(resources)
+        }
     }
 }
 
@@ -96,7 +82,6 @@ impl Drop for Resources {
     fn drop(&mut self) {
         unsafe {
             if !self.font.is_null() { DeleteObject(self.font); }
-            for font in self.styled_fonts { if !font.is_null() { DeleteObject(font); } }
         }
     }
 }

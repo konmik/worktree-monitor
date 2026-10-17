@@ -136,3 +136,7 @@ pub(super) unsafe fn create_indicator_overlay(window: HWND, instance: HINSTANCE,
             class, wide("Line-change indicators").as_ptr(), WS_POPUP | WS_DISABLED,
             0, 0, 1, 1, window, null_mut(), instance, null())
 }
+
+#[cfg(test)]
+#[path = "native.test.rs"]
+mod tests;
