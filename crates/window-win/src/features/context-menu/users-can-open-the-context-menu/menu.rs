@@ -1,7 +1,7 @@
 use crate::opacity::Opacity;
 use std::io;
 use std::ptr::null;
-use windows_sys::Win32::Foundation::{HWND, POINT};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 struct Menu(HMENU);
@@ -48,6 +48,10 @@ impl Menu {
 
 impl Drop for Menu {
     fn drop(&mut self) { unsafe { DestroyMenu(self.0); } }
+}
+
+pub(crate) unsafe fn request(window: HWND, position: LPARAM) {
+    SendMessageW(window, WM_CONTEXTMENU, window as WPARAM, position);
 }
 
 pub(crate) unsafe fn show(window: HWND, point: POINT, opacity: Opacity) -> io::Result<Action> {

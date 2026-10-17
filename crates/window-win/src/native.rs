@@ -4,7 +4,7 @@ use crate::opacity::Opacity;
 use crate::placement::ShowState;
 use crate::placement_win;
 use crate::notification_icon::{self, show_from_tray, TrayIcon, WM_TRAY_ICON};
-use crate::notification_menu::{self, Action};
+use crate::context_menu::{self, Action};
 use crate::layout::{self, Rect, RowSize};
 use crate::visibility::Visibility;
 use crate::typography::{self, RowSpacing, Typography, FONT_SIZE};
@@ -67,6 +67,10 @@ use window_movement::*;
 #[path = "features/window/window-position-survives-restart/reset-position-returns-the-window-to-defaults/native.rs"]
 mod reset_position;
 use reset_position::*;
+
+#[path = "features/context-menu/users-can-open-the-context-menu/native.rs"]
+mod context_menu_actions;
+use context_menu_actions::*;
 
 #[path = "features/window/design/the-dashboard-has-a-flat-terminal-appearance/native.rs"]
 mod window_appearance;
@@ -211,30 +215,6 @@ struct State {
     indicators_queued: bool,
     tray: Option<TrayIcon>,
     taskbar_created: u32,
-}
-
-unsafe fn context_menu(window: HWND, point: POINT, pointer: *mut State) -> Result<(), io::Error> {
-    match notification_menu::show(window, point, (*pointer).opacity)? {
-        Action::Hide => { ShowWindow(window, SW_HIDE); }
-        Action::Show => show_from_tray(window),
-        Action::Exit => { PostMessageW(window, WM_CLOSE, 0, 0); }
-        Action::ResetPosition => {
-            ShowWindow(window, SW_SHOWNORMAL);
-            reset_window_bounds(window)?;
-            SetForegroundWindow(window);
-            placement_win::save(window, &(*pointer).placement_path)?;
-        }
-        Action::Opacity(opacity) => {
-            opacity.write(&(*pointer).opacity_path)?;
-            (*pointer).opacity = opacity;
-            if SetLayeredWindowAttributes(window, 0, if (*pointer).controls_visible { 255 } else { opacity.alpha() }, LWA_ALPHA) == 0 {
-                return Err(io::Error::last_os_error());
-            }
-        }
-        Action::None => {}
-    }
-    PostMessageW(window, WM_NULL, 0, 0);
-    Ok(())
 }
 
 struct Drag {

@@ -1,3 +1,4 @@
+use crate::context_menu;
 use std::io;
 use std::ptr::null;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, WPARAM};
@@ -22,7 +23,7 @@ pub(crate) unsafe fn callback(window: HWND, wparam: WPARAM, lparam: LPARAM) {
         NIN_SELECT => show_from_tray(window),
         event if event == NIN_SELECT | NINF_KEY => show_from_tray(window),
         WM_CONTEXTMENU => {
-            SendMessageW(window, WM_CONTEXTMENU, window as WPARAM, wparam as LPARAM);
+            context_menu::request(window, wparam as LPARAM);
         }
         _ => {}
     }

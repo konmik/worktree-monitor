@@ -23,8 +23,8 @@ mod placement_win;
 mod notification_icon;
 
 #[cfg(windows)]
-#[path = "features/notification-icon/users-can-open-the-context-menu/menu.rs"]
-mod notification_menu;
+#[path = "features/context-menu/users-can-open-the-context-menu/menu.rs"]
+mod context_menu;
 
 #[cfg(windows)]
 mod native;
