@@ -1,0 +1,2 @@
+- Individual worktrees can be hidden and restored.
+- Show all temporarily includes hidden worktrees.

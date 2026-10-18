@@ -846,21 +846,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
-name = "window-win"
-version = "0.1.0"
-dependencies = [
- "fs2",
- "serde",
- "serde_json",
- "tempfile",
- "unicode-segmentation",
- "unicode-width",
- "windows-sys 0.61.2",
- "wtm-core",
- "yoga-sys",
-]
-
-[[package]]
 name = "windows-link"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -970,12 +955,12 @@ name = "wtm"
 version = "0.1.0"
 dependencies = [
  "clap",
- "crossterm",
  "embed-resource",
  "tempfile",
- "window-win",
  "windows-sys 0.61.2",
  "wtm-core",
+ "wtm-terminal",
+ "wtm-windows",
 ]
 
 [[package]]
@@ -988,6 +973,43 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "wtm-dashboard"
+version = "0.1.0"
+dependencies = [
+ "fs2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "unicode-segmentation",
+ "unicode-width",
+ "wtm-core",
+ "yoga-sys",
+]
+
+[[package]]
+name = "wtm-terminal"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "windows-sys 0.61.2",
+ "wtm-core",
+ "wtm-dashboard",
+]
+
+[[package]]
+name = "wtm-windows"
+version = "0.1.0"
+dependencies = [
+ "fs2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "windows-sys 0.61.2",
+ "wtm-core",
+ "wtm-dashboard",
 ]
 
 [[package]]

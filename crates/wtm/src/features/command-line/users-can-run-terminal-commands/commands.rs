@@ -1,7 +1,5 @@
 #[path = "../users-can-register-repositories/commands.rs"]
 mod registration;
-#[path = "../users-can-view-the-render-buffer-live-in-the-terminal/live.rs"]
-mod live;
 
 use clap::Parser;
 use registration::Registration;
@@ -18,7 +16,7 @@ struct Arguments {
 }
 
 fn execute(arguments: Arguments) -> Result<(), Box<dyn std::error::Error>> {
-    if arguments.live { return live::run(); }
+    if arguments.live { return wtm_terminal::run(); }
     if let Some(command) = arguments.command {
         let service = Service::user()?;
         return registration::execute(&service, command);

@@ -1,0 +1,17 @@
+[package]
+name = "wtm-dashboard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared dashboard presentation for Worktree Monitor"
+
+[dependencies]
+wtm-core.workspace = true
+fs2 = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+yoga-sys = "=0.2.3"
+unicode-width = "0.2.2"
+unicode-segmentation = "1.13.3"

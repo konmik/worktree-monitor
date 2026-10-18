@@ -12,7 +12,7 @@ fn start() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     let service = wtm_core::Service::user()?;
-    window_win::run(service, std::env::current_dir()?)?;
+    wtm_windows::run(service, std::env::current_dir()?)?;
     Ok(())
 }
 

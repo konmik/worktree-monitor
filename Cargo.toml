@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/wtm-core", "crates/wtm", "crates/window-win"]
+members = ["crates/wtm-core", "crates/wtm", "crates/wtm-dashboard", "crates/wtm-terminal", "crates/wtm-windows"]
 default-members = ["crates/wtm"]
 resolver = "2"
 
@@ -11,4 +11,6 @@ repository = "https://github.com/konmik/worktree-monitor"
 
 [workspace.dependencies]
 wtm-core = { path = "crates/wtm-core" }
-window-win = { path = "crates/window-win" }
+wtm-dashboard = { path = "crates/wtm-dashboard" }
+wtm-terminal = { path = "crates/wtm-terminal" }
+wtm-windows = { path = "crates/wtm-windows" }

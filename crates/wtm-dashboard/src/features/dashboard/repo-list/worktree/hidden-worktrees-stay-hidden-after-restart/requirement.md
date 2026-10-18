@@ -1,0 +1,2 @@
+- Hidden worktrees stay hidden after restart.
+- Hiding worktrees does not stop monitoring or remove their errors from overall health.

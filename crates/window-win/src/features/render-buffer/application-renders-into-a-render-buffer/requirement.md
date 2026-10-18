@@ -1,4 +1,0 @@
-- The entire window content is a single character grid, including the header, scrollbar and visible controls.
-- Each cell contains a character and its text color.
-- The character grid can be read without a system-specific window implementation.
-- The window contains no native child controls.
