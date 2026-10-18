@@ -29,7 +29,7 @@ The smoke scripts require PowerShell 7. Run desktop checks one at a time on an u
 ./scripts/smoke-refreshing.ps1 -Binary ./target/release/wtm-gui.exe
 ./scripts/smoke-refreshing.ps1 -Binary ./target/release/wtm-gui.exe -SavedOrder
 ./scripts/capture-window.ps1 -Binary ./target/release/wtm-gui.exe -Output ./target/dashboard.png -VerifyScrollbar -VerifySerialGit
-cargo build --release --locked -p wtm-core --example measure-monitor
+cargo build --release --locked -p wtm-ui --example measure-monitor
 ./scripts/check-monitor-passes.ps1
 ```
 

@@ -2,7 +2,7 @@ use super::optional_count_indicators;
 use crate::count_opacity::line_counts_stay_opaque;
 use crate::rendering::{GREEN, MUTED, RED};
 use crate::render_buffer::Color;
-use wtm_core::Counts;
+use crate::Counts;
 pub(crate) struct CountPart {
     pub(crate) text: String,
     pub(crate) color: Color,

@@ -1,11 +1,11 @@
 use super::count_indicators::{count_parts};
 use crate::rendering::{GREEN, MUTED, RED};
-use wtm_core::{Counts};
+use crate::{Counts};
 
 
 #[test]
 fn line_change_groups_keep_count_text_and_nonzero_opacity() {
-    use wtm_core::LineCounts;
+    use crate::LineCounts;
     for source in [LineCounts::default(), LineCounts { additions: 3, deletions: 0 }, LineCounts { additions: 0, deletions: 4 }] {
         for test in [LineCounts::default(), LineCounts { additions: 5, deletions: 0 }] {
             for extra in [LineCounts::default(), LineCounts { additions: 0, deletions: 6 }] {

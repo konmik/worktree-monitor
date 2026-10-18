@@ -34,7 +34,7 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetCapture, GetKeyState, ReleaseCapture, SetCapture, SetFocus};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
-use wtm_core::{Monitor, MonitorUpdate, Service};
+use wtm_ui::{Monitor, MonitorUpdate, Service};
 
 pub(super) struct State {
     pub(super) window: HWND,

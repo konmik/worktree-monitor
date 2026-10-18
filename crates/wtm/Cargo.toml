@@ -9,14 +9,17 @@ default-run = "wtm"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-wtm-core.workspace = true
+wtm-ui.workspace = true
+fs2 = "0.4"
+tempfile = "3"
 wtm-tui.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 wtm-gui-windows.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
+dunce = "1"
+serde_json = "1"
 
 [build-dependencies]
 embed-resource = "3.0.12"

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use crate::dashboard::ItemKey;
 use crate::order::identity;
-use wtm_core::{ScanActivity, ScanTarget};
+use crate::{ScanActivity, ScanTarget};
 
 #[derive(Default)]
 pub struct RefreshTracker {

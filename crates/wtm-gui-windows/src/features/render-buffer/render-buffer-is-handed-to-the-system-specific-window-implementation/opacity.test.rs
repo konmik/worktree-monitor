@@ -5,12 +5,12 @@ use super::buffer_presentation::{present_at, TextLayer};
 use wtm_ui::rendering::render_counts;
 use windows_sys::Win32::Foundation::{RECT};
 use windows_sys::Win32::Graphics::Gdi::{GdiFlush, GetDC, ReleaseDC};
-use wtm_core::{Counts};
+use wtm_ui::{Counts};
 
 
 #[test]
 fn opaque_counts_leave_zero_source_and_binary_text_transparent() {
-    use wtm_core::LineCounts;
+    use wtm_ui::LineCounts;
     unsafe {
         let screen = GetDC(null_mut());
         for dpi in [96, 144, 192] {

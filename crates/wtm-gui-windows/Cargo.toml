@@ -7,7 +7,6 @@ repository.workspace = true
 description = "Native Windows dashboard for Worktree Monitor"
 
 [dependencies]
-wtm-core.workspace = true
 wtm-ui.workspace = true
 fs2 = "0.4"
 serde = { version = "1", features = ["derive"] }

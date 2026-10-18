@@ -2,31 +2,30 @@
 
 ## Crates
 
-The [workspace](../Cargo.toml) separates monitoring, shared presentation, and the two clients.
+The [workspace](../Cargo.toml) separates registration commands, shared monitoring and presentation, and the two clients.
 
 | Crate | Responsibility |
 | --- | --- |
-| [wtm-core](../crates/wtm-core/src/lib.rs) | Repository registration, Git discovery and counting, filesystem watches, and background monitoring. |
-| [wtm-ui](../crates/wtm-ui/src/lib.rs) | Snapshot projection, render buffers, row formatting, Yoga layout, refresh tracking, saved order and visibility, and preference warning projection. |
+| [wtm-ui](../crates/wtm-ui/src/lib.rs) | Registration configuration, Git discovery and counting, filesystem watches, background monitoring, snapshot projection, render buffers, layout, and shared presentation state. |
 | [wtm-tui](../crates/wtm-tui/src/lib.rs) | Terminal session, keyboard input, scrolling, resizing, and terminal output. |
 | [wtm-gui-windows](../crates/wtm-gui-windows/src/lib.rs) | Win32 window, GDI presentation, fonts, input, notification icon, placement, and opacity. |
-| [wtm](../crates/wtm/Cargo.toml) | The `wtm` registration CLI, `wtm-tui` terminal executable, and `wtm-gui` GUI executable, command parsing, startup, and distribution. |
+| [wtm](../crates/wtm/Cargo.toml) | The `wtm` registration CLI, `wtm-tui` terminal executable, and `wtm-gui` GUI executable, registration writes, command parsing, startup, and distribution. |
 
-Both clients depend on `wtm-ui` and `wtm-core`. Shared presentation has no dependency on either client. Its [Yoga dependency](../crates/wtm-ui/Cargo.toml) compiles C++ code.
+Both clients depend on `wtm-ui`. Monitoring and shared presentation have no dependency on either client. The [Yoga dependency](../crates/wtm-ui/Cargo.toml) compiles C++ code.
 
 Feature implementation lives in requirement directories under each crate's `src/features`. Each requirement directory's `requirement.md` lists its behavioral contracts. Tests live in separate files.
 
 ## Monitor data
 
-A [snapshot](../crates/wtm-core/src/model.rs) contains repositories and their worktrees. Each worktree contains either branch and count data or a scan error. Failed scans do not produce zero counts.
+A [snapshot](../crates/wtm-ui/src/features/snapshot-reporting/snapshots-show-counts-and-errors/model.rs) contains repositories and their worktrees. Each worktree contains either branch and count data or a scan error. Failed scans do not produce zero counts.
 
-The [monitor](../crates/wtm-core/src/features/live-monitoring/monitoring-runs-in-the-background/poll.rs) owns a worker thread and publishes immutable updates. Updates include snapshots, scan targets, scan activities, launch errors, and monitoring work time. Each client starts and stops its own monitor.
+The [monitor](../crates/wtm-ui/src/features/live-monitoring/monitoring-runs-in-the-background/poll.rs) owns a worker thread and publishes immutable updates. Updates include snapshots, scan targets, scan activities, launch errors, and monitoring work time. Each client starts and stops its own monitor.
 
-[Discovery and worktree scans run sequentially](../crates/wtm-core/src/features/live-monitoring/git-scans-run-sequentially/passes.rs) in repository order. Results appear as each scan finishes. Worktrees without results remain pending. A [completed scan pass waits ten seconds](../crates/wtm-core/src/features/live-monitoring/scan-passes-are-at-least-ten-seconds-apart/schedule.rs) before another pass. New events do not extend that deadline.
+[Discovery and worktree scans run sequentially](../crates/wtm-ui/src/features/live-monitoring/git-scans-run-sequentially/passes.rs) in repository order. Results appear as each scan finishes. Worktrees without results remain pending. A [completed scan pass waits ten seconds](../crates/wtm-ui/src/features/live-monitoring/scan-passes-are-at-least-ten-seconds-apart/schedule.rs) before another pass. New events do not extend that deadline.
 
-[Filesystem events](../crates/wtm-core/src/features/live-monitoring/filesystem-events-refresh-the-affected-targets/events.rs) queue affected repositories and worktrees. Events that arrive during a pass remain available for later scans. The [watcher boundary](../crates/wtm-core/src/features/live-monitoring/filesystem-events-refresh-the-affected-targets/watch.rs) watches configuration, Git metadata, worktrees, and ignore rules. Failed watches retry, and [watch recovery](../crates/wtm-core/src/features/live-monitoring/filesystem-watchers-recover-after-failures/reconcile.rs) queues a full refresh. Changes inside ignored directories do not trigger scans unless tracked files or ignore rules require them.
+[Filesystem events](../crates/wtm-ui/src/features/live-monitoring/filesystem-events-refresh-the-affected-targets/events.rs) queue affected repositories and worktrees. Events that arrive during a pass remain available for later scans. The [watcher boundary](../crates/wtm-ui/src/features/live-monitoring/filesystem-events-refresh-the-affected-targets/watch.rs) watches configuration, Git metadata, worktrees, and ignore rules. Failed watches retry, and [watch recovery](../crates/wtm-ui/src/features/live-monitoring/filesystem-watchers-recover-after-failures/reconcile.rs) queues a full refresh. Changes inside ignored directories do not trigger scans unless tracked files or ignore rules require them.
 
-The [registration service](../crates/wtm-core/src/features/repository-registration/users-can-register-and-remove-repositories/service.rs) stores Git common-directory paths. Registration changes use a locked read-modify-replace operation. A [launch-directory repository](../crates/wtm-core/src/features/live-monitoring/launch-directory-repositories-appear-without-registration/launch.rs) joins monitoring without changing registrations.
+The [registration commands](../crates/wtm/src/features/repository-registration/users-can-register-and-remove-repositories/registration.rs) store Git common-directory paths through a locked read-modify-replace operation. `wtm-ui` owns the [shared configuration format and reads](../crates/wtm-ui/src/features/live-monitoring/registrations-reload-without-losing-valid-entries/configuration.rs). A [launch-directory repository](../crates/wtm-ui/src/features/live-monitoring/launch-directory-repositories-appear-without-registration/launch.rs) joins monitoring without changing registrations.
 
 ## Shared presentation
 
@@ -36,7 +35,7 @@ The [render buffer](../crates/wtm-ui/src/features/render-buffer/application-rend
 
 Counts use source, test, and tooling groups, with binaries separate. Source counts stay visible. Empty optional groups disappear. Scan errors show unavailable counts and their cause. [Refresh tracking](../crates/wtm-ui/src/features/dashboard/repo-list/refresh-markers-identify-only-the-active-target/refresh.rs) identifies the active target and keeps its marker visible for at least one second.
 
-The idle indicator derives its percentage from [monitoring work time within the previous minute](../crates/wtm-core/src/features/live-monitoring/monitoring-work-time-is-reported-for-the-last-minute/time.rs). It measures monitor work rather than system CPU usage.
+The idle indicator derives its percentage from [monitoring work time within the previous minute](../crates/wtm-ui/src/features/live-monitoring/monitoring-work-time-is-reported-for-the-last-minute/time.rs). It measures monitor work rather than system CPU usage.
 
 ## Clients
 

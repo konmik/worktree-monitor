@@ -955,23 +955,14 @@ name = "wtm"
 version = "0.1.0"
 dependencies = [
  "clap",
- "embed-resource",
- "tempfile",
- "wtm-core",
- "wtm-gui-windows",
- "wtm-tui",
-]
-
-[[package]]
-name = "wtm-core"
-version = "0.1.0"
-dependencies = [
  "dunce",
+ "embed-resource",
  "fs2",
- "notify",
- "serde",
  "serde_json",
  "tempfile",
+ "wtm-gui-windows",
+ "wtm-tui",
+ "wtm-ui",
 ]
 
 [[package]]
@@ -983,7 +974,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "windows-sys 0.61.2",
- "wtm-core",
  "wtm-ui",
 ]
 
@@ -993,7 +983,6 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "windows-sys 0.61.2",
- "wtm-core",
  "wtm-ui",
 ]
 
@@ -1001,13 +990,14 @@ dependencies = [
 name = "wtm-ui"
 version = "0.1.0"
 dependencies = [
+ "dunce",
  "fs2",
+ "notify",
  "serde",
  "serde_json",
  "tempfile",
  "unicode-segmentation",
  "unicode-width",
- "wtm-core",
  "yoga-sys",
 ]
 

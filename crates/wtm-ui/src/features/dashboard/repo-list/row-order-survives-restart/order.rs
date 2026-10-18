@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::{Path, PathBuf};
-use wtm_core::{ScanTarget, Snapshot};
+use crate::{ScanTarget, Snapshot};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OrderMove {

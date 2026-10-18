@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use wtm_ui::dashboard::{DashboardView, DisplayItem, Health, ItemKey};
 use wtm_ui::order::identity;
-use wtm_core::{Counts, Error, ErrorKind, Head, LineCounts, RepoEntry, ScanTarget, Snapshot, WorktreeEntry, WorktreeStats};
+use wtm_ui::{Counts, Error, ErrorKind, Head, LineCounts, RepoEntry, ScanTarget, Snapshot, WorktreeEntry, WorktreeStats};
 
 fn tree(path: &str, head: Head, additions: u64, deletions: u64, binaries: u64) -> WorktreeEntry {
     WorktreeEntry { path: path.into(), result: Ok(WorktreeStats { head,

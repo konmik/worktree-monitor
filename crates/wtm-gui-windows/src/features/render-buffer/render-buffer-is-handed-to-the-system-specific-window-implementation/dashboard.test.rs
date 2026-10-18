@@ -152,14 +152,16 @@ fn git(path: &Path, arguments: &[&str]) {
 #[ignore = "requires the wtm icon resource linked and opens an isolated native dashboard"]
 fn native_dashboard_keeps_whole_cells_while_scrolling_and_resizing() {
     let fixture = tempfile::tempdir().unwrap();
-    let service = wtm_core::Service::at(fixture.path().join("config.json"));
+    let service = wtm_ui::Service::at(fixture.path().join("config.json"));
+    let mut repos = Vec::new();
     for index in 0..8 {
         let repo = fixture.path().join(format!("repository-{index:02}-with-a-long-name"));
         std::fs::create_dir(&repo).unwrap();
         git(&repo, &["init", "--initial-branch=main"]);
         git(&repo, &["-c", "user.name=Native Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture"]);
-        service.add(&repo).unwrap();
+        repos.push(repo.join(".git"));
     }
+    std::fs::write(service.config_path(), wtm_ui::configuration::encode(repos).unwrap()).unwrap();
     let evidence = std::env::var_os("WTM_NATIVE_EVIDENCE").map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join("wtm-native-buffer-proof"));
     std::fs::create_dir_all(&evidence).unwrap();
     let (sender, receiver) = mpsc::channel();

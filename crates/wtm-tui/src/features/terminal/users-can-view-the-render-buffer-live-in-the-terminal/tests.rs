@@ -35,8 +35,8 @@ fn terminal_output_positions_rows_without_wrapping() {
 #[test]
 fn scrolling_and_resizing_keep_the_frame_within_the_terminal() {
     let update = MonitorUpdate {
-        snapshot: Arc::new(wtm_core::Snapshot::default()), scan_targets: Vec::new(), scan_activities: Vec::new(),
-        launch_error: Some(wtm_core::Error { kind: wtm_core::ErrorKind::Io, message: "long failure ".repeat(20) }),
+        snapshot: Arc::new(wtm_ui::Snapshot::default()), scan_targets: Vec::new(), scan_activities: Vec::new(),
+        launch_error: Some(wtm_ui::Error { kind: wtm_ui::ErrorKind::Io, message: "long failure ".repeat(20) }),
         polling_time_last_minute: Duration::ZERO,
     };
     let mut view = View { latest: Some(Arc::new(update)), ..View::default() };

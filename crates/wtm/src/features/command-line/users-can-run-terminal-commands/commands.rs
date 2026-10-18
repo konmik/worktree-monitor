@@ -4,7 +4,7 @@ mod registration;
 use clap::Parser;
 use registration::Registration;
 use std::process::ExitCode;
-use wtm_core::Service;
+use wtm_ui::Service;
 
 #[derive(Parser)]
 #[command(version, about = "Track changed lines across Git repositories and worktrees", arg_required_else_help = true)]

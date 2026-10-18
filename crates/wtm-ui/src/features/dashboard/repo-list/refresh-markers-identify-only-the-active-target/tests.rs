@@ -2,7 +2,7 @@ use super::*;
 use std::collections::HashSet;
 use std::time::Instant;
 use wtm_ui::dashboard::RefreshTracker;
-use wtm_core::ScanActivity;
+use wtm_ui::ScanActivity;
 
 fn scan(path: &str, generation: u64, started_at: Instant, finished_at: Option<Instant>) -> ScanActivity {
     ScanActivity { target: ScanTarget::Worktree { repository: "/repo/.git".into(), path: path.into() },

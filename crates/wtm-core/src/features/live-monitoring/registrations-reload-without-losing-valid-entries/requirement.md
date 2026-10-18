@@ -1,2 +1,0 @@
-- Registration changes update monitored repositories without restarting.
-- Malformed registration changes report an error and retain the last valid registrations until recovery.

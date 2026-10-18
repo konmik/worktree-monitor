@@ -60,7 +60,7 @@ Changes inside Git-ignored folders do not trigger scans. Tracked files and chang
 
 ## Development
 
-Monitoring and shared dashboard presentation are separate from the terminal and Windows clients. See the [architecture](docs/design.md).
+`wtm` owns registration commands. `wtm-ui` owns monitoring and shared dashboard presentation. The terminal and Windows clients use `wtm-ui`. See the [architecture](docs/design.md).
 
 Run the Rust tests and lint checks:
 

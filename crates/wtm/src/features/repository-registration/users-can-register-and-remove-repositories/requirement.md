@@ -1,0 +1,4 @@
+- Repositories can be registered from a root, nested directory, or linked worktree and removed again.
+- Registrations use absolute common Git directories and repeated additions or removals do not duplicate entries.
+- Concurrent updates preserve registrations through a file lock and atomic replacement.
+- Invalid or empty existing configuration is reported without overwriting it.

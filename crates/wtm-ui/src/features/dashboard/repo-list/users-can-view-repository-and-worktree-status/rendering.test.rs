@@ -1,7 +1,7 @@
 use super::*;
 use crate::dashboard::{ItemKey, ViewItem};
 use std::time::Duration;
-use wtm_core::{Counts, Error, ErrorKind, Head, LineCounts, WorktreeStats};
+use crate::{Counts, Error, ErrorKind, Head, LineCounts, WorktreeStats};
 
 fn line(buffer: &RenderBuffer, row: usize) -> String {
     buffer.row(row).unwrap().iter().map(|cell| cell.text()).collect::<String>().trim_end().to_owned()

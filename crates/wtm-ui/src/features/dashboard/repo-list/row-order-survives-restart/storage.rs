@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use wtm_core::Snapshot;
+use crate::Snapshot;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

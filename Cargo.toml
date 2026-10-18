@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/wtm-core", "crates/wtm", "crates/wtm-ui", "crates/wtm-tui", "crates/wtm-gui-windows"]
+members = ["crates/wtm", "crates/wtm-ui", "crates/wtm-tui", "crates/wtm-gui-windows"]
 default-members = ["crates/wtm"]
 resolver = "2"
 
@@ -10,7 +10,6 @@ license = "MIT"
 repository = "https://github.com/konmik/worktree-monitor"
 
 [workspace.dependencies]
-wtm-core = { path = "crates/wtm-core" }
 wtm-ui = { path = "crates/wtm-ui" }
 wtm-tui = { path = "crates/wtm-tui" }
 wtm-gui-windows = { path = "crates/wtm-gui-windows" }

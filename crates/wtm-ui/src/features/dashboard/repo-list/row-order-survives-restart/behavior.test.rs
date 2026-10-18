@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use wtm_ui::dashboard::{DashboardView, ItemKey};
 use wtm_ui::order::{identity, Order, OrderMove};
-use wtm_core::{Error, ErrorKind, Head, RepoEntry, ScanTarget, Snapshot, WorktreeEntry, WorktreeStats};
+use wtm_ui::{Error, ErrorKind, Head, RepoEntry, ScanTarget, Snapshot, WorktreeEntry, WorktreeStats};
 
 struct Fixture {
     directory: TempDir,

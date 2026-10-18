@@ -11,7 +11,7 @@ fn start() -> Result<(), Box<dyn std::error::Error>> {
     let Some(_instance) = instance::acquire()? else {
         return Ok(());
     };
-    let service = wtm_core::Service::user()?;
+    let service = wtm_ui::Service::user()?;
     crate::window::run(service, std::env::current_dir()?)?;
     Ok(())
 }

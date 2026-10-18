@@ -1,7 +1,7 @@
 use super::count_indicators::CountPart;
 use crate::count_opacity::line_counts_stay_opaque;
 use crate::rendering::MUTED;
-use wtm_core::Counts;
+use crate::Counts;
 
 pub(crate) fn append_parts(parts: &mut Vec<CountPart>, counts: &Counts) {
     for (label, counts) in [("T", counts.test), ("X", counts.extra)] {

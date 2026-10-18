@@ -1,7 +1,7 @@
 use crate::dashboard::{DashboardView, DisplayItem, Health, ItemKey, ViewItem, name};
 use crate::order::identity;
 use crate::visibility::Visibility;
-use wtm_core::{ScanTarget, Snapshot};
+use crate::{ScanTarget, Snapshot};
 
 impl DashboardView {
     pub fn from_scan(snapshot: &Snapshot, targets: &[ScanTarget], visibility: &Visibility, show_all: bool) -> Self {

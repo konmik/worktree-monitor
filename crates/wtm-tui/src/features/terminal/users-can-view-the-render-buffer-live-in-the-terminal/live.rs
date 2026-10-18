@@ -8,7 +8,7 @@ use crossterm::terminal::{self, Clear, ClearType, DisableLineWrap, EnableLineWra
 use wtm_ui::dashboard::{DashboardView, DisplayItem, RefreshTracker};
 use wtm_ui::render_buffer::RenderBuffer;
 use wtm_ui::rendering::{compose_dashboard, render_row, DashboardFrame, RowOptions};
-use wtm_core::{Monitor, MonitorUpdate, Service};
+use wtm_ui::{Monitor, MonitorUpdate, Service};
 
 #[cfg(windows)]
 mod native;

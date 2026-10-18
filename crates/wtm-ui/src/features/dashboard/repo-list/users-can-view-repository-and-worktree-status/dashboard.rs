@@ -6,7 +6,7 @@ mod idle;
 
 use std::path::{Path, PathBuf};
 use crate::order::identity;
-use wtm_core::{Error, Head, Snapshot, WorktreeStats};
+use crate::{Error, Head, Snapshot, WorktreeStats};
 use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

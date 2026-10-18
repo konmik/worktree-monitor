@@ -2,7 +2,7 @@ use super::runtime::State;
 use wtm_ui::order::{Order, OrderMove};
 use wtm_ui::visibility::Visibility;
 use std::path::Path;
-use wtm_core::Snapshot;
+use wtm_ui::Snapshot;
 
 pub(super) fn save_order(state: &mut State, snapshot: &Snapshot, movement: &OrderMove) {
     match Order::persist_move(&state.ordering.path, snapshot, movement) {
