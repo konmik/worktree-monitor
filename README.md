@@ -8,13 +8,13 @@ An always-on-top Windows dashboard showing branches and changed lines across Git
 
 ### Windows download
 
-Download the Windows x64 ZIP from [Releases](https://github.com/konmik/worktree-monitor/releases), extract it, and run `wtm-ui.exe`. [Git](https://git-scm.com/downloads) must be on your `PATH`. Add the extracted folder to your `PATH` to use `wtm` from a terminal.
+Download the Windows x64 ZIP from [Releases](https://github.com/konmik/worktree-monitor/releases), extract it, and run `wtm-gui.exe`. [Git](https://git-scm.com/downloads) must be on your `PATH`. Add the extracted folder to your `PATH` to use `wtm` and `wtm-tui` from a terminal.
 
 ### Build from source
 
 Requires Windows x64, [Git](https://git-scm.com/downloads), stable [Rust](https://www.rust-lang.org/tools/install) with the MSVC toolchain, and [Visual Studio Build Tools](https://learn.microsoft.com/en-us/windows/dev-environment/rust/setup) with **Desktop development with C++** and a Windows SDK. The layout dependency compiles C++ code.
 
-Clone the repository, then install both executables:
+Clone the repository, then install all three executables:
 
 ```powershell
 git clone https://github.com/konmik/worktree-monitor.git
@@ -28,12 +28,12 @@ Register a repository, then open the dashboard:
 
 ```powershell
 wtm add C:\src\project
-wtm-ui
+wtm-gui
 ```
 
 All worktrees of a registered repository are included. The dashboard also includes the repository you launch it from.
 
-Run `wtm --live` to show the live render buffer in your current terminal. Scroll with Up, Down, Page Up, Page Down, Home, and End. Press `q`, Escape, or Ctrl+C to exit.
+Run `wtm-tui` to show the live render buffer in your current terminal. Scroll with Up, Down, Page Up, Page Down, Home, and End. Press `q`, Escape, or Ctrl+C to exit.
 
 Stop monitoring a repository:
 
@@ -41,7 +41,7 @@ Stop monitoring a repository:
 wtm remove C:\src\project
 ```
 
-## Controls
+## GUI controls
 
 - Drag repository headers or worktree cards to reorder them.
 - Use **Hide**, **Show all**, and **Unhide** to control which worktrees appear.

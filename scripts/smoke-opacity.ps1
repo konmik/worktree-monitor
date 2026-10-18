@@ -1,5 +1,5 @@
 param(
-    [string]$Binary = "$PSScriptRoot/../target/debug/wtm-ui.exe"
+    [string]$Binary = "$PSScriptRoot/../target/debug/wtm-gui.exe"
 )
 
 $ErrorActionPreference = 'Stop'

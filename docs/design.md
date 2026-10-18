@@ -7,12 +7,12 @@ The [workspace](../Cargo.toml) separates monitoring, shared presentation, and th
 | Crate | Responsibility |
 | --- | --- |
 | [wtm-core](../crates/wtm-core/src/lib.rs) | Repository registration, Git discovery and counting, filesystem watches, and background monitoring. |
-| [wtm-dashboard](../crates/wtm-dashboard/src/lib.rs) | Snapshot projection, render buffers, row formatting, Yoga layout, refresh tracking, saved order and visibility, and preference warning projection. |
-| [wtm-terminal](../crates/wtm-terminal/src/lib.rs) | Terminal session, keyboard input, scrolling, resizing, and terminal output. |
-| [wtm-windows](../crates/wtm-windows/src/lib.rs) | Win32 window, GDI presentation, fonts, input, notification icon, placement, and opacity. |
-| [wtm](../crates/wtm/Cargo.toml) | The `wtm` and `wtm-ui` executables, command parsing, startup, and distribution. |
+| [wtm-ui](../crates/wtm-ui/src/lib.rs) | Snapshot projection, render buffers, row formatting, Yoga layout, refresh tracking, saved order and visibility, and preference warning projection. |
+| [wtm-tui](../crates/wtm-tui/src/lib.rs) | Terminal session, keyboard input, scrolling, resizing, and terminal output. |
+| [wtm-gui-windows](../crates/wtm-gui-windows/src/lib.rs) | Win32 window, GDI presentation, fonts, input, notification icon, placement, and opacity. |
+| [wtm](../crates/wtm/Cargo.toml) | The `wtm` registration CLI, `wtm-tui` terminal executable, and `wtm-gui` GUI executable, command parsing, startup, and distribution. |
 
-Both clients depend on `wtm-dashboard` and `wtm-core`. Shared presentation has no dependency on either client. Its [Yoga dependency](../crates/wtm-dashboard/Cargo.toml) compiles C++ code.
+Both clients depend on `wtm-ui` and `wtm-core`. Shared presentation has no dependency on either client. Its [Yoga dependency](../crates/wtm-ui/Cargo.toml) compiles C++ code.
 
 Feature implementation lives in requirement directories under each crate's `src/features`. Each requirement directory's `requirement.md` lists its behavioral contracts. Tests live in separate files.
 
@@ -30,19 +30,19 @@ The [registration service](../crates/wtm-core/src/features/repository-registrati
 
 ## Shared presentation
 
-[Dashboard projection](../crates/wtm-dashboard/src/features/dashboard/repo-list/users-can-view-repository-and-worktree-status/scan.rs) turns snapshots and scan targets into repository headings, worktree rows, pending rows, and notices. Health includes errors from hidden worktrees.
+[Dashboard projection](../crates/wtm-ui/src/features/dashboard/repo-list/users-can-view-repository-and-worktree-status/scan.rs) turns snapshots and scan targets into repository headings, worktree rows, pending rows, and notices. Health includes errors from hidden worktrees.
 
-The [render buffer](../crates/wtm-dashboard/src/features/render-buffer/application-renders-into-a-render-buffer/buffer.rs) is a rectangular grid of Unicode grapheme cells. Each cell has a color and stressed, bold, and underline flags. Wide graphemes reserve continuation cells. [Row rendering and frame composition](../crates/wtm-dashboard/src/features/dashboard/repo-list/users-can-view-repository-and-worktree-status/rendering.rs) produce the buffer independently of either client.
+The [render buffer](../crates/wtm-ui/src/features/render-buffer/application-renders-into-a-render-buffer/buffer.rs) is a rectangular grid of Unicode grapheme cells. Each cell has a color and stressed, bold, and underline flags. Wide graphemes reserve continuation cells. [Row rendering and frame composition](../crates/wtm-ui/src/features/dashboard/repo-list/users-can-view-repository-and-worktree-status/rendering.rs) produce the buffer independently of either client.
 
-Counts use source, test, and tooling groups, with binaries separate. Source counts stay visible. Empty optional groups disappear. Scan errors show unavailable counts and their cause. [Refresh tracking](../crates/wtm-dashboard/src/features/dashboard/repo-list/refresh-markers-identify-only-the-active-target/refresh.rs) identifies the active target and keeps its marker visible for at least one second.
+Counts use source, test, and tooling groups, with binaries separate. Source counts stay visible. Empty optional groups disappear. Scan errors show unavailable counts and their cause. [Refresh tracking](../crates/wtm-ui/src/features/dashboard/repo-list/refresh-markers-identify-only-the-active-target/refresh.rs) identifies the active target and keeps its marker visible for at least one second.
 
 The idle indicator derives its percentage from [monitoring work time within the previous minute](../crates/wtm-core/src/features/live-monitoring/monitoring-work-time-is-reported-for-the-last-minute/time.rs). It measures monitor work rather than system CPU usage.
 
 ## Clients
 
-The [terminal client](../crates/wtm-terminal/src/features/terminal/users-can-view-the-render-buffer-live-in-the-terminal/live.rs) uses an alternate screen and raw input. It redraws changed buffers, handles keyboard scrolling and resize events, and restores the terminal on exit. It uses the default repository order and displays all worktrees.
+The [terminal client](../crates/wtm-tui/src/features/terminal/users-can-view-the-render-buffer-live-in-the-terminal/live.rs) uses an alternate screen and raw input. It redraws changed buffers, handles keyboard scrolling and resize events, and restores the terminal on exit. It uses the default repository order and displays all worktrees.
 
-The [Windows client](../crates/wtm-windows/src/window.rs) paints the shared buffer through GDI. It owns mouse and keyboard interaction, drag reordering, visibility controls, scrolling, window movement, and resizing. Window opacity and the stressed-cell overlay are native presentation concerns. The window opens above other windows without taking focus and has a notification-area icon.
+The [Windows client](../crates/wtm-gui-windows/src/window.rs) paints the shared buffer through GDI. It owns mouse and keyboard interaction, drag reordering, visibility controls, scrolling, window movement, and resizing. Window opacity and the stressed-cell overlay are native presentation concerns. The window opens above other windows without taking focus and has a notification-area icon.
 
 ## Saved preferences
 
@@ -50,10 +50,10 @@ The Windows client reads and writes preference files next to the registration fi
 
 | File | Contents and owner |
 | --- | --- |
-| `config.order.json` | Repository and worktree display order, stored by the [shared order model](../crates/wtm-dashboard/src/features/dashboard/repo-list/row-order-survives-restart/order.rs). |
-| `config.visibility.json` | Hidden repository and worktree identity pairs, stored by the [shared visibility model](../crates/wtm-dashboard/src/features/dashboard/repo-list/worktree/hidden-worktrees-stay-hidden-after-restart/visibility.rs). |
-| `config.placement.json` | Normal window bounds, monitor geometry, and normal or maximized state, stored by the [Windows placement model](../crates/wtm-windows/src/features/window/window-position-survives-restart/placement.rs). |
-| `config.opacity.json` | Selected opacity, stored by the [Windows opacity model](../crates/wtm-windows/src/features/context-menu/selected-opacity-survives-restart/storage.rs). |
+| `config.order.json` | Repository and worktree display order, stored by the [shared order model](../crates/wtm-ui/src/features/dashboard/repo-list/row-order-survives-restart/order.rs). |
+| `config.visibility.json` | Hidden repository and worktree identity pairs, stored by the [shared visibility model](../crates/wtm-ui/src/features/dashboard/repo-list/worktree/hidden-worktrees-stay-hidden-after-restart/visibility.rs). |
+| `config.placement.json` | Normal window bounds, monitor geometry, and normal or maximized state, stored by the [Windows placement model](../crates/wtm-gui-windows/src/features/window/window-position-survives-restart/placement.rs). |
+| `config.opacity.json` | Selected opacity, stored by the [Windows opacity model](../crates/wtm-gui-windows/src/features/context-menu/selected-opacity-survives-restart/storage.rs). |
 
 Order and visibility identify repositories by Git common-directory paths and worktrees by root paths. Reordering changes presentation without changing registrations. Hiding changes displayed rows without stopping monitoring. Show all temporarily bypasses saved visibility settings.
 

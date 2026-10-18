@@ -15,7 +15,7 @@ $Output = [IO.Path]::GetFullPath($Output)
 $staging = Join-Path $Output ".package-$([Guid]::NewGuid().ToString('N'))"
 [void][IO.Directory]::CreateDirectory($staging)
 try {
-    foreach ($name in @('wtm.exe', 'wtm-ui.exe')) {
+    foreach ($name in @('wtm.exe', 'wtm-tui.exe', 'wtm-gui.exe')) {
         Copy-Item -LiteralPath (Join-Path $BinaryDirectory $name) -Destination $staging
     }
     Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination $staging
@@ -26,10 +26,11 @@ Worktree Monitor for Windows x64
 Install Git for Windows and make sure git is on PATH:
 https://git-scm.com/downloads
 
-Run wtm-ui.exe to open the dashboard. Add this folder to PATH to use:
+Run wtm-gui.exe to open the dashboard. Add this folder to PATH to use:
 
 wtm add C:\src\project
-wtm-ui
+wtm-tui
+wtm-gui
 
 Source and documentation:
 https://github.com/konmik/worktree-monitor

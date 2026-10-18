@@ -1,6 +1,6 @@
 param(
-    [string]$Binary = "$PSScriptRoot/../target/debug/wtm-ui.exe",
-    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wtm-dashboard.png",
+    [string]$Binary = "$PSScriptRoot/../target/debug/wtm-gui.exe",
+    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wtm-gui.png",
     [switch]$Screen = $true,
     [int]$Height = 0,
     [int]$Width = 0,
@@ -96,7 +96,7 @@ function Has-FixtureData([string]$Text) {
     return $true
 }
 
-$fixture = Join-Path $env:LOCALAPPDATA "Temp/opencode/wtm-dashboard-$([Guid]::NewGuid().ToString('N'))"
+$fixture = Join-Path $env:LOCALAPPDATA "Temp/opencode/wtm-gui-$([Guid]::NewGuid().ToString('N'))"
 $fixtureHome = Join-Path $fixture 'home'
 New-Item -ItemType Directory -Path $fixtureHome -Force | Out-Null
 $oldHome = $env:HOME

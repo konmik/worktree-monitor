@@ -1,0 +1,1 @@
+- Only one GUI app instance can run at a time.

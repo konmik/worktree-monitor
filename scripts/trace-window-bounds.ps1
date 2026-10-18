@@ -1,5 +1,5 @@
 param(
-    [string]$Binary = "$env:USERPROFILE/.cargo/bin/wtm-ui.exe",
+    [string]$Binary = "$env:USERPROFILE/.cargo/bin/wtm-gui.exe",
     [int]$DurationSeconds = 35,
     [string]$Output = "$env:LOCALAPPDATA/Temp/wtm-window-trace-$([Guid]::NewGuid().ToString('N'))",
     [switch]$Restart
@@ -117,7 +117,7 @@ public static class WtmBoundsTrace {
 }
 '@
 
-$existing = @(Get-Process wtm-ui -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $Binary })
+$existing = @(Get-Process wtm-gui -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $Binary })
 $existing | Select-Object Id, Path, StartTime | ConvertTo-Json | Set-Content (Join-Path $Output 'initial-processes.json')
 $config = Join-Path $env:USERPROFILE '.config/wtm'
 Copy-Item -LiteralPath (Join-Path $config 'config.json'), (Join-Path $config 'config.placement.json') -Destination $Output

@@ -2,7 +2,7 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/wtm.rc");
     println!("cargo:rerun-if-changed=assets/wtm.ico");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
-        embed_resource::compile_for("assets/wtm.rc", ["wtm", "wtm-ui"], embed_resource::NONE)
+        embed_resource::compile_for("assets/wtm.rc", ["wtm", "wtm-tui", "wtm-gui"], embed_resource::NONE)
             .manifest_required().unwrap();
     }
 }

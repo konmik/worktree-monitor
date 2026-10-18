@@ -1,4 +1,4 @@
-param([string]$Binary = "$PSScriptRoot/../target/debug/wtm-ui.exe", [switch]$ResetOnly)
+param([string]$Binary = "$PSScriptRoot/../target/debug/wtm-gui.exe", [switch]$ResetOnly)
 
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path

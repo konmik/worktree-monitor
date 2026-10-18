@@ -7,21 +7,15 @@ use std::process::ExitCode;
 use wtm_core::Service;
 
 #[derive(Parser)]
-#[command(version, about = "Track changed lines across Git repositories and worktrees", arg_required_else_help = true, args_conflicts_with_subcommands = true)]
+#[command(version, about = "Track changed lines across Git repositories and worktrees", arg_required_else_help = true)]
 struct Arguments {
     #[command(subcommand)]
-    command: Option<Registration>,
-    #[arg(long, exclusive = true, help = "Show the live dashboard in this terminal")]
-    live: bool,
+    command: Registration,
 }
 
 fn execute(arguments: Arguments) -> Result<(), Box<dyn std::error::Error>> {
-    if arguments.live { return wtm_terminal::run(); }
-    if let Some(command) = arguments.command {
-        let service = Service::user()?;
-        return registration::execute(&service, command);
-    }
-    unreachable!()
+    let service = Service::user()?;
+    registration::execute(&service, arguments.command)
 }
 
 pub(crate) fn run() -> ExitCode {

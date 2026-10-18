@@ -1,1 +1,4 @@
-- The app and executable names use WTM instead of WTS.
+- The app is named WTM.
+- `wtm` runs command-line registration commands.
+- `wtm-tui` runs the terminal interface.
+- `wtm-gui` runs the graphical interface.

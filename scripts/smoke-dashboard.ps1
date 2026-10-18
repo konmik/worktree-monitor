@@ -1,7 +1,8 @@
-param([string]$Binary = "$PSScriptRoot/../target/debug/wtm.exe")
+param([string]$Binary = "$PSScriptRoot/../target/debug/wtm-gui.exe")
 
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
+$CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wtm.exe')).Path
 Add-Type -TypeDefinition (@'
 using System;
 using System.Collections.Generic;
@@ -248,7 +249,6 @@ function New-Repository([string]$Name, [switch]$Linked) {
 
 function Start-Dashboard([int]$ExpectedCards = 8) {
     $start = [Diagnostics.ProcessStartInfo]::new($Binary)
-    $start.ArgumentList.Add('--live')
     $start.WorkingDirectory = $launchDirectory
     $start.UseShellExecute = $false
     $start.RedirectStandardInput = $true
@@ -370,7 +370,7 @@ try {
         }
     }
     foreach ($repo in @($alpha, $beta)) {
-        & $Binary add $repo
+        & $CliBinary add $repo
         if ($LASTEXITCODE -ne 0) { throw 'Fixture registration failed' }
     }
     $config = Join-Path $fixtureHome '.config/wtm/config.json'
@@ -460,14 +460,14 @@ try {
     Close-Dashboard
     Start-Dashboard
     Assert-Order $worktreeOrder 'Restart preserves repository and worktree order'
-    & $Binary add $current
+    & $CliBinary add $current
     if ($LASTEXITCODE -ne 0) { throw 'Explicit registration of launch repository failed' }
     [IO.File]::WriteAllText((Join-Path $current 'lines.txt'), "before`nfirst`nsecond`n")
     Wait-For { (Find-Card $current).Text -match 'S\s+\+2/-0\b' } 'registered launch repository refresh' 40
     Wait-For { @([WtmDragProbe]::Cards($script:viewport)).Count -eq 8 } 'deduplicated current repository'
     Assert-Order $worktreeOrder 'Registering the launch repository does not duplicate its worktree'
     [IO.File]::WriteAllText((Join-Path $fixture 'final-order.txt'), (Card-Order))
-    & $Binary remove $current
+    & $CliBinary remove $current
     if ($LASTEXITCODE -ne 0) { throw 'Removing launch registration failed' }
     [IO.File]::WriteAllText((Join-Path $current 'lines.txt'), "before`nfirst`nsecond`nthird`n")
     Wait-For { (Find-Card $current -Optional).Text -match 'S\s+\+3/-0\b' } 'unregistered launch repository refresh' 40

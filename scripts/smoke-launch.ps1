@@ -1,4 +1,4 @@
-param([string]$Binary = "$PSScriptRoot/../target/debug/wtm.exe")
+param([string]$Binary = "$PSScriptRoot/../target/debug/wtm-gui.exe")
 
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
@@ -44,7 +44,6 @@ $windowProcess = $null
 $handle = [IntPtr]::Zero
 try {
     $start = [Diagnostics.ProcessStartInfo]::new($Binary)
-    $start.ArgumentList.Add('--live')
     $start.WorkingDirectory = $fixtureHome
     $start.UseShellExecute = $false
     $start.RedirectStandardInput = $true

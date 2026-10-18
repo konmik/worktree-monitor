@@ -1,1 +1,0 @@
-- Only one UI app instance can run at a time.

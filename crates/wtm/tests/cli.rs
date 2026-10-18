@@ -10,5 +10,5 @@ mod registration;
 #[path = "../src/features/command-line/users-can-run-terminal-commands/tests.rs"]
 mod commands;
 
-#[path = "../../wtm-terminal/src/features/terminal/users-can-view-the-render-buffer-live-in-the-terminal/cli.test.rs"]
+#[path = "../../wtm-tui/src/features/terminal/users-can-view-the-render-buffer-live-in-the-terminal/cli.test.rs"]
 mod live;

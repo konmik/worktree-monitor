@@ -1,7 +1,8 @@
-param([string]$Binary = "$PSScriptRoot/../target/debug/wtm.exe")
+param([string]$Binary = "$PSScriptRoot/../target/debug/wtm-gui.exe")
 
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
+$CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wtm.exe')).Path
 Add-Type -TypeDefinition @'
 using System;
 using System.Text;
@@ -279,12 +280,11 @@ try {
     [IO.File]::WriteAllText((Join-Path $repo 'lines.txt'), "before`nadded`n")
     Run-Git @('config', 'filter.wtm-metric.clean', 'sleep 1; cat')
     [IO.File]::WriteAllText((Join-Path $repo '.git/info/attributes'), "lines.txt filter=wtm-metric`n")
-    & $Binary add $repo
+    & $CliBinary add $repo
     if ($LASTEXITCODE -ne 0) { throw 'Registration failed' }
     $config = Join-Path $fixtureHome '.config/wtm/config.json'
     if (-not (Test-Path -LiteralPath $config)) { throw 'Registry was not written at the required home path' }
     $start = [Diagnostics.ProcessStartInfo]::new($Binary)
-    $start.ArgumentList.Add('--live')
     $start.WorkingDirectory = $fixtureHome
     $start.UseShellExecute = $false
     $start.RedirectStandardInput = $true
@@ -411,7 +411,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $fixture 'invalid-config.txt'), [WtmWindowProbe]::Text($script:handle))
     [IO.File]::WriteAllText($config, $validConfig)
     Wait-For { [WtmWindowProbe]::Text($script:handle) -notmatch '(?i)error' -and (Has-Counts 2 0) } 'valid config recovery'
-    & $Binary remove $repo
+    & $CliBinary remove $repo
     if ($LASTEXITCODE -ne 0) { throw 'Removal failed' }
     Wait-For { [WtmWindowProbe]::Text($script:handle) -match '(?i)no (registered )?repo' } 'live registry reload'
     [IO.File]::WriteAllText((Join-Path $fixture 'empty.txt'), [WtmWindowProbe]::Text($script:handle))

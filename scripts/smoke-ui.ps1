@@ -1,6 +1,6 @@
 param(
-    [string]$Binary = "$PSScriptRoot/../target/debug/wtm-ui.exe",
-    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wtm-ui-$([Guid]::NewGuid().ToString('N'))"
+    [string]$Binary = "$PSScriptRoot/../target/debug/wtm-gui.exe",
+    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wtm-gui-$([Guid]::NewGuid().ToString('N'))"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -155,7 +155,7 @@ public static class WtmUiProbe {
         if ($handle -ne [IntPtr]::Zero) { break }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
-    if ($handle -eq [IntPtr]::Zero -or [WtmUiProbe]::Text($handle) -ne 'wtm-ui') { throw 'UI startup failure did not show its error dialog' }
+    if ($handle -eq [IntPtr]::Zero -or [WtmUiProbe]::Text($handle) -ne 'wtm-gui') { throw 'UI startup failure did not show its error dialog' }
     $proof['startup_error_text'] = [WtmUiProbe]::ChildText($handle)
     if ($proof.startup_error_text -notmatch 'USERPROFILE is not set') { throw 'UI error dialog did not explain the startup failure' }
     if (-not [WtmUiProbe]::PostMessage($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'UI error dialog dismissal failed' }
