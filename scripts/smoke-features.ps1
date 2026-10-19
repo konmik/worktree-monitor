@@ -1,14 +1,18 @@
 param(
     [string]$Binary = "$PSScriptRoot/../target/debug/wtm-gui.exe",
-    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wtm-features-$([Guid]::NewGuid().ToString('N'))"
+    [string]$Output = "$PSScriptRoot/../target/verification/smoke-features-$([Guid]::NewGuid().ToString('N'))"
 )
 
+. (Join-Path $PSScriptRoot 'verification-directories.ps1')
+try {
+$verificationFixture = New-VerificationDirectory 'smoke-features'
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
 $CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wtm.exe')).Path
 $Output = [IO.Path]::GetFullPath($Output)
-$repo = Join-Path $Output 'repo'
-$fixtureHome = Join-Path $Output 'home'
+New-Item -ItemType Directory -Path $Output -Force | Out-Null
+$repo = Join-Path $verificationFixture 'repo'
+$fixtureHome = Join-Path $verificationFixture 'home'
 New-Item -ItemType Directory -Path $repo, $fixtureHome -Force | Out-Null
 Add-Type -AssemblyName System.Drawing
 Add-Type -TypeDefinition (@'
@@ -531,7 +535,7 @@ try {
     $env:USERPROFILE = $fixtureHome
     [WtmNative]::Opaque($fixtureHome)
     $env:HOME = $fixtureHome
-    $env:GIT_CONFIG_GLOBAL = Join-Path $Output 'empty-gitconfig'
+    $env:GIT_CONFIG_GLOBAL = Join-Path $verificationFixture 'empty-gitconfig'
     $env:GIT_CONFIG_NOSYSTEM = '1'
     foreach ($name in @('GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE')) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
     New-Item -ItemType Directory -Path (Join-Path $repo 'tests'), (Join-Path $repo 'scripts') | Out-Null
@@ -628,3 +632,5 @@ try {
     foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $previous[$name], 'Process') }
     [void][WtmFeatureProbe]::SetThreadDpiAwarenessContext($dpiContext)
 }
+
+} finally { Remove-VerificationDirectories }

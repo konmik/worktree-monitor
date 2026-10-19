@@ -14,6 +14,8 @@ param(
     [switch]$VerifySerialGit
 )
 
+. (Join-Path $PSScriptRoot 'verification-directories.ps1')
+try {
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
 $CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wtm.exe')).Path
@@ -96,7 +98,9 @@ function Has-FixtureData([string]$Text) {
     return $true
 }
 
-$fixture = Join-Path $env:LOCALAPPDATA "Temp/opencode/wtm-gui-$([Guid]::NewGuid().ToString('N'))"
+$verificationEvidence = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../target/verification/capture-window-evidence-$([Guid]::NewGuid().ToString('N'))"))
+
+$fixture = New-VerificationDirectory 'capture-window' $verificationEvidence
 $fixtureHome = Join-Path $fixture 'home'
 New-Item -ItemType Directory -Path $fixtureHome -Force | Out-Null
 $oldHome = $env:HOME
@@ -394,7 +398,7 @@ foreach (`$item in `$items) { `$item.Current.Name }
         Write-Output 'PASS. Slim themed scrollbar stays in the gutter and scrolls while dragged.'
     }
     Write-Output "Captured $Output"
-    Write-Output "Real Git fixture and visible text at $fixture"
+    Write-Output "Captured fixture text and trace at $verificationEvidence"
     if (-not [WtmCapture]::PostMessage($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'Close failed' }
     if (-not $process.WaitForExit(10000)) { throw 'Captured window did not close' }
     if ($process.ExitCode -ne 0) { throw 'Captured app exited unsuccessfully' }
@@ -423,3 +427,5 @@ foreach (`$item in `$items) { `$item.Current.Name }
     if ($null -ne $bitmap) { $bitmap.Dispose() }
     if ($previousDpiContext -ne [IntPtr]::Zero) { [void][WtmCapture]::SetThreadDpiAwarenessContext($previousDpiContext) }
 }
+
+} finally { Remove-VerificationDirectories }

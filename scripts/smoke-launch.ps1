@@ -1,5 +1,7 @@
 param([string]$Binary = "$PSScriptRoot/../target/debug/wtm-gui.exe")
 
+. (Join-Path $PSScriptRoot 'verification-directories.ps1')
+try {
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
 Add-Type -TypeDefinition @'
@@ -36,7 +38,9 @@ public static class WtmLaunchProbe {
 }
 '@
 
-$fixture = Join-Path $env:LOCALAPPDATA "Temp/opencode/wtm-launch-$([Guid]::NewGuid().ToString('N'))"
+$verificationEvidence = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../target/verification/smoke-launch-evidence-$([Guid]::NewGuid().ToString('N'))"))
+
+$fixture = New-VerificationDirectory 'smoke-launch' $verificationEvidence
 $fixtureHome = Join-Path $fixture 'home'
 New-Item -ItemType Directory -Path $fixtureHome | Out-Null
 $launcher = $null
@@ -96,7 +100,7 @@ try {
     }
     $proof | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $fixture 'proof.json') -Encoding utf8NoBOM
     Write-Host "$result. launcher_exited=$exited stdin_released=$stdinReleased stdout_eof=$stdoutEof stderr_eof=$stderrEof different_window_pid=$differentPid console_detached=$detached"
-    Write-Host "Evidence at $fixture"
+    Write-Host "Evidence at $verificationEvidence"
     if ($result -ne 'PASS') { throw 'Live launch did not release the terminal while keeping a separate visible window' }
     if (-not [WtmLaunchProbe]::PostMessage($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'Window close failed' }
     if (-not $windowProcess.WaitForExit(10000)) { throw 'Window did not close within 10 seconds' }
@@ -121,3 +125,5 @@ try {
         if (-not $launcher.HasExited) { $launcher.Kill($true); $launcher.WaitForExit() }
     }
 }
+
+} finally { Remove-VerificationDirectories }

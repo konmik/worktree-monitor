@@ -1,18 +1,21 @@
 param(
     [string]$Binary = "$PSScriptRoot/../target/debug/wtm-gui.exe",
-    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wtm-refreshing-$([Guid]::NewGuid().ToString('N'))",
+    [string]$Output = "$PSScriptRoot/../target/verification/smoke-refreshing-$([Guid]::NewGuid().ToString('N'))",
     [switch]$SavedOrder,
     [switch]$MainOnly,
     [string]$Placement,
     [int]$PlacementWidth = 0
 )
 
+. (Join-Path $PSScriptRoot 'verification-directories.ps1')
+try {
+$verificationFixture = New-VerificationDirectory 'smoke-refreshing'
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
 $CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wtm.exe')).Path
 $Output = [IO.Path]::GetFullPath($Output)
 New-Item -ItemType Directory -Path $Output -Force | Out-Null
-$fixture = Join-Path $Output "fixture-$([Guid]::NewGuid().ToString('N'))"
+$fixture = $verificationFixture
 $fixtureHome = Join-Path $fixture 'home'
 $gates = Join-Path $fixture 'gates'
 $shim = Join-Path $fixture 'bin'
@@ -633,3 +636,5 @@ try {
     $proof | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $Output 'proof.json') -Encoding utf8NoBOM
     $samples | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $Output 'samples.json') -Encoding utf8NoBOM
 }
+
+} finally { Remove-VerificationDirectories }

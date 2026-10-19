@@ -1,5 +1,7 @@
 param([string]$Binary = "$PSScriptRoot/../target/debug/wtm-gui.exe")
 
+. (Join-Path $PSScriptRoot 'verification-directories.ps1')
+try {
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
 Add-Type -TypeDefinition @'
@@ -57,7 +59,9 @@ function Close-Window {
     if ($script:process.ExitCode -ne 0) { throw 'App exited with an error' }
 }
 
-$fixture = Join-Path $env:TEMP "wtm-placement-$([Guid]::NewGuid().ToString('N'))"
+$verificationEvidence = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../target/verification/smoke-placement-evidence-$([Guid]::NewGuid().ToString('N'))"))
+
+$fixture = New-VerificationDirectory 'smoke-placement' $verificationEvidence
 New-Item -ItemType Directory -Path (Join-Path $fixture '.config/wtm') -Force | Out-Null
 Set-Content -LiteralPath (Join-Path $fixture '.config/wtm/config.json') -Value '{"repos":[]}'
 $previousDpi = [WtmPlacementProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
@@ -99,5 +103,7 @@ try {
 } finally {
     if ($script:process -and -not $script:process.HasExited) { $script:process.Kill(); $script:process.WaitForExit() }
     [void][WtmPlacementProbe]::SetThreadDpiAwarenessContext($previousDpi)
-    Write-Host "Evidence at $fixture"
+    Write-Host "Evidence at $verificationEvidence"
 }
+
+} finally { Remove-VerificationDirectories }

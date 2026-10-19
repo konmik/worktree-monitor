@@ -1,8 +1,11 @@
 param(
     [string]$Binary = "$PSScriptRoot/../target/debug/wtm-gui.exe",
-    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wtm-frame-$([Guid]::NewGuid().ToString('N'))"
+    [string]$Output = "$PSScriptRoot/../target/verification/smoke-frame-$([Guid]::NewGuid().ToString('N'))"
 )
 
+. (Join-Path $PSScriptRoot 'verification-directories.ps1')
+try {
+$verificationFixture = New-VerificationDirectory 'smoke-frame'
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
 New-Item -ItemType Directory -Path $Output -Force | Out-Null
@@ -128,8 +131,8 @@ try {
     $height = [Math]::Min(540, $work.Bottom - $work.Top - 48)
     if ($width -lt 120 -or $height -lt 120) { throw 'Display work area is too small for two focus fixtures' }
     [void][WtmFrameProbe]::SetWindowPos($script:previousWindow, [IntPtr](-1), $work.Right - 176, $work.Top + 24, 160, 100, 0)
-    $env:HOME = Join-Path $Output 'unix-home'
-    $env:USERPROFILE = Join-Path $Output 'home'
+    $env:HOME = Join-Path $verificationFixture 'unix-home'
+    $env:USERPROFILE = Join-Path $verificationFixture 'home'
     New-Item -ItemType Directory -Path $env:USERPROFILE -Force | Out-Null
     [WtmNative]::Opaque($env:USERPROFILE)
     $process = Start-Process -FilePath $Binary -WorkingDirectory $env:USERPROFILE -PassThru
@@ -159,3 +162,5 @@ try {
     [void][WtmFrameProbe]::SetCursorPos($savedCursor.X, $savedCursor.Y)
     if ($previousDpi -ne [IntPtr]::Zero) { [void][WtmFrameProbe]::SetThreadDpiAwarenessContext($previousDpi) }
 }
+
+} finally { Remove-VerificationDirectories }

@@ -1,5 +1,7 @@
 param([string]$Binary = "$PSScriptRoot/../target/debug/wtm-gui.exe")
 
+. (Join-Path $PSScriptRoot 'verification-directories.ps1')
+try {
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
 $CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wtm.exe')).Path
@@ -259,7 +261,9 @@ function Has-Counts([int]$Added, [int]$Deleted) {
     return $rows.Count -eq 1 -and $rows[0] -match "S\s+\+$Added/-$Deleted\b"
 }
 
-$fixture = Join-Path $env:LOCALAPPDATA "Temp/opencode/wtm-window-$([Guid]::NewGuid().ToString('N'))"
+$verificationEvidence = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../target/verification/smoke-window-evidence-$([Guid]::NewGuid().ToString('N'))"))
+
+$fixture = New-VerificationDirectory 'smoke-window' $verificationEvidence
 $repo = Join-Path $fixture 'repo'
 $fixtureHome = Join-Path $fixture 'home'
 New-Item -ItemType Directory -Path $repo, $fixtureHome | Out-Null
@@ -450,7 +454,7 @@ try {
         exit_code = $process.ExitCode
         result = 'PASS'
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $fixture 'proof.json') -Encoding utf8NoBOM
-    Write-Host "PASS. Terminal detached, always on top, live counts, scroll preservation, idle percentage, config error/recovery, registry reload, and clean close. Evidence at $fixture"
+    Write-Host "PASS. Terminal detached, always on top, live counts, scroll preservation, idle percentage, config error/recovery, registry reload, and clean close. Evidence at $verificationEvidence"
 } finally {
     $env:HOME = $oldHome
     $env:USERPROFILE = $oldProfile
@@ -466,3 +470,5 @@ try {
     }
     if ($previousDpiContext -ne [IntPtr]::Zero) { [void][WtmWindowProbe]::SetThreadDpiAwarenessContext($previousDpiContext) }
 }
+
+} finally { Remove-VerificationDirectories }

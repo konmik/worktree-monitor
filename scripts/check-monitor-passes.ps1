@@ -1,7 +1,10 @@
 param([string]$Binary = "$PSScriptRoot/../target/release/examples/measure-monitor.exe")
+. (Join-Path $PSScriptRoot 'verification-directories.ps1')
+try {
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
-$root = "$env:LOCALAPPDATA/Temp/opencode/wtm-serial-$([Guid]::NewGuid().ToString('N'))"
+$verificationEvidence = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../target/verification/check-monitor-passes-evidence-$([Guid]::NewGuid().ToString('N'))"))
+$root = New-VerificationDirectory 'check-monitor-passes' $verificationEvidence
 $repo = "$root/repo"
 $linked = "$root/linked"
 $added = "$root/added"
@@ -40,7 +43,7 @@ try {
     $text = $stdout.GetAwaiter().GetResult()
     $errors = $stderr.GetAwaiter().GetResult()
     $text | Set-Content "$root/result.json"
-    Write-Host "Evidence at $root"
+    Write-Host "Evidence at $verificationEvidence"
     if ($process.ExitCode -ne 0 -or $errors) { throw "Monitor failed: $errors" }
     $result = $text | ConvertFrom-Json
     if ($result.worktrees -ne 3 -or $text -notmatch 'S \+1/-0') { throw 'Final worktrees or counts are wrong' }
@@ -75,3 +78,5 @@ try {
     if (-not $process.HasExited) { $process.Kill($true) }
     $process.Dispose()
 }
+
+} finally { Remove-VerificationDirectories }

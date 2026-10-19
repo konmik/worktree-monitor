@@ -3,10 +3,13 @@ param(
     [string]$CliBinary = "$PSScriptRoot/../target/debug/wtm.exe"
 )
 
+. (Join-Path $PSScriptRoot 'verification-directories.ps1')
+try {
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
 $CliBinary = (Resolve-Path $CliBinary).Path
-$fixture = Join-Path ([IO.Path]::GetTempPath()) "wtm-indicator-opacity-$([Guid]::NewGuid().ToString('N'))"
+$verificationEvidence = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../target/verification/smoke-indicator-opacity-evidence-$([Guid]::NewGuid().ToString('N'))"))
+$fixture = New-VerificationDirectory 'smoke-indicator-opacity' $verificationEvidence
 [void][IO.Directory]::CreateDirectory($fixture)
 Add-Type -AssemblyName System.Drawing
 Add-Type -TypeDefinition @'
@@ -318,7 +321,7 @@ try {
     [void][WtmIndicatorProbe]::PostMessageW($window, 0x10, [IntPtr]::Zero, [IntPtr]::Zero)
     if (-not $process.WaitForExit(10000) -or $process.ExitCode -ne 0) { throw 'Fixture did not close successfully' }
     foreach ($popup in $popups) { if ([WtmIndicatorProbe]::IsWindow($popup)) { throw 'Owned indicator popup survived the main window' } }
-    Write-Host "PASS. Screen pixels verify selective opacity across hover, leave, movement, count reset, and close. Captures at $fixture"
+    Write-Host "PASS. Screen pixels verify selective opacity across hover, leave, movement, count reset, and close. Captures at $verificationEvidence"
 } finally {
     if ($null -ne $process -and -not $process.HasExited) {
         if ($window -ne [IntPtr]::Zero) { [void][WtmIndicatorProbe]::PostMessageW($window, 0x10, [IntPtr]::Zero, [IntPtr]::Zero) }
@@ -329,3 +332,5 @@ try {
     if ($previousDpi -ne [IntPtr]::Zero) { [void][WtmIndicatorProbe]::SetThreadDpiAwarenessContext($previousDpi) }
     if ($null -ne $process) { $process.Dispose() }
 }
+
+} finally { Remove-VerificationDirectories }

@@ -6,11 +6,12 @@ Build and run the Rust checks on Windows x64 with the MSVC Rust toolchain, Visua
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo build --release --locked -p wtm --bins
+pwsh -NoProfile -File scripts/verification-directories.tests.ps1
 ```
 
 ## Desktop checks
 
-The smoke scripts require PowerShell 7. Run desktop checks one at a time on an unlocked interactive Windows desktop. They create isolated Git fixtures and configuration, launch test windows, and exercise the keyboard and mouse.
+The smoke scripts require PowerShell 7. Run desktop checks one at a time on an unlocked interactive Windows desktop. They create isolated Git fixtures and configuration, launch test windows, and exercise the keyboard and mouse. Verification repositories use fresh Git-ignored directories under `target/verification` and are removed after success or failure. Screenshots and verification results remain in separate evidence directories.
 
 ```powershell
 ./scripts/smoke-cli.ps1 -Binary ./target/release/wtm.exe

@@ -1,8 +1,11 @@
 param(
     [string]$Binary = "$PSScriptRoot/../target/debug/wtm-gui.exe",
-    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wtm-gui-$([Guid]::NewGuid().ToString('N'))"
+    [string]$Output = "$PSScriptRoot/../target/verification/smoke-ui-$([Guid]::NewGuid().ToString('N'))"
 )
 
+. (Join-Path $PSScriptRoot 'verification-directories.ps1')
+try {
+$verificationFixture = New-VerificationDirectory 'smoke-ui'
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
 $Output = [IO.Path]::GetFullPath($Output)
@@ -35,9 +38,9 @@ $proof = [ordered]@{
         subsystem = $null
     }
     arguments = @()
-    working_directory = Join-Path $Output 'work'
-    home = Join-Path $Output 'home'
-    userprofile = Join-Path $Output 'profile'
+    working_directory = Join-Path $verificationFixture 'work'
+    home = Join-Path $verificationFixture 'home'
+    userprofile = Join-Path $verificationFixture 'profile'
     launcher_pid = $PID
     create_no_window = $false
     use_shell_execute = $false
@@ -101,8 +104,8 @@ public static class WtmUiProbe {
     foreach ($directory in @($proof.working_directory, $proof.home, $proof.userprofile)) {
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
         $ancestor = [IO.DirectoryInfo]::new($directory)
-        while ($null -ne $ancestor) {
-            if (Test-Path -LiteralPath (Join-Path $ancestor.FullName '.git')) { throw 'UI fixture must be outside Git' }
+        while ($null -ne $ancestor -and $ancestor.FullName -ne $verificationFixture) {
+            if (Test-Path -LiteralPath (Join-Path $ancestor.FullName '.git')) { throw 'UI fixture must not contain Git metadata' }
             $ancestor = $ancestor.Parent
         }
     }
@@ -181,3 +184,5 @@ public static class WtmUiProbe {
     Write-Host "Evidence at $Output"
     if ($null -ne $process) { $process.Dispose() }
 }
+
+} finally { Remove-VerificationDirectories }

@@ -1,5 +1,7 @@
 param([string]$Binary = "$PSScriptRoot/../target/debug/wtm-gui.exe", [switch]$ResetOnly)
 
+. (Join-Path $PSScriptRoot 'verification-directories.ps1')
+try {
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
 $source = Get-Content -LiteralPath "$PSScriptRoot/smoke-window.ps1" -Raw
@@ -197,8 +199,9 @@ function Wait-For([scriptblock]$Condition, [string]$Label) {
     throw "Timed out waiting for $Label"
 }
 
-$fixture = Join-Path $env:LOCALAPPDATA "Temp/opencode/wtm-tray-drag-$([Guid]::NewGuid().ToString('N'))"
-New-Item -ItemType Directory -Path $fixture | Out-Null
+$verificationEvidence = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../target/verification/smoke-tray-drag-evidence-$([Guid]::NewGuid().ToString('N'))"))
+
+$fixture = New-VerificationDirectory 'smoke-tray-drag' $verificationEvidence
 $process = $null
 $window = [IntPtr]::Zero
 $savedCursor = [WtmTrayDragProbe+Point]::new()
@@ -321,3 +324,5 @@ try {
     if ($previousDpi -ne [IntPtr]::Zero) { [void][WtmTrayDragProbe]::SetThreadDpiAwarenessContext($previousDpi) }
     if ($null -ne $process) { $process.Dispose() }
 }
+
+} finally { Remove-VerificationDirectories }

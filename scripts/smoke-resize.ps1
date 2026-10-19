@@ -1,8 +1,11 @@
 param(
     [string]$Binary = "$PSScriptRoot/../target/debug/wtm-gui.exe",
-    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wtm-resize-$([Guid]::NewGuid().ToString('N'))"
+    [string]$Output = "$PSScriptRoot/../target/verification/smoke-resize-$([Guid]::NewGuid().ToString('N'))"
 )
 
+. (Join-Path $PSScriptRoot 'verification-directories.ps1')
+try {
+$verificationFixture = New-VerificationDirectory 'smoke-resize'
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
 $CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wtm.exe')).Path
@@ -252,7 +255,7 @@ function Compare-Repaint([string]$Name) {
     } finally { $before.Dispose() }
 }
 
-$fixtureHome = Join-Path $Output 'home'
+$fixtureHome = Join-Path $verificationFixture 'home'
 New-Item -ItemType Directory -Path $fixtureHome -Force | Out-Null
 $oldHome = $env:HOME
 $oldProfile = $env:USERPROFILE
@@ -260,11 +263,11 @@ $process = $null
 $previousDpiContext = [WtmResizeProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
 $results = [System.Collections.Generic.List[object]]::new()
 try {
-    $env:HOME = Join-Path $Output 'unix-home'
+    $env:HOME = Join-Path $verificationFixture 'unix-home'
     $env:USERPROFILE = $fixtureHome
     [WtmNative]::Opaque($fixtureHome)
     foreach ($name in @('signal-core', 'edge-gateway', 'infra-tools')) {
-        $repo = Join-Path $Output $name
+        $repo = Join-Path $verificationFixture $name
         New-Item -ItemType Directory -Path $repo | Out-Null
         Run-Git @('init', '--quiet')
         [IO.File]::WriteAllText((Join-Path $repo 'lines.txt'), "before`n")
@@ -326,3 +329,5 @@ try {
     if ($null -ne $process -and -not $process.HasExited) { $process.Kill($true); $process.WaitForExit() }
     if ($previousDpiContext -ne [IntPtr]::Zero) { [void][WtmResizeProbe]::SetThreadDpiAwarenessContext($previousDpiContext) }
 }
+
+} finally { Remove-VerificationDirectories }

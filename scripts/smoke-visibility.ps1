@@ -1,10 +1,13 @@
 param(
     [string]$Binary = "$PSScriptRoot/../target/debug/wtm-gui.exe",
-    [string]$Output = "$env:LOCALAPPDATA/Temp/opencode/wtm-visibility-$([Guid]::NewGuid().ToString('N'))",
+    [string]$Output = "$PSScriptRoot/../target/verification/smoke-visibility-$([Guid]::NewGuid().ToString('N'))",
     [switch]$Baseline,
     [switch]$VisibilityOnly
 )
 
+. (Join-Path $PSScriptRoot 'verification-directories.ps1')
+try {
+$verificationFixture = New-VerificationDirectory 'smoke-visibility'
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
 $CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wtm.exe')).Path
@@ -372,8 +375,8 @@ function Get-GitText([string]$Repo, [string[]]$Arguments) {
 }
 
 function New-Repository([string]$Name) {
-    $repo = Join-Path $Output $Name
-    $tree = Join-Path $Output "${Name}-tree"
+    $repo = Join-Path $verificationFixture $Name
+    $tree = Join-Path $verificationFixture "${Name}-tree"
     New-Item -ItemType Directory -Path $repo, $tree | Out-Null
     Run-Git $repo @('init', '--quiet')
     Write-Utf8 (Join-Path $repo 'lines.txt') "before`n"
@@ -1391,7 +1394,7 @@ function Invoke-VisibilityTest([array]$InitialRows, [switch]$Keyboard, [bool]$Ba
 $names = @('HOME', 'USERPROFILE', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
-$fixtureHome = Join-Path $Output 'home'
+$fixtureHome = Join-Path $verificationFixture 'home'
 New-Item -ItemType Directory -Path $fixtureHome | Out-Null
 $script:fixtureHome = $fixtureHome
 $script:process = $null
@@ -1418,9 +1421,9 @@ $dpiContext = [IntPtr]::Zero
 $cursor = [WtmVisibilityNativeProbe+Point]::new()
 $restoreCursor = [WtmVisibilityNativeProbe]::GetCursorPos([ref]$cursor)
 try {
-    $env:HOME = Join-Path $Output 'unix-home'
+    $env:HOME = Join-Path $verificationFixture 'unix-home'
     $env:USERPROFILE = $fixtureHome
-    $env:GIT_CONFIG_GLOBAL = Join-Path $Output 'empty-gitconfig'
+    $env:GIT_CONFIG_GLOBAL = Join-Path $verificationFixture 'empty-gitconfig'
     $env:GIT_CONFIG_NOSYSTEM = '1'
     foreach ($name in @('GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE')) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
     $dpiContext = [WtmVisibilityNativeProbe]::SetThreadDpiAwarenessContext([IntPtr](-4))
@@ -1521,3 +1524,5 @@ try {
     foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $previous[$name], 'Process') }
     if ($dpiContext -ne [IntPtr]::Zero) { [void][WtmVisibilityNativeProbe]::SetThreadDpiAwarenessContext($dpiContext) }
 }
+
+} finally { Remove-VerificationDirectories }

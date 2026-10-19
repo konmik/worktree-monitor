@@ -2,10 +2,12 @@ param(
     [string]$Binary = "$PSScriptRoot/../target/debug/wtm-gui.exe"
 )
 
+. (Join-Path $PSScriptRoot 'verification-directories.ps1')
+try {
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
-$fixture = Join-Path ([IO.Path]::GetTempPath()) "wtm-opacity-$([Guid]::NewGuid().ToString('N'))"
-New-Item -ItemType Directory -Path $fixture | Out-Null
+$verificationEvidence = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../target/verification/smoke-opacity-evidence-$([Guid]::NewGuid().ToString('N'))"))
+$fixture = New-VerificationDirectory 'smoke-opacity' $verificationEvidence
 Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
@@ -155,3 +157,5 @@ try {
     if ($previousDpi -ne [IntPtr]::Zero) { [void][WtmOpacityProbe]::SetThreadDpiAwarenessContext($previousDpi) }
     if ($null -ne $process) { $process.Dispose() }
 }
+
+} finally { Remove-VerificationDirectories }

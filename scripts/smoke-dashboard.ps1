@@ -1,5 +1,7 @@
 param([string]$Binary = "$PSScriptRoot/../target/debug/wtm-gui.exe")
 
+. (Join-Path $PSScriptRoot 'verification-directories.ps1')
+try {
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
 $CliBinary = (Resolve-Path (Join-Path (Split-Path -Parent $Binary) 'wtm.exe')).Path
@@ -226,7 +228,7 @@ function Wait-For([scriptblock]$Condition, [string]$Label, [int]$Seconds = 25) {
     if ($null -ne $script:viewport -and $script:viewport -ne [IntPtr]::Zero) {
         $cards = @([WtmDragProbe]::Cards($script:viewport))
         $cards | Select-Object Top, Class, Text | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $fixture 'failed-cards.json') -Encoding utf8NoBOM
-        Write-Host "Observed $($cards.Count) cards. Evidence at $fixture"
+        Write-Host "Observed $($cards.Count) cards. Evidence at $verificationEvidence"
     }
     throw "Timed out waiting for $Label"
 }
@@ -339,7 +341,9 @@ function Assert-Order([string]$Expected, [string]$Label) {
     Write-Host "PASS. $Label."
 }
 
-$fixture = Join-Path $env:LOCALAPPDATA "Temp/opencode/wtm-drag-$([Guid]::NewGuid().ToString('N'))"
+$verificationEvidence = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../target/verification/smoke-dashboard-evidence-$([Guid]::NewGuid().ToString('N'))"))
+
+$fixture = New-VerificationDirectory 'smoke-dashboard' $verificationEvidence
 $fixtureHome = Join-Path $fixture 'home'
 New-Item -ItemType Directory -Path $fixtureHome | Out-Null
 $oldHome = $env:HOME
@@ -534,7 +538,7 @@ try {
         missing_git_error_visible = $true
         result = 'PASS'
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $fixture 'proof.json') -Encoding utf8NoBOM
-    Write-Host "PASS. Dashboard drag and launch-folder checks. Evidence at $fixture"
+    Write-Host "PASS. Dashboard drag and launch-folder checks. Evidence at $verificationEvidence"
 } finally {
     $env:HOME = $oldHome
     $env:USERPROFILE = $oldProfile
@@ -551,3 +555,5 @@ try {
     }
     if ($previousDpiContext -ne [IntPtr]::Zero) { [void][WtmDragProbe]::SetThreadDpiAwarenessContext($previousDpiContext) }
 }
+
+} finally { Remove-VerificationDirectories }

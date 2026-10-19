@@ -3,6 +3,8 @@ param(
     [string]$Binary = ""
 )
 
+. (Join-Path $PSScriptRoot 'verification-directories.ps1')
+try {
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 $PSNativeCommandUseErrorActionPreference = $false
@@ -202,7 +204,9 @@ try {
         $parentHash = (Get-FileHash -LiteralPath $parentConfig -Algorithm SHA256).Hash
     }
 
-    $artifact = Join-Path (Join-Path $env:LOCALAPPDATA 'Temp/opencode') ("wtm-smoke-" + [guid]::NewGuid().ToString("n"))
+    $verificationEvidence = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "../target/verification/smoke-cli-evidence-$([Guid]::NewGuid().ToString('N'))"))
+
+    $artifact = New-VerificationDirectory 'smoke-cli' $verificationEvidence
     $isolatedHome = Join-Path $artifact "home"
     $repoPath = Join-Path $artifact "repo"
     New-Item -ItemType Directory -Path $isolatedHome | Out-Null
@@ -244,6 +248,7 @@ try {
     $plain = Join-Path $artifact "plain"
     New-Item -ItemType Directory -Path $plain | Out-Null
     $plain = [System.IO.Path]::GetFullPath($plain)
+    Write-Text (Join-Path $plain '.git') 'invalid'
     $cleanListed = @(Invoke-Git -GitArgs @("status", "--porcelain") | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
     if ($cleanListed.Count -ne 0) {
         throw "fixture not clean: $($cleanListed -join ', ')"
@@ -257,8 +262,9 @@ try {
     Assert-Unregistered "remove"
     Assert-Result "duplicate-remove" (Invoke-Wtm remove $sub) 0 "Repository is not registered.`n" ""
     Assert-Unregistered "duplicate-remove"
-    Assert-Result "add-plain" (Invoke-Wtm add $plain) 1 "" "Error: fatal: not a git repository (or any of the parent directories): .git`n"
-    Assert-Unregistered "add-plain"
+    $invalid = Invoke-Wtm add $plain
+    if ($invalid.ExitCode -ne 1 -or $invalid.Stdout -ne '' -or $invalid.Stderr -notmatch 'invalid gitfile format') { throw 'Invalid repository was accepted' }
+    Assert-Unregistered "add-invalid"
 
     Write-Text $configPath '{broken'
     $malformed = Invoke-Wtm add $sub
@@ -287,7 +293,9 @@ try {
         Write-Output "ok"
     }
     if ($null -ne $artifact) {
-        Write-Output "artifact: $artifact"
+        Write-Output "artifact: $verificationEvidence"
     }
 }
 exit $code
+
+} finally { Remove-VerificationDirectories }
