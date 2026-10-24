@@ -19,8 +19,10 @@ Clone the repository, then install all three executables:
 ```powershell
 git clone https://github.com/konmik/worktree-monitor.git
 cd worktree-monitor
-cargo install --path crates/wtm --locked --bins
+cargo install --path crates/wtm --locked --bins --root "$env:LOCALAPPDATA\Programs\WorktreeMonitor"
 ```
+
+The executables are installed in `%LOCALAPPDATA%\Programs\WorktreeMonitor\bin`. Add that folder to your `PATH` or create command launchers in a folder already on your `PATH`.
 
 ## Use
 
