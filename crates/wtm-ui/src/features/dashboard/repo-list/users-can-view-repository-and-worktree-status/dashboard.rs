@@ -34,7 +34,7 @@ pub enum DisplayItem {
 }
 
 
-fn head_caption(head: &Head) -> String {
+pub(crate) fn head_caption(head: &Head) -> String {
     match head {
         Head::Branch(name) => name.clone(),
         _ => head.to_string(),
@@ -53,7 +53,11 @@ impl DisplayItem {
                 text
             }
             Self::Worktree { path, result } => match result {
-                Ok(stats) => format!("{}\n{}", head_caption(&stats.head), stats.counts),
+                Ok(stats) => {
+                    let indicator = crate::commit_indicators::indicator(stats.pending_commits)
+                        .map(|text| format!(" {text}")).unwrap_or_default();
+                    format!("{}{indicator}\n{}", head_caption(&stats.head), stats.counts)
+                }
                 Err(error) => format!("{}\nCounts unavailable · binaries unavailable\nERROR ({:?}): {}", path.display(), error.kind, error.message),
             },
             Self::PendingWorktree { path } => path.display().to_string(),

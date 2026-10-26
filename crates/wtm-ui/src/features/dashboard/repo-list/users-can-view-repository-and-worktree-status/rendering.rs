@@ -47,7 +47,8 @@ pub fn render_row(item: &DisplayItem, columns: usize, options: RowOptions) -> Re
         }
         DisplayItem::Worktree { path, result } => match result {
             Ok(stats) => {
-                name(lines.first().copied().unwrap_or(""), false, name_color);
+                rows.push(crate::commit_indicators::render_heading(&crate::dashboard::head_caption(&stats.head),
+                    stats.pending_commits, heading, options.refreshing, options.dragging, name_color));
                 rows.push(render_counts(&stats.counts, columns, options.dragging));
             }
             Err(error) => {

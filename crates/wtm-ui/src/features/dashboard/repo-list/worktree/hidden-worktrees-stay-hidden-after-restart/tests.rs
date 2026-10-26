@@ -131,7 +131,7 @@ fn hiding_the_only_failed_worktree_does_not_clear_error_health() {
     fixture.snapshot.repos.truncate(1);
     let repository = fixture.snapshot.repos[0].common_dir.clone();
     let trees = fixture.snapshot.repos[0].worktrees.as_mut().unwrap();
-    trees[1].result = Ok(WorktreeStats { head: Head::Branch("topic".into()), counts: Counts::default() });
+    trees[1].result = Ok(WorktreeStats { pending_commits: 0, head: Head::Branch("topic".into()), counts: Counts::default() });
     let hidden = trees[0].path.clone();
     let visible = trees[1].path.clone();
     let visibility = Visibility::persist_toggle(&fixture.path(), &repository, &hidden).unwrap();

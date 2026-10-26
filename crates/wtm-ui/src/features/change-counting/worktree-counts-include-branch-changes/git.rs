@@ -48,6 +48,7 @@ struct ScanIdentity {
     head: Head,
     commit: String,
     base_ref: Option<(&'static str, String)>,
+    remote_tips: Vec<String>,
 }
 
 fn scan_identity(tree: &Path, cancel: &Cancel) -> Result<ScanIdentity, Error> {
@@ -63,7 +64,8 @@ fn scan_identity(tree: &Path, cancel: &Cancel) -> Result<ScanIdentity, Error> {
             break;
         }
     }
-    Ok(ScanIdentity { head, commit, base_ref })
+    let remote_tips = crate::commit_indicators::remote_tips(tree, cancel)?;
+    Ok(ScanIdentity { head, commit, base_ref, remote_tips })
 }
 
 fn comparison_base(tree: &Path, identity: &ScanIdentity, cancel: &Cancel) -> Result<String, Error> {
@@ -86,11 +88,15 @@ pub(crate) fn scan_tree(tree: &Path, cancel: &Cancel) -> Result<WorktreeStats, E
     for _ in 0..2 {
         let identity = scan_identity(tree, cancel)?;
         let base = comparison_base(tree, &identity, cancel)?;
-        let stats = count_tree(tree, identity.head.clone(), &base, cancel)?;
+        let mut stats = count_tree(tree, identity.head.clone(), &base, cancel)?;
+        if !matches!(identity.head, Head::Unborn(_)) {
+            stats.pending_commits = crate::commit_indicators::pending(tree, &identity.commit,
+                identity.base_ref.as_ref().map(|(_, oid)| oid.as_str()), &identity.remote_tips, cancel)?;
+        }
         if scan_identity(tree, cancel)? == identity {
             return Ok(stats);
         }
     }
-    Err(Error::new(ErrorKind::ChangedDuringScan, "HEAD or comparison branch changed during the scan; retry on the next scan"))
+    Err(Error::new(ErrorKind::ChangedDuringScan, "HEAD or comparison references changed during the scan; retry on the next scan"))
 }
 

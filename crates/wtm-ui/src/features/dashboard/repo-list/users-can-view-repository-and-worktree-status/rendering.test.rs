@@ -64,7 +64,7 @@ fn narrow_errors_wrap_and_pending_rows_reserve_count_space() {
 fn dashboard_can_be_dumped_with_status_repository_branch_and_counts() {
     let view = DashboardView { health: Health::Live, items: vec![
         ViewItem { key: ItemKey::Repository("repo".into()), display: DisplayItem::Repository { name: "repo".into(), bare: false } },
-        ViewItem { key: ItemKey::Worktree("repo".into(), "main".into()), display: DisplayItem::Worktree { path: "main".into(), result: Ok(WorktreeStats { head: Head::Branch("main".into()), counts: Counts::default() }) } },
+        ViewItem { key: ItemKey::Worktree("repo".into(), "main".into()), display: DisplayItem::Worktree { path: "main".into(), result: Ok(WorktreeStats { pending_commits: 0, head: Head::Branch("main".into()), counts: Counts::default() }) } },
     ] };
     let buffer = render_dashboard(&view, Duration::ZERO, 20, 8, |_| Default::default());
     assert!(line(&buffer, 0).contains("idle"));

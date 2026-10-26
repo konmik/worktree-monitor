@@ -5,7 +5,7 @@ use wtm_ui::order::identity;
 use wtm_ui::{Counts, Error, ErrorKind, Head, LineCounts, RepoEntry, ScanTarget, Snapshot, WorktreeEntry, WorktreeStats};
 
 fn tree(path: &str, head: Head, additions: u64, deletions: u64, binaries: u64) -> WorktreeEntry {
-    WorktreeEntry { path: path.into(), result: Ok(WorktreeStats { head,
+    WorktreeEntry { path: path.into(), result: Ok(WorktreeStats { pending_commits: 0, head,
         counts: Counts { source: LineCounts { additions, deletions }, binaries, ..Counts::default() } }) }
 }
 

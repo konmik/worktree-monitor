@@ -54,6 +54,7 @@ pub enum Head {
 pub struct WorktreeStats {
     pub head: Head,
     pub counts: Counts,
+    pub pending_commits: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

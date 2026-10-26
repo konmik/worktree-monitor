@@ -107,6 +107,8 @@ fn settled_polling_time(monitor: &wtm_ui::Monitor) -> Duration {
 
 include!("../../wtm-ui/src/features/change-counting/worktree-counts-include-branch-changes/behavior.test.rs");
 
+include!("../../wtm-ui/src/features/dashboard/repo-list/worktree/indicators/worktrees-show-unpushed-or-unmerged-commit-counts/behavior.test.rs");
+
 include!("../../wtm-ui/src/features/live-monitoring/ignored-directories-do-not-cause-background-scans/behavior.test.rs");
 
 include!("../../wtm-ui/src/features/live-monitoring/scan-passes-are-at-least-ten-seconds-apart/behavior.test.rs");

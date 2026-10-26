@@ -11,5 +11,5 @@ pub(super) fn count_tree(tree: &Path, head: Head, base: &str, cancel: &Cancel) -
     command.push("--".into());
     let mut counts = numstat(&process::checked(Some(tree), &command, cancel)?)?;
     counts.add(untracked::count(tree, cancel)?)?;
-    Ok(WorktreeStats { head, counts })
+    Ok(WorktreeStats { head, counts, pending_commits: 0 })
 }

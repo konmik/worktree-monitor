@@ -1,0 +1,5 @@
+- Worktrees show a right-aligned `[^N]` indicator for commits that are unpushed or unmerged.
+- Each commit contributes once, including commits that are both unpushed and unmerged.
+- Unpushed commits are absent from every locally known remote branch. Unmerged commits are absent from local `main`, or `master` when `main` is absent.
+- The indicator is hidden when the count is zero or its complete text cannot fit.
+- The indicator reserves room before the branch name is shortened and preserves refresh markers and worktree controls.

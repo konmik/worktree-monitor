@@ -48,6 +48,9 @@ mod optional_count_indicators;
 #[path = "features/dashboard/repo-list/worktree/indicators/nonzero-line-change-indicators-stay-fully-opaque/opacity.rs"]
 mod count_opacity;
 
+#[path = "features/dashboard/repo-list/worktree/indicators/worktrees-show-unpushed-or-unmerged-commit-counts/commits.rs"]
+mod commit_indicators;
+
 #[path = "features/dashboard/repo-list/users-can-view-repository-and-worktree-status/rendering.rs"]
 pub mod rendering;
 

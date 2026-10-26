@@ -11,7 +11,7 @@ fn target_order_is_stable_across_pending_later_completions_and_errors() {
     let mut successful = fixture.snapshot.clone();
     for repo in &mut successful.repos {
         for tree in repo.worktrees.as_mut().unwrap() {
-            tree.result = Ok(WorktreeStats { head: Head::Branch("main".into()), counts: Default::default() });
+            tree.result = Ok(WorktreeStats { pending_commits: 0, head: Head::Branch("main".into()), counts: Default::default() });
         }
     }
     for order in [Order::default(), repositories, worktrees, saved] {

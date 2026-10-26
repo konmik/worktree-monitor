@@ -3,6 +3,28 @@ use super::super::opaque_indicators::IndicatorBitmap;
 use windows_sys::Win32::Graphics::Gdi::{GetDC, ReleaseDC, GdiFlush};
 
 #[test]
+fn presenter_draws_commit_indicators_at_the_right_of_worktrees() {
+    unsafe {
+        let screen = GetDC(null_mut());
+        let item = wtm_ui::dashboard::DisplayItem::Worktree { path: "repo".into(), result: Ok(wtm_ui::WorktreeStats {
+            head: wtm_ui::Head::Branch("feature".into()), counts: Default::default(), pending_commits: 3,
+        }) };
+        let row = wtm_ui::rendering::render_row(&item, 20, Default::default());
+        for dpi in [96, 144, 192] {
+            let resources = Resources::new(dpi).unwrap();
+            let actual = test_support::pixels(&row, &resources, screen, TextLayer::Stressed);
+            let mut expected = RenderBuffer::new(20, 2, wtm_ui::rendering::MUTED);
+            expected.write_styled(16, 0, "[^3]", wtm_ui::rendering::TEAL,
+                wtm_ui::render_buffer::CellFlags { stressed: true, ..Default::default() });
+            let expected = test_support::pixels(&expected, &resources, screen, TextLayer::Stressed);
+            assert!(actual.iter().any(|pixel| *pixel != 0));
+            assert_eq!(actual, expected, "{dpi} DPI");
+        }
+        ReleaseDC(null_mut(), screen);
+    }
+}
+
+#[test]
 fn presenter_draws_complete_graphemes_across_their_reserved_columns() {
     unsafe {
         let screen = GetDC(null_mut());
