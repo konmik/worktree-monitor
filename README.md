@@ -19,10 +19,10 @@ Clone the repository, then install all three executables:
 ```powershell
 git clone https://github.com/konmik/worktree-monitor.git
 cd worktree-monitor
-cargo install --path crates/wtm --locked --bins --root "$env:LOCALAPPDATA\Programs\WorktreeMonitor"
+powershell -NoProfile -File scripts/deploy.ps1
 ```
 
-The executables are installed in `%LOCALAPPDATA%\Programs\WorktreeMonitor\bin`. Add that folder to your `PATH` or create command launchers in a folder already on your `PATH`.
+The deploy command builds and installs outside the calling app's process context. It installs the executables in `%LOCALAPPDATA%\Programs\WorktreeMonitor\bin` and creates executable aliases in `%USERPROFILE%\bin`. Add `%USERPROFILE%\bin` to your `PATH`. A running dashboard restarts after deployment.
 
 ## Use
 
