@@ -25,6 +25,10 @@ fn count(tree: &Path, commit: &str, excluded: impl Iterator<Item = impl AsRef<st
 pub(crate) fn pending(tree: &Path, commit: &str, base: Option<&str>, remotes: &[String], cancel: &Cancel) -> Result<u64, Error> {
     let unpushed = count(tree, commit, remotes.iter(), cancel)?;
     let Some(base) = base else { return Ok(unpushed); };
+    let ancestry = process::run(Some(tree), &args(&["merge-base", commit, base]), cancel)?;
+    let related = ancestry.code == 0;
+    process::success(ancestry, &[0, 1])?;
+    if !related { return Ok(unpushed); }
     let unmerged = count(tree, commit, std::iter::once(base), cancel)?;
     let overlap = count(tree, commit, remotes.iter().map(String::as_str).chain(std::iter::once(base)), cancel)?;
     Ok(unpushed + (unmerged - overlap))

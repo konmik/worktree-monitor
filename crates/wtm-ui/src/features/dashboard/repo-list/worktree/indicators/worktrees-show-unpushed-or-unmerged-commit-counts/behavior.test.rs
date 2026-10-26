@@ -1,4 +1,30 @@
 #[test]
+fn pending_commits_exclude_published_orphan_history_from_unmerged_counts() {
+    for format in ["sha1", "sha256"] {
+        for base in ["main", "master"] {
+            let fixture = Fixture::new(format);
+            fixture.write("base.txt", "base\n");
+            fixture.commit();
+            if base == "master" { git(&fixture.repo, &["branch", "-m", "master"]); }
+            git(&fixture.repo, &["checkout", "--quiet", "--orphan", "orphan"]);
+            fixture.write("base.txt", "orphan\n");
+            fixture.commit();
+            git(&fixture.repo, &["update-ref", "refs/remotes/origin/orphan", "HEAD"]);
+            fixture.register(&fixture.repo).unwrap();
+            assert_eq!(fixture.stats().pending_commits, 0, "published orphan against {base} in {format}");
+            git(&fixture.repo, &["checkout", "--quiet", "-b", "orphan-descendant"]);
+            fixture.write("child.txt", "child\n");
+            fixture.commit();
+            assert_eq!(fixture.stats().pending_commits, 1);
+            git(&fixture.repo, &["checkout", "--quiet", "--detach"]);
+            assert_eq!(fixture.stats().pending_commits, 1);
+            git(&fixture.repo, &["update-ref", "refs/remotes/origin/orphan-descendant", "HEAD"]);
+            assert_eq!(fixture.stats().pending_commits, 0);
+        }
+    }
+}
+
+#[test]
 fn pending_commits_count_unpushed_or_unmerged_once() {
     for format in ["sha1", "sha256"] {
         let fixture = Fixture::new(format);
