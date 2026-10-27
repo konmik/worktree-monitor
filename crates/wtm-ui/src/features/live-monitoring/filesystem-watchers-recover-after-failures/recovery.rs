@@ -49,12 +49,12 @@ impl WatchBoundary {
         full
     }
 
-    pub(super) fn reconcile_status(&mut self, failed: bool, planning_failed: bool,
+    pub(super) fn reconcile_status(&mut self, failed: bool,
         desired: &HashMap<PathBuf, Registration>, now: Instant, mut full: bool) -> WatchStatus {
         if failed { full = true; }
         self.force_rebuild = failed;
         self.degraded = failed || self.watcher.is_none() || self.roots != *desired;
-        if self.degraded || planning_failed {
+        if self.degraded {
             self.retry_due = Some(now + WATCH_RETRY);
         } else {
             self.retry_due = None;

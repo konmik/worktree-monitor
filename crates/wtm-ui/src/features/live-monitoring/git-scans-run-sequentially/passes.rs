@@ -1,5 +1,6 @@
-use super::Coordinator;
+use super::{Coordinator, PendingScan, WorktreeKey};
 use crate::git;
+use std::collections::HashSet;
 use std::time::Instant;
 
 impl Coordinator {
@@ -21,9 +22,13 @@ impl Coordinator {
         }
         self.reconcile_watches();
         self.receive_watch();
+        let ready: HashSet<_> = self.worktrees.iter().filter_map(|(key, state)|
+            state.last.is_some().then_some(key.clone())).collect();
+        worked |= self.rebuild_ready_plans(&ready);
+        self.receive_watch();
         let changed = std::mem::take(&mut self.passes.changed);
         let keys: Vec<_> = self.repo_order.iter().flat_map(|common| self.repos[common].worktrees.iter())
-            .filter(|key| changed.contains(*key)).cloned().collect();
+            .filter(|key| changed.contains_key(*key)).cloned().collect();
         for key in keys {
             if self.cancel.is_cancelled() { return; }
             if !self.repos.get(&key.common).is_some_and(|repo| matches!(repo.discovered, Some(Ok(_)))) { continue; }
@@ -31,8 +36,16 @@ impl Coordinator {
             let path = state.path.clone();
             worked = true;
             let start = Instant::now();
+            let relevant = match &changed[&key] {
+                PendingScan::Forced => Ok(true),
+                PendingScan::Paths(paths) => git::relevant_watch_paths(&path, paths, &self.cancel),
+            };
+            if matches!(relevant, Ok(false)) {
+                self.polling_time.record(start, Instant::now());
+                continue;
+            }
             self.start_scan(&key.common, Some(&key));
-            let result = git::scan_tree(&path, &self.cancel);
+            let result = relevant.and_then(|_| git::scan_tree(&path, &self.cancel));
             self.polling_time.record(start, Instant::now());
             self.worktrees.get_mut(&key).unwrap().last = Some(result);
             self.finish_scan();
@@ -40,6 +53,20 @@ impl Coordinator {
             self.receive_watch();
         }
         if !self.cancel.is_cancelled() { self.reconcile_watches(); }
+        let newly_ready: HashSet<_> = self.worktrees.iter().filter_map(|(key, state)|
+            (state.last.is_some() && !ready.contains(key)).then_some(key.clone())).collect();
+        worked |= self.rebuild_ready_plans(&newly_ready);
         if worked { self.passes.finish(Instant::now()); }
+    }
+
+    fn rebuild_ready_plans(&mut self, ready: &HashSet<WorktreeKey>) -> bool {
+        if self.cancel.is_cancelled() || ready.is_empty() || !self.watch.has_pending_plans() {
+            return false;
+        }
+        let start = Instant::now();
+        let status = self.watch.rebuild_plans(&self.watch_targets(), start, ready);
+        self.polling_time.record(start, Instant::now());
+        self.recover_watch_status(status);
+        true
     }
 }

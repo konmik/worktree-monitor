@@ -41,7 +41,7 @@ fn fast_completed_activity_is_retained_and_unchanged_scans_are_isolated() {
     let repository = coordinator.repos[&common].activity.clone();
     coordinator.discoveries.clear();
     coordinator.passes.changed.clear();
-    coordinator.passes.changed.insert(key.clone());
+    coordinator.passes.changed.insert(key.clone(), PendingScan::Forced);
     coordinator.scan_pass();
     assert!(Arc::ptr_eq(&snapshot, &coordinator.snapshot));
     assert!(coordinator.worktrees[&key].activity.as_ref().unwrap().generation > previous.generation);

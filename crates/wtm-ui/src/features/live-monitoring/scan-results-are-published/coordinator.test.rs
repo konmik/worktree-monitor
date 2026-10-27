@@ -21,11 +21,11 @@ fn startup_publishes_counts_before_detailed_plans_and_retains_edits_during_plann
     let common = coordinator.repo_order[0].clone();
     let key = coordinator.repos[&common].worktrees[0].clone();
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !coordinator.passes.changed.contains(&key) && Instant::now() < deadline {
+    while !coordinator.passes.changed.contains_key(&key) && Instant::now() < deadline {
         coordinator.receive_watch();
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert!(coordinator.passes.changed.contains(&key));
+    assert!(coordinator.passes.changed.contains_key(&key));
     coordinator.scan_pass();
     assert_eq!(coordinator.snapshot.repos[0].worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts.source.additions, 1);
 }

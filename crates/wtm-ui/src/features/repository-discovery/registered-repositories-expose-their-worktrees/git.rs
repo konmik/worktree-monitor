@@ -99,7 +99,7 @@ mod monitoring;
 #[cfg(test)]
 pub(crate) use counting::{category, numstat, Category};
 pub(crate) use counting::scan_tree;
-pub(crate) use monitoring::{global_source_candidates, global_sources, watch_paths, WatchPaths};
+pub(crate) use monitoring::{global_source_candidates, global_sources, relevant_watch_paths, watch_paths, WatchPaths};
 
 #[path = "../../snapshot-reporting/snapshots-show-counts-and-errors/scan.rs"]
 mod snapshot;

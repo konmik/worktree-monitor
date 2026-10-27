@@ -1,2 +1,3 @@
 - Monitoring work during the preceding minute is measured.
 - Time spent waiting for changes or the next scan pass is excluded.
+- Watch-plan Git reads contribute to the reported monitoring work time.

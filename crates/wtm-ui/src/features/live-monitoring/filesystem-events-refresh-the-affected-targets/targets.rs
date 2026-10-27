@@ -20,13 +20,8 @@ impl Coordinator {
     pub(super) fn reconcile_watches(&mut self) {
         let now = Instant::now();
         if !self.watch_dirty && !self.watch.next_retry().is_some_and(|retry| now >= retry) { return; }
-        let deferred = self.worktrees.values().any(|state| state.last.is_none());
-        let status = if deferred {
-            self.watch.prepare(&self.watch_targets(), now)
-        } else {
-            self.watch.reconcile(&self.watch_targets(), now)
-        };
-        self.watch_dirty = deferred;
+        let status = self.watch.reconcile(&self.watch_targets(), now);
+        self.watch_dirty = false;
         self.recover_watch_status(status);
     }
 }

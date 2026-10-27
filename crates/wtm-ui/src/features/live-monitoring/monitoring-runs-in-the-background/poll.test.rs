@@ -39,3 +39,6 @@ mod monitoring_work_time_is_reported_for_the_last_minute;
 
 #[path = "../reading-passes-start-only-above-97-percent-idle/coordinator.test.rs"]
 mod reading_passes_start_only_above_97_percent_idle;
+
+#[path = "../ignored-directories-do-not-cause-background-scans/coordinator.test.rs"]
+mod ignored_directories_do_not_cause_background_scans;

@@ -1,4 +1,4 @@
-use super::{Coordinator, WorktreeKey, WorktreeState};
+use super::{Coordinator, PendingScan, WorktreeKey, WorktreeState};
 use crate::{git, Error};
 use std::collections::HashSet;
 use std::path::Path;
@@ -19,19 +19,19 @@ impl Coordinator {
                     if let Some(error) = &tree.error {
                         state.last = Some(Err(error.clone()));
                     } else if recovered || state.last.as_ref().is_some_and(Result::is_err) {
-                        self.passes.changed.insert(key);
+                        self.passes.changed.insert(key, PendingScan::Forced);
                     }
                 } else {
                     self.worktrees.insert(key.clone(), WorktreeState {
                         path: tree.path.clone(), last: tree.error.clone().map(Err),
                         activity: None,
                     });
-                    if tree.error.is_none() { self.passes.changed.insert(key); }
+                    if tree.error.is_none() { self.passes.changed.insert(key, PendingScan::Forced); }
                 }
             }
             let retained: HashSet<_> = keys.iter().cloned().collect();
             self.worktrees.retain(|key, _| key.common != common || retained.contains(key));
-            self.passes.changed.retain(|key| key.common != common || retained.contains(key));
+            self.passes.changed.retain(|key, _| key.common != common || retained.contains(key));
             repo.worktrees = keys;
             if let Some(tree) = discovered.trees.iter().find(|tree| tree.error.is_none()) {
                 if let Ok(sources) = git::global_sources(&tree.path, &self.cancel) { repo.sources = sources; }

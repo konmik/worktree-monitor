@@ -27,7 +27,7 @@ impl Coordinator {
         }
         self.repos.retain(|key, _| seen.contains(key));
         self.worktrees.retain(|key, _| seen.contains(&key.common));
-        self.passes.changed.retain(|key| seen.contains(&key.common));
+        self.passes.changed.retain(|key, _| seen.contains(&key.common));
         self.discoveries.retain(|key| seen.contains(key));
         self.repo_order = desired.iter().map(|(key, _)| key.clone()).collect();
         for (key, common_dir) in desired {

@@ -3,3 +3,4 @@
 - Repeated deferrals retain queued changes, repository discoveries, and launch discovery.
 - File events do not bypass or extend the five-second delay.
 - A completed reading pass retains the normal ten-second delay before another pass can start.
+- Watch-plan Git reads use the same scheduled pass, idle threshold, and delay as count scans.

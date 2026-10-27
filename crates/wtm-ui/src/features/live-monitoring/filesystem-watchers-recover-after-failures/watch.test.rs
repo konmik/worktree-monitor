@@ -21,10 +21,10 @@ fn replacing_native_watch_mode_requests_full_recovery() {
     boundary.roots.insert(root.clone(), Registration {
         mode: RecursiveMode::Recursive, targets: vec![Target::Config(config.clone())],
     });
-    let status = boundary.reconcile(&WatchTargets {
+    let status = boundary.rebuild_plans(&WatchTargets {
         config, launch: None, repositories: Vec::new(), worktrees: Vec::new(),
         global_excludes: Vec::new(),
-    }, Instant::now());
+    }, Instant::now(), &HashSet::new());
     assert!(status.full);
     assert!(!status.degraded);
     assert_eq!(boundary.roots[&root].mode, RecursiveMode::NonRecursive);
@@ -35,20 +35,20 @@ fn forced_rebuild_reports_full_reconcile() {
     let mut boundary = WatchBoundary::new(Cancel::new());
     boundary.force_rebuild = true;
     let now = Instant::now();
-    let status = boundary.reconcile(&WatchTargets {
+    let status = boundary.rebuild_plans(&WatchTargets {
         config: PathBuf::from("config.json"),
         launch: None,
         repositories: Vec::new(),
         worktrees: Vec::new(),
         global_excludes: Vec::new(),
-    }, now);
+    }, now, &HashSet::new());
     assert!(status.full);
     assert!(!status.degraded);
     assert_eq!(boundary.next_retry(), None);
 }
 
 #[test]
-fn recovered_plans_clear_the_retry_without_changing_subscriptions() {
+fn recovered_plans_clear_pending_work_without_changing_subscriptions() {
     let directory = tempfile::tempdir().unwrap();
     let tree = directory.path().join("tree");
     std::fs::create_dir(&tree).unwrap();
@@ -60,17 +60,19 @@ fn recovered_plans_clear_the_retry_without_changing_subscriptions() {
     };
     let mut boundary = WatchBoundary::new(Cancel::new());
     let now = Instant::now();
-    assert!(!boundary.reconcile(&targets, now).degraded);
-    let retry = boundary.next_retry().unwrap();
-    assert_eq!(retry, now + std::time::Duration::from_secs(5));
+    assert!(!boundary.rebuild_plans(&targets, now, &HashSet::from([key.clone()])).degraded);
+    assert!(boundary.has_pending_plans());
+    assert_eq!(boundary.next_retry(), None);
+    let retry = now + std::time::Duration::from_secs(10);
     #[cfg(windows)]
     let subscriptions = boundary.roots.clone();
     crate::process::checked(Some(&tree), &crate::process::args(&["init", "--quiet"]), &Cancel::new()).unwrap();
-    assert!(!boundary.reconcile(&targets, retry).degraded);
+    assert!(!boundary.rebuild_plans(&targets, retry, &HashSet::from([key.clone()])).degraded);
+    assert!(!boundary.has_pending_plans());
     #[cfg(windows)]
     assert_eq!(boundary.roots, subscriptions);
     assert_eq!(boundary.next_retry(), None);
-    assert!(!boundary.reconcile(&targets, retry + std::time::Duration::from_secs(1)).degraded);
+    assert!(!boundary.rebuild_plans(&targets, retry + std::time::Duration::from_secs(1), &HashSet::from([key.clone()])).degraded);
     assert_eq!(boundary.next_retry(), None);
     boundary.sender.send(Ok(Event::new(EventKind::Modify(ModifyKind::Any))
         .add_path(tree.join("edited.txt")))).unwrap();
@@ -78,7 +80,7 @@ fn recovered_plans_clear_the_retry_without_changing_subscriptions() {
 }
 
 #[test]
-fn failed_plans_keep_a_future_retry_while_subscriptions_are_healthy() {
+fn failed_plans_stay_pending_without_native_repair_retries() {
     let directory = tempfile::tempdir().unwrap();
     let tree = directory.path().join("tree");
     std::fs::create_dir(&tree).unwrap();
@@ -90,10 +92,14 @@ fn failed_plans_keep_a_future_retry_while_subscriptions_are_healthy() {
     };
     let mut boundary = WatchBoundary::new(Cancel::new());
     let now = Instant::now();
-    assert!(!boundary.reconcile(&targets, now).degraded);
-    let retry = boundary.next_retry().unwrap();
+    assert!(!boundary.rebuild_plans(&targets, now, &HashSet::from([key.clone()])).degraded);
+    assert!(boundary.has_pending_plans());
+    assert_eq!(boundary.next_retry(), None);
+    let retry = now + std::time::Duration::from_secs(5);
+    boundary.before_plan = Some(Box::new(|| panic!("native reconciliation retried Git planning")));
     assert!(!boundary.reconcile(&targets, retry).degraded);
-    assert_eq!(boundary.next_retry(), Some(retry + std::time::Duration::from_secs(5)));
+    assert!(boundary.has_pending_plans());
+    assert_eq!(boundary.next_retry(), None);
     boundary.sender.send(Ok(Event::new(EventKind::Modify(ModifyKind::Any))
         .add_path(tree.join("edited.txt")))).unwrap();
     assert!(boundary.drain(retry).worktrees.contains(&key));

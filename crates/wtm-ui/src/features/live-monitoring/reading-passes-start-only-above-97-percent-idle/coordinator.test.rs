@@ -30,13 +30,13 @@ fn busy_reading_passes_recheck_every_five_seconds_without_losing_work() {
     coordinator.launch_changed = true;
     let common = &coordinator.repo_order[0];
     let key = WorktreeKey::new(common, &coordinator.repos[common].path);
-    coordinator.passes.changed.insert(key.clone());
+    coordinator.passes.changed.insert(key.clone(), PendingScan::Forced);
     let discoveries = coordinator.discoveries.clone();
     for second in [0, 5, 10] {
         coordinator.try_scan_pass(now + Duration::from_secs(second));
         assert_eq!(coordinator.passes.next, Some(now + Duration::from_secs(second + 5)));
         assert_eq!(coordinator.discoveries, discoveries);
-        assert!(coordinator.passes.changed.contains(&key));
+        assert!(coordinator.passes.changed.contains_key(&key));
         assert!(coordinator.launch_changed);
         assert_eq!(coordinator.scan_generation, 0);
         coordinator.try_scan_pass(now + Duration::from_secs(second + 1));
@@ -98,4 +98,58 @@ fn deferred_reading_passes_remain_cancellable() {
     cancel.cancel();
     receiver.recv_timeout(Duration::from_secs(1)).unwrap();
     worker.join().unwrap();
+}
+
+#[test]
+fn watch_plan_reads_wait_for_the_scheduled_pass() {
+    let (directory, mut coordinator) = scan_fixture(1);
+    coordinator.scan_pass();
+    coordinator.receive_watch();
+    coordinator.passes.changed.clear();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let allowed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let plan_calls = calls.clone();
+    let plan_allowed = allowed.clone();
+    coordinator.watch.before_plan = Some(Box::new(move || {
+        assert!(plan_allowed.load(std::sync::atomic::Ordering::SeqCst), "watch planning bypassed the reading pass");
+        plan_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(30));
+    }));
+    std::fs::create_dir(directory.path().join("repo-0/new-directory")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while coordinator.passes.changed.is_empty() && Instant::now() < deadline {
+        coordinator.receive_watch();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!coordinator.passes.changed.is_empty());
+    coordinator.reconcile_watches();
+    coordinator.try_scan_pass(Instant::now());
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    let now = Instant::now();
+    coordinator.passes.changed.clear();
+    coordinator.polling_time.record(now - Duration::from_secs(2), now);
+    coordinator.passes.next = Some(now);
+    coordinator.try_scan_pass(now);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(coordinator.passes.next, Some(now + Duration::from_secs(5)));
+    allowed.store(true, std::sync::atomic::Ordering::SeqCst);
+    coordinator.try_scan_pass(now + Duration::from_secs(61));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(coordinator.polling_time.total(Instant::now()) >= Duration::from_millis(30));
+    assert!(coordinator.passes.next.unwrap() >= Instant::now() + Duration::from_secs(9));
+}
+
+#[test]
+fn native_watch_repair_does_not_read_git_while_idle_is_low() {
+    let (_directory, mut coordinator) = scan_fixture(1);
+    coordinator.scan_pass();
+    coordinator.watch = watch::WatchBoundary::new(coordinator.cancel.clone());
+    coordinator.watch.before_plan = Some(Box::new(|| panic!("native watcher repair read Git")));
+    coordinator.watch_dirty = true;
+    let now = Instant::now();
+    coordinator.polling_time.record(now - Duration::from_secs(2), now);
+    coordinator.reconcile_watches();
+    coordinator.passes.next = Some(now);
+    coordinator.try_scan_pass(now);
+    assert_eq!(coordinator.passes.next, Some(now + Duration::from_secs(5)));
 }

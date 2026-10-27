@@ -1,4 +1,4 @@
-use super::{absolute, normalize, topology_event, rule_file, WorktreeKey, WatchBoundary, WatchTargets, WatchBatch, PlanPhase, plan_for, fallback_plan, WorktreeWatchPlan};
+use super::{absolute, normalize, topology_event, rule_file, WorktreeKey, WatchBoundary, WatchTargets, WatchBatch, plan_for, fallback_plan, WorktreeWatchPlan};
 use crate::git;
 use notify::{Event, EventKind};
 use std::collections::HashSet;
@@ -55,12 +55,13 @@ fn ignored_by_plan(path: &Path, kind: &EventKind, worktree: &WorktreeEventPolicy
 }
 
 impl WatchBoundary {
-    pub(super) fn refresh_plans(&mut self, targets: &WatchTargets) {
+    pub(super) fn refresh_plans(&mut self, targets: &WatchTargets, eligible: &HashSet<WorktreeKey>) {
         let desired: HashSet<_> = targets.worktrees.iter().map(|(key, _)| key.clone()).collect();
         self.plans.retain(|key, _| desired.contains(key));
         self.plan_dirty.retain(|key| desired.contains(key));
         self.plan_errors.retain(|key| desired.contains(key));
         for (key, path) in &targets.worktrees {
+            if !eligible.contains(key) { continue; }
             if self.plans.contains_key(key) && !self.plan_dirty.contains(key) && !self.plan_errors.contains(key) { continue; }
             self.refresh_plan(key, path);
         }
@@ -83,14 +84,6 @@ impl WatchBoundary {
         self.plan_dirty.remove(key);
     }
 
-    pub(super) fn refresh_dirty_plans(&mut self) {
-        if self.plan_phase == PlanPhase::Deferred { return; }
-        let dirty: Vec<_> = self.plan_dirty.iter().cloned().collect();
-        if dirty.is_empty() { return; }
-        for key in dirty { self.refresh_plan(&key, &key.path); }
-        self.publish_plan_policy();
-    }
-
     pub(super) fn publish_policy(&self, targets: &WatchTargets) {
         let mut worktrees = Vec::new();
         for (key, path) in &targets.worktrees {
@@ -109,16 +102,6 @@ impl WatchBoundary {
                 key: key.clone(), root: normalize(&absolute(path)), plan: plan.clone(), protected,
             });
         }
-        self.replace_policy(EventPolicy { worktrees });
-    }
-
-    pub(super) fn publish_plan_policy(&self) {
-        let current = self.event_policy.read().map(|policy| policy.as_ref().clone()).unwrap_or_default();
-        let worktrees = current.worktrees.into_iter().filter_map(|mut worktree| {
-            let plan = self.plans.get(&worktree.key)?.clone();
-            worktree.plan = plan;
-            Some(worktree)
-        }).collect();
         self.replace_policy(EventPolicy { worktrees });
     }
 

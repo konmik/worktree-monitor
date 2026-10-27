@@ -25,6 +25,9 @@ mod publication;
 #[path = "../scan-passes-are-at-least-ten-seconds-apart/schedule.rs"]
 mod schedule;
 use schedule::ScanPasses;
+#[path = "../ignored-directories-do-not-cause-background-scans/pending.rs"]
+mod pending;
+use pending::PendingScan;
 #[path = "../git-scans-run-sequentially/passes.rs"]
 mod passes;
 #[path = "../reading-passes-start-only-above-97-percent-idle/gate.rs"]
@@ -194,6 +197,7 @@ impl Coordinator {
 
     fn pending(&self) -> bool {
         self.launch_changed || !self.discoveries.is_empty() || !self.passes.changed.is_empty()
+            || self.watch.has_pending_plans()
     }
 
 }

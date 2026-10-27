@@ -1,12 +1,12 @@
-use super::WorktreeKey;
-use std::collections::HashSet;
+use super::{PendingScan, WorktreeKey};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 pub(super) const PASS_DELAY: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 pub(super) struct ScanPasses {
-    pub(super) changed: HashSet<WorktreeKey>,
+    pub(super) changed: HashMap<WorktreeKey, PendingScan>,
     pub(super) next: Option<Instant>,
 }
 

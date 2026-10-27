@@ -17,7 +17,7 @@ if ($Worker) {
         Get-Content -LiteralPath $buildErrors | Add-Content -LiteralPath $log
         if ($build.ExitCode -ne 0) { throw "Build failed. See $log" }
 
-        $destination = Join-Path $env:LOCALAPPDATA 'Programs\WorktreeMonitor\bin'
+        $destination = Join-Path $env:USERPROFILE '.cargo\bin'
         $aliases = Join-Path $env:USERPROFILE 'bin'
         $running = @(Get-Process -Name $names -ErrorAction SilentlyContinue)
         $restartGui = @($running | Where-Object ProcessName -eq 'wtm-gui').Count -gt 0

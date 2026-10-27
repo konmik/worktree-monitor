@@ -48,7 +48,7 @@ fn deferred_plans_keep_nested_startup_events_without_git_planning() {
     };
     let mut boundary = WatchBoundary::new(Cancel::new());
     boundary.before_plan = Some(Box::new(|| panic!("detailed planning ran before initial counts")));
-    assert!(!boundary.prepare(&targets, Instant::now()).degraded);
+    assert!(!boundary.reconcile(&targets, Instant::now()).degraded);
     let changed = root.join("nested/deep/startup.txt");
     std::fs::write(&changed, b"startup\n").unwrap();
     boundary.sender.send(Ok(Event::new(EventKind::Create(CreateKind::File))
@@ -73,7 +73,7 @@ fn existing_repository_and_worktree_use_narrow_roots() {
         config: directory.path().join("config.json"),
         launch: None,
         repositories: vec![common.clone()],
-        worktrees: vec![(key, repo.clone())],
+        worktrees: vec![(key.clone(), repo.clone())],
         global_excludes: vec![common.join("config")],
     });
     assert_eq!(roots[&normalize(directory.path())].mode, RecursiveMode::NonRecursive);
@@ -129,13 +129,13 @@ fn windows_merges_nested_registrations_onto_the_worktree_root() {
     }
     let key = WorktreeKey::new(&common, &repo);
     let mut boundary = WatchBoundary::new(Cancel::new());
-    let status = boundary.reconcile(&WatchTargets {
+    let status = boundary.rebuild_plans(&WatchTargets {
         config: directory.path().join("config.json"),
         launch: None,
         repositories: vec![common.clone()],
-        worktrees: vec![(key, repo.clone())],
+        worktrees: vec![(key.clone(), repo.clone())],
         global_excludes: Vec::new(),
-    }, Instant::now());
+    }, Instant::now(), &HashSet::from([key.clone()]));
     assert!(!status.degraded);
     assert_eq!(boundary.roots[&normalize(&repo)].mode, RecursiveMode::Recursive);
     assert!(!boundary.roots.contains_key(&normalize(&common)));
@@ -158,13 +158,13 @@ fn windows_exact_worktree_registration_allows_replacement() {
     }
     let key = WorktreeKey::new(&common, &repo);
     let mut boundary = WatchBoundary::new(Cancel::new());
-    let status = boundary.reconcile(&WatchTargets {
+    let status = boundary.rebuild_plans(&WatchTargets {
         config: directory.path().join("config.json"),
         launch: None,
         repositories: vec![common],
-        worktrees: vec![(key, repo.clone())],
+        worktrees: vec![(key.clone(), repo.clone())],
         global_excludes: Vec::new(),
-    }, Instant::now());
+    }, Instant::now(), &HashSet::from([key.clone()]));
     assert!(!status.degraded);
     boundary.watcher = None;
     let moved = directory.path().join("moved");

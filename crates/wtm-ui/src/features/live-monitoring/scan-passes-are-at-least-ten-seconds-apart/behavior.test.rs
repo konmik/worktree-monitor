@@ -26,12 +26,15 @@ fn continuous_edits_do_not_scan_immediately_or_postpone_scheduled_updates() {
     wait_for(&monitor, |update| update.snapshot.repos.len() == 1
         && update.snapshot.repos[0].worktrees.as_ref().is_ok_and(|trees|
             trees[0].result.as_ref().is_ok_and(|stats| stats.counts == Counts::default())));
-    let before = monitor.latest().unwrap().polling_time_last_minute;
+    let before: Vec<_> = monitor.latest().unwrap().scan_activities.iter()
+        .map(|activity| activity.generation).collect();
     for _ in 0..10 {
         fixture.write("tracked.txt", "before\nafter\n");
         thread::sleep(Duration::from_millis(100));
     }
-    assert_eq!(monitor.latest().unwrap().polling_time_last_minute, before);
+    let after: Vec<_> = monitor.latest().unwrap().scan_activities.iter()
+        .map(|activity| activity.generation).collect();
+    assert_eq!(after, before);
     let deadline = Instant::now() + MONITOR_UPDATE_TIMEOUT;
     loop {
         fixture.write("tracked.txt", "before\nafter\n");

@@ -49,7 +49,7 @@ fn discovery_schedules_new_worktrees_once_without_file_events() {
     let new_path = directory.path().join("new-worktree");
     discovered.trees.push(git::DiscoveredTree { path: new_path.clone(), error: None });
     coordinator.apply_discovery(&common, Ok(discovered.clone()));
-    assert_eq!(coordinator.passes.changed, HashSet::from([WorktreeKey::new(&common, &new_path)]));
+    assert_eq!(coordinator.passes.changed, HashMap::from([(WorktreeKey::new(&common, &new_path), PendingScan::Forced)]));
     coordinator.passes.changed.clear();
     coordinator.apply_discovery(&common, Ok(discovered));
     assert!(coordinator.passes.changed.is_empty());

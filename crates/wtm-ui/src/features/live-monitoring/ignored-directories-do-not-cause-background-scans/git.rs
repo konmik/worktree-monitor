@@ -11,6 +11,24 @@ pub(crate) struct WatchPaths {
     pub tracked: Vec<PathBuf>,
 }
 
+pub(crate) fn relevant_watch_paths(tree: &Path, paths: &HashSet<PathBuf>, cancel: &Cancel) -> Result<bool, Error> {
+    let mut input = Vec::new();
+    for path in paths {
+        input.extend(git_input_path(path)?);
+        input.push(0);
+    }
+    let output = process::run_with_input(Some(tree), &args(&[
+        "check-ignore", "--stdin", "-z",
+    ]), &input, cancel)?;
+    let output = process::success(output, &[0, 1])?;
+    if !output.is_empty() && !output.ends_with(b"\0") {
+        return Err(invalid("Git ignored path list is not NUL terminated"));
+    }
+    let ignored: HashSet<_> = output.split(|byte| *byte == 0)
+        .filter(|bytes| !bytes.is_empty()).map(relative_path).collect::<Result<_, _>>()?;
+    Ok(paths.iter().any(|path| !ignored.contains(path)))
+}
+
 pub(crate) fn watch_paths(tree: &Path, cancel: &Cancel) -> Result<WatchPaths, Error> {
     let tracked_output = process::checked(Some(tree), &args(&[
         "ls-files", "--full-name", "-z", "--cached",

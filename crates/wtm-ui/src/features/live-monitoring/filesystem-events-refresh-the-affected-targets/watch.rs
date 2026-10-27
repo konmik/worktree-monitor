@@ -99,9 +99,6 @@ fn forward_event(result: Result<Event, notify::Error>, sender: &Sender<Result<Ev
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum PlanPhase { Deferred, Ready }
-
 pub(crate) struct WatchBoundary {
     watcher: Option<RecommendedWatcher>,
     sender: Sender<Result<Event, notify::Error>>,
@@ -112,7 +109,6 @@ pub(crate) struct WatchBoundary {
     plans: HashMap<WorktreeKey, Arc<WorktreeWatchPlan>>,
     plan_dirty: HashSet<WorktreeKey>,
     plan_errors: HashSet<WorktreeKey>,
-    plan_phase: PlanPhase,
     retry_due: Option<Instant>,
     force_rebuild: bool,
     degraded: bool,
@@ -133,7 +129,6 @@ impl WatchBoundary {
             plans: HashMap::new(),
             plan_dirty: HashSet::new(),
             plan_errors: HashSet::new(),
-            plan_phase: PlanPhase::Ready,
             retry_due: None,
             force_rebuild: false,
             degraded: false,
@@ -145,16 +140,19 @@ impl WatchBoundary {
         boundary
     }
 
-    pub(crate) fn reconcile(&mut self, targets: &WatchTargets, now: Instant) -> WatchStatus {
-        self.plan_phase = PlanPhase::Ready;
+    pub(crate) fn rebuild_plans(&mut self, targets: &WatchTargets, now: Instant,
+        eligible: &HashSet<WorktreeKey>) -> WatchStatus {
         if self.force_rebuild || self.watcher.is_none() { self.plan_dirty.extend(self.plans.keys().cloned()); }
-        self.refresh_plans(targets);
+        self.refresh_plans(targets, eligible);
         self.reconcile_roots(targets, now)
     }
 
-    pub(crate) fn prepare(&mut self, targets: &WatchTargets, now: Instant) -> WatchStatus {
-        self.plan_phase = PlanPhase::Deferred;
+    pub(crate) fn reconcile(&mut self, targets: &WatchTargets, now: Instant) -> WatchStatus {
         if self.force_rebuild || self.watcher.is_none() { self.plan_dirty.extend(self.plans.keys().cloned()); }
+        let desired: HashSet<_> = targets.worktrees.iter().map(|(key, _)| key.clone()).collect();
+        self.plans.retain(|key, _| desired.contains(key));
+        self.plan_dirty.retain(|key| desired.contains(key));
+        self.plan_errors.retain(|key| desired.contains(key));
         for (key, path) in &targets.worktrees {
             if !self.plans.contains_key(key) {
                 self.plans.insert(key.clone(), Arc::new(fallback_plan(path)));
@@ -164,13 +162,16 @@ impl WatchBoundary {
         self.reconcile_roots(targets, now)
     }
 
+    pub(crate) fn has_pending_plans(&self) -> bool {
+        !self.plan_dirty.is_empty() || !self.plan_errors.is_empty()
+    }
+
     fn reconcile_roots(&mut self, targets: &WatchTargets, now: Instant) -> WatchStatus {
         self.publish_policy(targets);
         let desired = self.registrations(targets);
-        let planning_failed = !self.plan_errors.is_empty();
-        let changed = self.force_rebuild || self.watcher.is_none() || self.roots != desired || planning_failed;
+        let changed = self.force_rebuild || self.watcher.is_none() || self.roots != desired;
         if !changed && !self.degraded {
-            return self.reconcile_status(false, false, &desired, now, false);
+            return self.reconcile_status(false, &desired, now, false);
         }
         let mut full = self.rebuild_if_required(now);
         let mut failed = self.watcher.is_none();
@@ -217,7 +218,7 @@ impl WatchBoundary {
                 self.roots.remove(&path);
             }
         }
-        self.reconcile_status(failed, planning_failed, &desired, now, full)
+        self.reconcile_status(failed, &desired, now, full)
     }
 
     fn registrations(&self, targets: &WatchTargets) -> HashMap<PathBuf, Registration> {
@@ -238,7 +239,6 @@ impl WatchBoundary {
                 }
             }
         }
-        self.refresh_dirty_plans();
         self.filter_ignored_batch(&mut batch);
         if drained == MAX_DRAIN_EVENTS { self.cancel.wake(); }
         if batch.full {

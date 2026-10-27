@@ -39,7 +39,7 @@ fn full_recovery_reloads_ignore_rules_changed_while_disconnected() {
         global_excludes: Vec::new(),
     };
     let mut boundary = WatchBoundary::new(cancel);
-    boundary.reconcile(&targets, Instant::now());
+    boundary.rebuild_plans(&targets, Instant::now(), &HashSet::from([key.clone()]));
     let changed = root.join("ignored/nested/visible.txt");
     let kind = EventKind::Modify(ModifyKind::Data(DataChange::Content));
     assert!(!boundary.event_policy.read().unwrap().allows(&changed, &kind));
@@ -47,7 +47,7 @@ fn full_recovery_reloads_ignore_rules_changed_while_disconnected() {
     std::fs::write(root.join(".gitignore"), b"").unwrap();
     boundary.sender.send(Err(notify::Error::generic("lost events"))).unwrap();
     assert!(boundary.drain(Instant::now()).full);
-    assert!(!boundary.reconcile(&targets, Instant::now()).degraded);
+    assert!(!boundary.rebuild_plans(&targets, Instant::now(), &HashSet::from([key.clone()])).degraded);
     let policy = boundary.event_policy.read().unwrap().clone();
     assert!(policy.allows(&changed, &kind));
     std::fs::write(&changed, b"visible after recovery\n").unwrap();
@@ -144,11 +144,11 @@ fn failed_initial_plan_keeps_recursive_fallback_coverage() {
     let common = tree.join(".git");
     let key = WorktreeKey::new(&common, &tree);
     let mut boundary = WatchBoundary::new(Cancel::new());
-    let status = boundary.reconcile(&WatchTargets {
+    let status = boundary.rebuild_plans(&WatchTargets {
         config: directory.path().join("config.json"), launch: None,
         repositories: Vec::new(), worktrees: vec![(key.clone(), tree.clone())],
         global_excludes: Vec::new(),
-    }, Instant::now());
+    }, Instant::now(), &HashSet::from([key.clone()]));
     assert!(!status.degraded);
     assert_eq!(boundary.roots[&normalize(&tree)].mode, RecursiveMode::Recursive);
     boundary.sender.send(Ok(Event::new(EventKind::Modify(ModifyKind::Any))
@@ -223,7 +223,7 @@ fn ignored_directories_use_gates_and_never_recursive_native_roots() {
         config: directory.path().join("config.json"),
         launch: None,
         repositories: vec![common],
-        worktrees: vec![(key, repo.clone())],
+        worktrees: vec![(key.clone(), repo.clone())],
         global_excludes: Vec::new(),
     });
     #[cfg(not(windows))]

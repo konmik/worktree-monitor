@@ -1,2 +1,2 @@
-- Git-ignored updates do not trigger monitoring scans.
+- Git-ignored updates, including modifications to shared hardlinked files, do not trigger monitoring scans.
 - Directory monitoring does not retain an inventory of every individual file path.

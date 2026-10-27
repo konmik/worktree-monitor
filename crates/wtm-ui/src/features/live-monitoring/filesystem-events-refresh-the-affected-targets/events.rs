@@ -1,5 +1,6 @@
-use super::{Coordinator, normalize};
+use super::{Coordinator, PendingScan, normalize};
 use crate::watch;
+use notify::{EventKind, event::ModifyKind};
 use std::collections::HashSet;
 use std::time::Instant;
 
@@ -18,17 +19,34 @@ impl Coordinator {
             let common = normalize(&common);
             if discoveries.contains(&common) { continue; }
             if let Some(repo) = self.repos.get(&common) {
-                self.passes.changed.extend(repo.worktrees.iter().cloned());
+                self.passes.changed.extend(repo.worktrees.iter().cloned().map(|key| (key, PendingScan::Forced)));
             }
         }
-        self.passes.changed.extend(batch.worktrees);
+        for key in batch.worktrees {
+            let paths = batch.worktree_paths.get(&key);
+            let candidate = !batch.force_worktrees.contains(&key) && paths.is_some_and(|paths| {
+                !paths.is_empty() && paths.iter().all(|(path, kind)| {
+                    matches!(kind, EventKind::Modify(ModifyKind::Any | ModifyKind::Data(_)))
+                        && path.is_file()
+                        && path.file_name().is_none_or(|name| name != ".gitignore" && name != ".gitattributes")
+                })
+            });
+            let incoming = if candidate {
+                PendingScan::Paths(paths.unwrap().keys().map(|path|
+                    path.strip_prefix(&key.path).unwrap().to_path_buf()).collect())
+            } else { PendingScan::Forced };
+            match self.passes.changed.entry(key) {
+                std::collections::hash_map::Entry::Occupied(mut current) => current.get_mut().merge(incoming),
+                std::collections::hash_map::Entry::Vacant(current) => { current.insert(incoming); }
+            }
+        }
         if batch.global_excludes {
-            self.passes.changed.extend(self.worktrees.keys().cloned());
+            self.passes.changed.extend(self.worktrees.keys().cloned().map(|key| (key, PendingScan::Forced)));
             self.discoveries.extend(self.repo_order.iter().cloned());
         }
         if batch.full {
             self.discoveries.extend(self.repo_order.iter().cloned());
-            self.passes.changed.extend(self.worktrees.keys().cloned());
+            self.passes.changed.extend(self.worktrees.keys().cloned().map(|key| (key, PendingScan::Forced)));
         }
         if batch.topology || batch.full || !batch.plans.is_empty() { self.watch_dirty = true; }
     }
