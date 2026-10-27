@@ -1,6 +1,5 @@
 use super::Coordinator;
 use crate::{config, Error, ErrorKind};
-use std::time::Instant;
 
 impl Coordinator {
     pub(super) fn resolve_launch(&mut self) -> bool {
@@ -8,9 +7,9 @@ impl Coordinator {
         if self.launch_changed {
             self.launch_changed = false;
             if let Some(directory) = &self.launch_directory {
-                let start = Instant::now();
+                let reading = self.polling_time.start();
                 let result = config::resolve(directory, &self.cancel);
-                self.polling_time.record(start, Instant::now());
+                drop(reading);
                 match result {
                     Ok(common) => { self.launch_common = Some(common); self.launch_error = None; }
                     Err(error) if is_not_git(&error) => { self.launch_error = None; }

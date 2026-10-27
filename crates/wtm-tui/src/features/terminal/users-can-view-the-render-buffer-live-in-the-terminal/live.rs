@@ -64,15 +64,13 @@ struct View {
 }
 
 impl View {
-    fn frame(&mut self, columns: usize, rows: usize) -> DashboardFrame {
+    fn frame(&mut self, columns: usize, rows: usize, polling: Duration) -> DashboardFrame {
         let mut view = DashboardView::scanning();
-        let mut polling = Duration::ZERO;
         let activities = self.latest.as_ref().map_or(&[][..], |update| update.scan_activities.as_slice());
         let refreshing = self.refresh.update(activities, Instant::now());
         if let Some(update) = &self.latest {
             view = DashboardView::from_scan(&update.snapshot, &update.scan_targets, &Default::default(), true);
             if let Some(error) = &update.launch_error { view.launch_error(error); }
-            polling = update.polling_time_last_minute;
         }
         let header = render_row(&DisplayItem::Status { health: view.health, polling_time_last_minute: polling }, columns, RowOptions::default());
         let items: Vec<_> = view.items.iter().map(|item| render_row(&item.display, columns, RowOptions {
@@ -130,7 +128,7 @@ fn watch(monitor: &Monitor) -> io::Result<()> {
     let mut size = terminal::size()?;
     loop {
         view.latest = monitor.latest();
-        let frame = view.frame(usize::from(size.0), usize::from(size.1));
+        let frame = view.frame(usize::from(size.0), usize::from(size.1), monitor.polling_time_last_minute());
         if view.previous.as_ref() != Some(&frame.buffer) {
             present(&mut terminal.output, &frame.buffer)?;
             view.previous = Some(frame.buffer);

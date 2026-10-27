@@ -63,7 +63,7 @@ pub(super) fn compose_frame(state: &super::runtime::State) -> wtm_ui::rendering:
     let body_columns = columns.saturating_sub(1);
     let toggle_columns = if state.controls_visible { 12.min(columns) } else { 0 };
     let status = wtm_ui::dashboard::DisplayItem::Status { health: state.view.health,
-        polling_time_last_minute: state.latest.as_ref().map_or(std::time::Duration::ZERO, |update| update.polling_time_last_minute) };
+        polling_time_last_minute: state.monitor.polling_time_last_minute() };
     let header = render_row(&status, columns - toggle_columns, RowOptions::default());
     let mut full_header = RenderBuffer::new(columns, 1, MUTED);
     full_header.blit(0, 0, &header);

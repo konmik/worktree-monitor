@@ -57,6 +57,7 @@ pub use publication::MonitorUpdate;
 pub struct Monitor {
     cancel: Cancel,
     latest: Arc<Mutex<Option<Arc<MonitorUpdate>>>>,
+    polling_time: PollingTime,
     worker: Option<JoinHandle<()>>,
 }
 
@@ -64,16 +65,23 @@ impl Monitor {
     pub(crate) fn start(service: Service, launch_directory: Option<PathBuf>) -> Result<Self, Error> {
         let cancel = Cancel::new();
         let latest = Arc::new(Mutex::new(None));
-        let worker_cancel = cancel.clone();
-        let worker_latest = latest.clone();
+        let coordinator = Coordinator::new(service, launch_directory, cancel.clone(), latest.clone());
+        let polling_time = coordinator.polling_time.clone();
         let worker = thread::Builder::new().name("wtm-monitor".into()).spawn(move || {
-            Coordinator::new(service, launch_directory, worker_cancel, worker_latest).run();
+            coordinator.run();
         }).map_err(|error| Error::io("Cannot start monitor", error))?;
-        Ok(Self { cancel, latest, worker: Some(worker) })
+        Ok(Self { cancel, latest, polling_time, worker: Some(worker) })
     }
 
     pub fn latest(&self) -> Option<Arc<MonitorUpdate>> {
-        self.latest.lock().unwrap_or_else(|error| error.into_inner()).clone()
+        let update = self.latest.lock().unwrap_or_else(|error| error.into_inner()).clone()?;
+        let polling_time_last_minute = self.polling_time_last_minute();
+        if update.polling_time_last_minute == polling_time_last_minute { return Some(update); }
+        Some(Arc::new(MonitorUpdate { polling_time_last_minute, ..update.as_ref().clone() }))
+    }
+
+    pub fn polling_time_last_minute(&self) -> Duration {
+        self.polling_time.total(Instant::now())
     }
 
     pub fn stop(&mut self) -> Result<(), Error> {

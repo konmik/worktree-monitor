@@ -12,11 +12,11 @@ impl Coordinator {
             if self.cancel.is_cancelled() { return; }
             if !discoveries.contains(&common) { continue; }
             worked = true;
-            let start = Instant::now();
             self.start_scan(&common, None);
+            let reading = self.polling_time.start();
             let result = git::discover(&self.repos[&common].common_dir, &self.cancel);
             self.apply_discovery(&common, result);
-            self.polling_time.record(start, Instant::now());
+            drop(reading);
             self.finish_scan();
             self.publish();
         }
@@ -35,18 +35,17 @@ impl Coordinator {
             let Some(state) = self.worktrees.get(&key) else { continue; };
             let path = state.path.clone();
             worked = true;
-            let start = Instant::now();
+            let reading = self.polling_time.start();
             let relevant = match &changed[&key] {
                 PendingScan::Forced => Ok(true),
                 PendingScan::Paths(paths) => git::relevant_watch_paths(&path, paths, &self.cancel),
             };
             if matches!(relevant, Ok(false)) {
-                self.polling_time.record(start, Instant::now());
                 continue;
             }
             self.start_scan(&key.common, Some(&key));
             let result = relevant.and_then(|_| git::scan_tree(&path, &self.cancel));
-            self.polling_time.record(start, Instant::now());
+            drop(reading);
             self.worktrees.get_mut(&key).unwrap().last = Some(result);
             self.finish_scan();
             self.publish();
@@ -64,8 +63,9 @@ impl Coordinator {
             return false;
         }
         let start = Instant::now();
+        let reading = self.polling_time.start();
         let status = self.watch.rebuild_plans(&self.watch_targets(), start, ready);
-        self.polling_time.record(start, Instant::now());
+        drop(reading);
         self.recover_watch_status(status);
         true
     }

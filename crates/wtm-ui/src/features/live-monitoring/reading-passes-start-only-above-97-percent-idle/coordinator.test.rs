@@ -79,7 +79,7 @@ fn fresh_reading_passes_start_immediately_and_keep_the_normal_cooldown() {
 
 #[test]
 fn deferred_reading_passes_remain_cancellable() {
-    let (_directory, mut coordinator) = scan_fixture(1);
+    let (_directory, coordinator) = scan_fixture(1);
     let now = Instant::now();
     coordinator.polling_time.record(now - Duration::from_secs(2), now);
     let latest = coordinator.latest.clone();
