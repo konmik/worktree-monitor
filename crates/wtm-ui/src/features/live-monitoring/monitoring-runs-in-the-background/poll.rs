@@ -27,12 +27,15 @@ mod schedule;
 use schedule::ScanPasses;
 #[path = "../git-scans-run-sequentially/passes.rs"]
 mod passes;
+#[path = "../reading-passes-start-only-above-97-percent-idle/gate.rs"]
+mod idle_gate;
 #[cfg(test)]
 use schedule::PASS_DELAY;
 
 #[path = "../monitoring-work-time-is-reported-for-the-last-minute/time.rs"]
 mod polling_time;
 use polling_time::PollingTime;
+pub(crate) use polling_time::idle_percent;
 
 #[path = "../registrations-reload-without-losing-valid-entries/registrations.rs"]
 mod registrations;
@@ -175,7 +178,7 @@ impl Coordinator {
             self.reconcile_watches();
             self.receive_watch();
             self.reload_registrations();
-            if self.passes.ready(Instant::now()) && self.pending() { self.scan_pass(); }
+            self.try_scan_pass(Instant::now());
             self.publish();
             let now = Instant::now();
             let mut wait = Duration::from_secs(1);

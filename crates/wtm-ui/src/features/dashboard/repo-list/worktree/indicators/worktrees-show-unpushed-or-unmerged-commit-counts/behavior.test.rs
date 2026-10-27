@@ -1,4 +1,37 @@
 #[test]
+fn pending_commits_exclude_inherited_unpushed_mainline_history() {
+    for format in ["sha1", "sha256"] {
+        for base in ["main", "master"] {
+            let fixture = Fixture::new(format);
+            fixture.write("base.txt", "base\n");
+            fixture.commit();
+            if base == "master" { git(&fixture.repo, &["branch", "-m", "master"]); }
+            git(&fixture.repo, &["update-ref", &format!("refs/remotes/origin/{base}"), "HEAD"]);
+            fixture.register(&fixture.repo).unwrap();
+            for index in 0..7 {
+                fixture.write("mainline.txt", format!("{index}\n"));
+                fixture.commit();
+            }
+            assert_eq!(fixture.stats().pending_commits, 7, "unpushed {base} in {format}");
+            git(&fixture.repo, &["branch", "merged"]);
+            git(&fixture.repo, &["checkout", "--quiet", "--detach"]);
+            assert_eq!(fixture.stats().pending_commits, 0, "merged detached worktree against {base} in {format}");
+            git(&fixture.repo, &["checkout", "--quiet", "merged"]);
+            assert_eq!(fixture.stats().pending_commits, 0);
+            for index in 0..2 {
+                fixture.write("feature.txt", format!("{index}\n"));
+                fixture.commit();
+            }
+            assert_eq!(fixture.stats().pending_commits, 2, "worktree excludes inherited {base} commits in {format}");
+            git(&fixture.repo, &["update-ref", &format!("refs/heads/{base}"), "HEAD"]);
+            assert_eq!(fixture.stats().pending_commits, 0);
+            git(&fixture.repo, &["checkout", "--quiet", base]);
+            assert_eq!(fixture.stats().pending_commits, 9);
+        }
+    }
+}
+
+#[test]
 fn pending_commits_exclude_published_orphan_history_from_unmerged_counts() {
     for format in ["sha1", "sha256"] {
         for base in ["main", "master"] {
@@ -44,12 +77,12 @@ fn pending_commits_count_unpushed_or_unmerged_once() {
         git(&fixture.repo, &["update-ref", "refs/heads/main", "HEAD"]);
         assert_eq!(fixture.stats().pending_commits, 0);
         git(&fixture.repo, &["update-ref", "-d", "refs/remotes/origin/feature"]);
-        assert_eq!(fixture.stats().pending_commits, 3);
+        assert_eq!(fixture.stats().pending_commits, 0);
     }
 }
 
 #[test]
-fn pending_commits_union_includes_distinct_pushed_and_merged_commits() {
+fn pending_commits_exclude_mainline_commits_merged_into_a_worktree() {
     let fixture = Fixture::new("sha1");
     fixture.write("base.txt", "base\n");
     fixture.commit();
@@ -63,7 +96,7 @@ fn pending_commits_union_includes_distinct_pushed_and_merged_commits() {
     git(&fixture.repo, &["-c", "user.name=Wtm Test", "-c", "user.email=wtm@example.invalid",
         "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "merge", "--quiet", "--no-ff", "main", "-m", "Merge"]);
     fixture.register(&fixture.repo).unwrap();
-    assert_eq!(fixture.stats().pending_commits, 3);
+    assert_eq!(fixture.stats().pending_commits, 2);
 }
 
 #[test]

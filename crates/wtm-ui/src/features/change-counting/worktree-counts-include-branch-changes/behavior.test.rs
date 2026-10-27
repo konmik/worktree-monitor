@@ -101,7 +101,7 @@ fn branch_changes_monitor_refreshes_when_main_advances_without_head_moving() {
     git(&fixture.repo, &["update-ref", "refs/heads/main", "HEAD"]);
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == Counts::default(), Duration::from_secs(18));
+        == Counts::default(), MONITOR_UPDATE_TIMEOUT);
     assert_eq!(git(&fixture.repo, &["rev-parse", "HEAD"]), head);
     monitor.stop().unwrap();
 }

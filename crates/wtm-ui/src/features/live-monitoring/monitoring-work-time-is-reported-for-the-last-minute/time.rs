@@ -1,5 +1,9 @@
 use std::time::{Duration, Instant};
 
+pub(crate) fn idle_percent(polling_time_last_minute: Duration) -> u128 {
+    100 - (polling_time_last_minute.as_millis().saturating_add(300) / 600).min(100)
+}
+
 #[derive(Default)]
 pub(super) struct PollingTime {
     completed: Vec<(Instant, Instant)>,

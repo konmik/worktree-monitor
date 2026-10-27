@@ -11,7 +11,7 @@ fn worktree_edits_wait_for_the_next_serial_pass() {
     fixture.write("tracked.txt", "before\nafter\n");
     let elapsed = wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(1, 0, 0), Duration::from_secs(18));
+        == source_counts(1, 0, 0), MONITOR_UPDATE_TIMEOUT);
     assert!(elapsed >= Duration::from_secs(9), "edit bypassed the pass delay: {elapsed:?}");
     monitor.stop().unwrap();
 }
@@ -32,7 +32,7 @@ fn continuous_edits_do_not_scan_immediately_or_postpone_scheduled_updates() {
         thread::sleep(Duration::from_millis(100));
     }
     assert_eq!(monitor.latest().unwrap().polling_time_last_minute, before);
-    let deadline = Instant::now() + Duration::from_secs(18);
+    let deadline = Instant::now() + MONITOR_UPDATE_TIMEOUT;
     loop {
         fixture.write("tracked.txt", "before\nafter\n");
         if monitor.latest().unwrap().snapshot.repos[0].worktrees.as_ref().unwrap()[0]

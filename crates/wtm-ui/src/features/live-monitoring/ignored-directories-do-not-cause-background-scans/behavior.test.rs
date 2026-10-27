@@ -37,7 +37,7 @@ fn ignored_artifact_bursts_do_not_repeat_scans_and_real_edits_update() {
     fixture.write("ignored/tracked.txt", "before\nafter\n");
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(1, 0, 0), Duration::from_secs(18));
+        == source_counts(1, 0, 0), MONITOR_UPDATE_TIMEOUT);
     monitor.stop().unwrap();
 }
 
@@ -58,7 +58,7 @@ fn forced_tracked_files_under_ignored_directories_still_update() {
     fixture.write("ignored/tracked.txt", "before\nafter\n");
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(1, 0, 0), Duration::from_secs(18));
+        == source_counts(1, 0, 0), MONITOR_UPDATE_TIMEOUT);
     monitor.stop().unwrap();
 }
 
@@ -79,7 +79,7 @@ fn ignore_rule_changes_are_observed_in_the_next_pass() {
     fs::write(fixture.repo.join(".gitignore"), b"").unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(1, 1, 0), Duration::from_secs(18));
+        == source_counts(1, 1, 0), MONITOR_UPDATE_TIMEOUT);
     monitor.stop().unwrap();
 }
 
@@ -101,11 +101,11 @@ fn negated_files_under_an_ignored_listing_prefix_are_not_filtered() {
     fs::write(&visible, "one\n").unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(1, 0, 0), Duration::from_secs(18));
+        == source_counts(1, 0, 0), MONITOR_UPDATE_TIMEOUT);
     fs::write(&visible, "one\ntwo\n").unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(2, 0, 0), Duration::from_secs(18));
+        == source_counts(2, 0, 0), MONITOR_UPDATE_TIMEOUT);
     monitor.stop().unwrap();
 }
 
@@ -127,13 +127,13 @@ fn ignored_file_delete_recreate_and_directory_replacement_are_observed() {
     fs::write(swapped.join("visible.txt"), "visible\n").unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(1, 0, 0), Duration::from_secs(18));
+        == source_counts(1, 0, 0), MONITOR_UPDATE_TIMEOUT);
     fs::remove_file(swapped.join("visible.txt")).unwrap();
     fs::remove_dir(&swapped).unwrap();
     fs::write(&swapped, "ignored again\n").unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts == Counts::default(),
-        Duration::from_secs(18));
+        MONITOR_UPDATE_TIMEOUT);
     monitor.stop().unwrap();
 }
 
@@ -155,7 +155,7 @@ fn ignored_directory_rename_and_delete_preserve_tracked_changes() {
     fs::rename(fixture.repo.join("ignored"), &moved).unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(0, 1, 0), Duration::from_secs(18));
+        == source_counts(0, 1, 0), MONITOR_UPDATE_TIMEOUT);
     fs::remove_file(moved.join("tracked.txt")).unwrap();
     fs::remove_dir(&moved).unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
@@ -179,11 +179,11 @@ fn ignored_untracked_gitattributes_changes_update_counts() {
     fixture.write("tracked.txt", "before\nafter\n");
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(1, 0, 0), Duration::from_secs(18));
+        == source_counts(1, 0, 0), MONITOR_UPDATE_TIMEOUT);
     fixture.write(".gitattributes", "tracked.txt binary\n");
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(0, 0, 1), Duration::from_secs(18));
+        == source_counts(0, 0, 1), MONITOR_UPDATE_TIMEOUT);
     monitor.stop().unwrap();
 }
 
@@ -204,7 +204,7 @@ fn global_excludes_changes_are_observed_in_the_next_pass() {
     fs::write(&excludes, b"").unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(1, 0, 0), Duration::from_secs(18));
+        == source_counts(1, 0, 0), MONITOR_UPDATE_TIMEOUT);
     monitor.stop().unwrap();
 }
 
@@ -248,6 +248,6 @@ fn writes_during_initial_scan_do_not_lose_later_edits() {
     fixture.write("tracked.txt", "before\nafter\n");
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(1, 0, 0), Duration::from_secs(18));
+        == source_counts(1, 0, 0), MONITOR_UPDATE_TIMEOUT);
     monitor.stop().unwrap();
 }

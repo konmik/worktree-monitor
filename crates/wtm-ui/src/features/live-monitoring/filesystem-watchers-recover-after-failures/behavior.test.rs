@@ -12,7 +12,7 @@ fn removed_registered_root_recovers_after_recreation() {
     wait_for(&monitor, |update| update.snapshot.repos.len() == 1 && update.snapshot.has_errors());
     fs::rename(&moved, &fixture.repo).unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos.len() == 1
-        && !update.snapshot.has_errors(), Duration::from_secs(18));
+        && !update.snapshot.has_errors(), MONITOR_UPDATE_TIMEOUT);
     monitor.stop().unwrap();
 }
 
@@ -49,7 +49,7 @@ fn replaced_refs_watch_observes_a_ref_only_head_and_count_change() {
                 stats.head == Head::Branch("main".into())
                     && stats.counts == source_counts(1, 1, 0)
             })
-    }, Duration::from_secs(18));
+    }, MONITOR_UPDATE_TIMEOUT);
     monitor.stop().unwrap();
 }
 
@@ -72,11 +72,11 @@ fn replaced_info_directory_reconnects_exclude_watch() {
     fs::write(info.join("exclude"), b"ignored.txt\n").unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts == Counts::default(),
-        Duration::from_secs(18));
+        MONITOR_UPDATE_TIMEOUT);
     fs::write(info.join("exclude"), b"").unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(1, 0, 0), Duration::from_secs(18));
+        == source_counts(1, 0, 0), MONITOR_UPDATE_TIMEOUT);
     monitor.stop().unwrap();
     fs::remove_dir_all(moved).unwrap();
 }

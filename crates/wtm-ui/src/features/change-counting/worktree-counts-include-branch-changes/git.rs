@@ -90,8 +90,11 @@ pub(crate) fn scan_tree(tree: &Path, cancel: &Cancel) -> Result<WorktreeStats, E
         let base = comparison_base(tree, &identity, cancel)?;
         let mut stats = count_tree(tree, identity.head.clone(), &base, cancel)?;
         if !matches!(identity.head, Head::Unborn(_)) {
+            let comparison = identity.base_ref.as_ref().filter(|(reference, _)|
+                !matches!(&identity.head, Head::Branch(branch)
+                    if reference.strip_prefix("refs/heads/") == Some(branch.as_str())));
             stats.pending_commits = crate::commit_indicators::pending(tree, &identity.commit,
-                identity.base_ref.as_ref().map(|(_, oid)| oid.as_str()), &identity.remote_tips, cancel)?;
+                comparison.map(|(_, oid)| oid.as_str()), &identity.remote_tips, cancel)?;
         }
         if scan_identity(tree, cancel)? == identity {
             return Ok(stats);

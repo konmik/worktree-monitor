@@ -113,8 +113,8 @@ fn existing_non_git_launch_discovers_a_later_git_init() {
             && trees[0].result.as_ref().is_ok_and(|stats| {
                 stats.head == Head::Unborn("main".into()) && stats.counts == Counts::default()
             })
-    }, Duration::from_secs(18));
-    assert!(elapsed < Duration::from_secs(18), "git init took {elapsed:?}");
+    }, MONITOR_UPDATE_TIMEOUT);
+    assert!(elapsed < MONITOR_UPDATE_TIMEOUT, "git init took {elapsed:?}");
     monitor.stop().unwrap();
 }
 

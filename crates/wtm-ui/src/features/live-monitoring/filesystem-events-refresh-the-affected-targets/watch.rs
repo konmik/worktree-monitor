@@ -170,7 +170,7 @@ impl WatchBoundary {
         let planning_failed = !self.plan_errors.is_empty();
         let changed = self.force_rebuild || self.watcher.is_none() || self.roots != desired || planning_failed;
         if !changed && !self.degraded {
-            return WatchStatus { full: false, degraded: false };
+            return self.reconcile_status(false, false, &desired, now, false);
         }
         let mut full = self.rebuild_if_required(now);
         let mut failed = self.watcher.is_none();

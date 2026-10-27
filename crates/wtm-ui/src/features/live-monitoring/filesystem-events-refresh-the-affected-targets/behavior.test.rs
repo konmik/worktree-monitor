@@ -12,12 +12,12 @@ fn untracked_directory_and_atomic_rename_changes_are_observed() {
     fs::write(directory.join("new.txt"), "one\ntwo\n").unwrap();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(2, 0, 0), Duration::from_secs(18));
+        == source_counts(2, 0, 0), MONITOR_UPDATE_TIMEOUT);
     fs::rename(directory.join("new.txt"), directory.join("renamed.txt")).unwrap();
     fs::remove_file(directory.join("renamed.txt")).unwrap();
     let elapsed = wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == Counts::default(), Duration::from_secs(18));
+        == Counts::default(), MONITOR_UPDATE_TIMEOUT);
     assert!(elapsed >= Duration::from_secs(9), "removal bypassed the pass delay: {elapsed:?}");
     monitor.stop().unwrap();
 }
@@ -42,21 +42,21 @@ fn metadata_changes_and_worktree_topology_are_observed() {
         .worktrees.as_ref().unwrap().iter().any(|tree|
             tree.result.as_ref().is_ok_and(|stats| stats.head == Head::Detached(linked_head.clone())
                 && stats.counts == source_counts(1, 0, 0))),
-        Duration::from_secs(18));
-    assert!(elapsed < Duration::from_secs(18), "scheduled linked HEAD took {elapsed:?}");
+        MONITOR_UPDATE_TIMEOUT);
+    assert!(elapsed < MONITOR_UPDATE_TIMEOUT, "scheduled linked HEAD took {elapsed:?}");
     let added = fixture._directory.path().join("added");
     git(&fixture.repo, &["worktree", "add", "--quiet", "--detach", added.to_str().unwrap()]);
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
-        .worktrees.as_ref().unwrap().len() == 3, Duration::from_secs(18));
+        .worktrees.as_ref().unwrap().len() == 3, MONITOR_UPDATE_TIMEOUT);
     git(&fixture.repo, &["worktree", "remove", "--force", added.to_str().unwrap()]);
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
-        .worktrees.as_ref().unwrap().len() == 2, Duration::from_secs(18));
+        .worktrees.as_ref().unwrap().len() == 2, MONITOR_UPDATE_TIMEOUT);
     fixture.write("tracked.txt", "before\nmain\n");
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap().iter().any(|tree|
             tree.result.as_ref().is_ok_and(|stats| stats.head == Head::Branch("main".into())
                 && stats.counts == source_counts(1, 0, 0))),
-        Duration::from_secs(18));
+        MONITOR_UPDATE_TIMEOUT);
     git(&fixture.repo, &["add", "tracked.txt"]);
     git(&fixture.repo, &["-c", "user.name=Wtm Test", "-c", "user.email=wtm@example.invalid",
         "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "Main"]);
@@ -65,7 +65,7 @@ fn metadata_changes_and_worktree_topology_are_observed() {
             tree.result.as_ref().is_ok_and(|stats|
                 stats.head == Head::Branch("main".into()) && stats.counts == Counts::default()
                     || stats.head == Head::Detached(linked_head.clone()) && stats.counts == source_counts(1, 0, 0))),
-        Duration::from_secs(18));
+        MONITOR_UPDATE_TIMEOUT);
     monitor.stop().unwrap();
 }
 
@@ -119,10 +119,10 @@ fn git_object_writes_do_not_rescan_and_ref_changes_still_update() {
     fixture.write("tracked.txt", "before\nafter\n");
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts
-        == source_counts(1, 0, 0), Duration::from_secs(18));
+        == source_counts(1, 0, 0), MONITOR_UPDATE_TIMEOUT);
     fixture.commit();
     wait_for_within(&monitor, |update| update.snapshot.repos[0]
         .worktrees.as_ref().unwrap()[0].result.as_ref().unwrap().counts == Counts::default(),
-        Duration::from_secs(18));
+        MONITOR_UPDATE_TIMEOUT);
     monitor.stop().unwrap();
 }

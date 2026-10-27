@@ -46,3 +46,55 @@ fn forced_rebuild_reports_full_reconcile() {
     assert!(!status.degraded);
     assert_eq!(boundary.next_retry(), None);
 }
+
+#[test]
+fn recovered_plans_clear_the_retry_without_changing_subscriptions() {
+    let directory = tempfile::tempdir().unwrap();
+    let tree = directory.path().join("tree");
+    std::fs::create_dir(&tree).unwrap();
+    let key = WorktreeKey::new(&tree.join(".git"), &tree);
+    let targets = WatchTargets {
+        config: directory.path().join("config.json"), launch: None,
+        repositories: Vec::new(), worktrees: vec![(key.clone(), tree.clone())],
+        global_excludes: Vec::new(),
+    };
+    let mut boundary = WatchBoundary::new(Cancel::new());
+    let now = Instant::now();
+    assert!(!boundary.reconcile(&targets, now).degraded);
+    let retry = boundary.next_retry().unwrap();
+    assert_eq!(retry, now + std::time::Duration::from_secs(5));
+    #[cfg(windows)]
+    let subscriptions = boundary.roots.clone();
+    crate::process::checked(Some(&tree), &crate::process::args(&["init", "--quiet"]), &Cancel::new()).unwrap();
+    assert!(!boundary.reconcile(&targets, retry).degraded);
+    #[cfg(windows)]
+    assert_eq!(boundary.roots, subscriptions);
+    assert_eq!(boundary.next_retry(), None);
+    assert!(!boundary.reconcile(&targets, retry + std::time::Duration::from_secs(1)).degraded);
+    assert_eq!(boundary.next_retry(), None);
+    boundary.sender.send(Ok(Event::new(EventKind::Modify(ModifyKind::Any))
+        .add_path(tree.join("edited.txt")))).unwrap();
+    assert!(boundary.drain(retry).worktrees.contains(&key));
+}
+
+#[test]
+fn failed_plans_keep_a_future_retry_while_subscriptions_are_healthy() {
+    let directory = tempfile::tempdir().unwrap();
+    let tree = directory.path().join("tree");
+    std::fs::create_dir(&tree).unwrap();
+    let key = WorktreeKey::new(&tree.join(".git"), &tree);
+    let targets = WatchTargets {
+        config: directory.path().join("config.json"), launch: None,
+        repositories: Vec::new(), worktrees: vec![(key.clone(), tree.clone())],
+        global_excludes: Vec::new(),
+    };
+    let mut boundary = WatchBoundary::new(Cancel::new());
+    let now = Instant::now();
+    assert!(!boundary.reconcile(&targets, now).degraded);
+    let retry = boundary.next_retry().unwrap();
+    assert!(!boundary.reconcile(&targets, retry).degraded);
+    assert_eq!(boundary.next_retry(), Some(retry + std::time::Duration::from_secs(5)));
+    boundary.sender.send(Ok(Event::new(EventKind::Modify(ModifyKind::Any))
+        .add_path(tree.join("edited.txt")))).unwrap();
+    assert!(boundary.drain(retry).worktrees.contains(&key));
+}

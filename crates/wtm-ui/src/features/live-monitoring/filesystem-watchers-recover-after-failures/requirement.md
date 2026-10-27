@@ -1,2 +1,3 @@
 - Missing watched paths are monitored through an existing ancestor until they recover.
 - Watcher failures and dropped events trigger full refreshes and watcher rebuilds; failed subscriptions retry after five seconds.
+- Successful watcher and watch-plan recovery clears the retry deadline even when subscriptions are unchanged.

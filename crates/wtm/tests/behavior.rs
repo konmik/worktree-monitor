@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use wtm_ui::{Cancel, Counts, ErrorKind, Head, LineCounts, Service, WorktreeStats};
 
+const MONITOR_UPDATE_TIMEOUT: Duration = Duration::from_secs(85);
+
 struct Fixture {
     _directory: TempDir,
     repo: PathBuf,
@@ -70,7 +72,7 @@ fn git(repo: &Path, args: &[&str]) -> Vec<u8> {
 }
 
 fn wait_for(monitor: &wtm_ui::Monitor, condition: impl Fn(&wtm_ui::MonitorUpdate) -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + MONITOR_UPDATE_TIMEOUT;
     loop {
         if monitor.latest().is_some_and(|update| condition(&update)) { return; }
         assert!(Instant::now() < deadline, "Timed out waiting for monitor update");
