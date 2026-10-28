@@ -1,5 +1,6 @@
 use super::*;
 use crate::dashboard::{ItemKey, ViewItem};
+use std::time::Duration;
 use crate::{Counts, Error, ErrorKind, Head, LineCounts, WorktreeStats};
 
 fn line(buffer: &RenderBuffer, row: usize) -> String {
@@ -65,7 +66,7 @@ fn dashboard_can_be_dumped_with_status_repository_branch_and_counts() {
         ViewItem { key: ItemKey::Repository("repo".into()), display: DisplayItem::Repository { name: "repo".into(), bare: false } },
         ViewItem { key: ItemKey::Worktree("repo".into(), "main".into()), display: DisplayItem::Worktree { path: "main".into(), result: Ok(WorktreeStats { pending_commits: 0, head: Head::Branch("main".into()), counts: Counts::default() }) } },
     ] };
-    let buffer = render_dashboard(&view, crate::IdlePercentage::default(), 20, 8, |_| Default::default());
+    let buffer = render_dashboard(&view, Duration::ZERO, 20, 8, |_| Default::default());
     assert!(line(&buffer, 0).contains("idle"));
     assert_eq!(buffer.row(0).unwrap()[0].color, GREEN);
     assert_eq!(line(&buffer, 2), "repo");
@@ -73,7 +74,7 @@ fn dashboard_can_be_dumped_with_status_repository_branch_and_counts() {
     assert_eq!(line(&buffer, 5), "S +0/-0");
     let dump = (0..buffer.rows()).map(|row| line(&buffer, row)).collect::<Vec<_>>().join("\n");
     assert!(dump.contains("repo\n\nmain\nS +0/-0"));
-    let clipped = render_dashboard(&view, crate::IdlePercentage::default(), 4, 3, |_| Default::default());
+    let clipped = render_dashboard(&view, Duration::ZERO, 4, 3, |_| Default::default());
     assert_eq!(clipped.cells().len(), 12);
     assert_eq!(line(&clipped, 2), "repo");
 }

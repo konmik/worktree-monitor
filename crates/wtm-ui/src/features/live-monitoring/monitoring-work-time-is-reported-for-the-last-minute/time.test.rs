@@ -6,7 +6,6 @@ fn active_reading_time_is_clipped_to_the_last_minute() {
     let reading = polling.start();
     let start = reading.start;
     assert_eq!(polling.total(start + Duration::from_secs(1)), Duration::from_secs(1));
-    assert_eq!(polling.idle(start + Duration::from_secs(6)).percent(), 90);
     assert_eq!(polling.total(start + Duration::from_secs(70)), Duration::from_secs(60));
 }
 

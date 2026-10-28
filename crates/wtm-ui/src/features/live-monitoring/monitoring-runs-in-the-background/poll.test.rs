@@ -40,9 +40,6 @@ mod filesystem_events_refresh_the_affected_targets;
 #[path = "../monitoring-work-time-is-reported-for-the-last-minute/coordinator.test.rs"]
 mod monitoring_work_time_is_reported_for_the_last_minute;
 
-#[path = "../idle-percentage-is-calculated-over-the-last-minute/coordinator.test.rs"]
-mod idle_percentage_is_calculated_over_the_last_minute;
-
 #[path = "../reading-passes-start-only-above-97-percent-idle/coordinator.test.rs"]
 mod reading_passes_start_only_above_97_percent_idle;
 

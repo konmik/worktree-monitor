@@ -1,7 +1,9 @@
 use std::time::{Duration, Instant};
 use std::sync::{Arc, Mutex};
 
-use super::idle_time::IdlePercentage;
+pub(crate) fn idle_percent(polling_time_last_minute: Duration) -> u128 {
+    100 - (polling_time_last_minute.as_millis().saturating_add(300) / 600).min(100)
+}
 
 #[derive(Clone, Default)]
 pub(super) struct PollingTime {
@@ -30,12 +32,7 @@ impl PollingTime {
 
     #[cfg(test)]
     pub(super) fn record(&self, start: Instant, end: Instant) {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        state.completed.push((start, end));
-    }
-
-    pub(super) fn idle(&self, now: Instant) -> IdlePercentage {
-        IdlePercentage::from_reading_time(self.total(now))
+        self.state.lock().unwrap_or_else(|error| error.into_inner()).completed.push((start, end));
     }
 
     pub(super) fn total(&self, now: Instant) -> Duration {

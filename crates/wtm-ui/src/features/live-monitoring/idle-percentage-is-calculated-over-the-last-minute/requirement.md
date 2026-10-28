@@ -1,6 +1,0 @@
-- Idle percentage is the share of the last sixty seconds spent waiting rather than reading.
-- Reading intervals are clipped to the last sixty seconds, including a reading operation still in progress.
-- The denominator is sixty seconds and the displayed percentage is rounded to a whole number.
-- The percentage refreshes at least once per second independently of reading passes and cached snapshot publication.
-- Completed reading time can keep the percentage unchanged until it leaves the sixty-second window.
-- The reading gate uses the same percentage shown in the header.

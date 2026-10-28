@@ -1,4 +1,6 @@
 - Monitoring work during the preceding minute is measured.
 - Time spent waiting for changes or the next scan pass is excluded.
 - Watch-plan Git reads contribute to the reported monitoring work time.
+- Idle status updates during active reads without waiting for the reading worker to finish.
 - Active reading time and completed reading time use the same rolling one-minute measurement.
+- Idle status recalculates at least once per second while waiting, without requiring a worker publication or a completed read.

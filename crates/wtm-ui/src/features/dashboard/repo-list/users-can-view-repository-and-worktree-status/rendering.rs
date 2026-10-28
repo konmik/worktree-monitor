@@ -82,8 +82,8 @@ pub fn text_row(value: &str, columns: usize, color: Color) -> RenderBuffer {
     buffer
 }
 
-pub fn render_dashboard(view: &DashboardView, idle: crate::IdlePercentage, columns: usize, rows: usize, options: impl Fn(&crate::dashboard::ViewItem) -> RowOptions) -> RenderBuffer {
-    let status = render_row(&DisplayItem::Status { health: view.health, idle }, columns, RowOptions::default());
+pub fn render_dashboard(view: &DashboardView, polling_time_last_minute: std::time::Duration, columns: usize, rows: usize, options: impl Fn(&crate::dashboard::ViewItem) -> RowOptions) -> RenderBuffer {
+    let status = render_row(&DisplayItem::Status { health: view.health, polling_time_last_minute }, columns, RowOptions::default());
     let items: Vec<_> = view.items.iter().map(|item| render_row(&item.display, columns, options(item))).collect();
     compose_dashboard(&status, &items, &[], columns, rows, 0).buffer
 }
