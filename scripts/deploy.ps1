@@ -17,7 +17,7 @@ if ($Worker) {
         Get-Content -LiteralPath $buildErrors | Add-Content -LiteralPath $log
         if ($build.ExitCode -ne 0) { throw "Build failed. See $log" }
 
-        $destination = Join-Path $env:USERPROFILE '.cargo\bin'
+        $destination = Join-Path $env:LOCALAPPDATA 'Programs\WorktreeMonitor\bin'
         $aliases = Join-Path $env:USERPROFILE 'bin'
         $running = @(Get-Process -Name $names -ErrorAction SilentlyContinue)
         $restartGui = @($running | Where-Object ProcessName -eq 'wtm-gui').Count -gt 0
@@ -30,15 +30,16 @@ if ($Worker) {
             $source = Join-Path $root "target\release\$name.exe"
             $binary = Join-Path $destination "$name.exe"
             Copy-Item -LiteralPath $source -Destination $binary -Force
-            $alias = Join-Path $aliases "$name.exe"
+            $alias = Join-Path $aliases "$name.cmd"
             foreach ($extension in @('exe', 'cmd')) {
                 $previous = Join-Path $aliases "$name.$extension"
                 if (Test-Path -LiteralPath $previous) { Remove-Item -LiteralPath $previous -Force }
             }
-            New-Item -ItemType HardLink -Path $alias -Target $binary | Out-Null
+            $launcher = "@echo off`r`n`"$binary`" %*`r`n"
+            [IO.File]::WriteAllText($alias, $launcher, [Text.Encoding]::ASCII)
             $hash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
             if ((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash -ne $hash -or
-                (Get-FileHash -LiteralPath $alias -Algorithm SHA256).Hash -ne $hash) {
+                [IO.File]::ReadAllText($alias) -ne $launcher) {
                 throw "Installed executable or alias differs from the build for $name"
             }
             $links = @(& fsutil hardlink list $binary)
@@ -48,10 +49,10 @@ if ($Worker) {
             [ordered]@{ name = $name; binary = $binary; alias = $alias; sha256 = $hash; links = $links }
         }
 
-        & (Join-Path $aliases 'wtm.exe') --version >> $log
+        & (Join-Path $aliases 'wtm.cmd') --version >> $log
         if ($LASTEXITCODE -ne 0) { throw 'Installed CLI failed to start' }
         if ($restartGui) {
-            $gui = Start-Process -FilePath (Join-Path $aliases 'wtm-gui.exe') -WorkingDirectory $env:USERPROFILE -WindowStyle Hidden -PassThru
+            $gui = Start-Process -FilePath (Join-Path $destination 'wtm-gui.exe') -WorkingDirectory $env:USERPROFILE -WindowStyle Hidden -PassThru
             $deadline = [DateTime]::UtcNow.AddSeconds(15)
             do {
                 $gui.Refresh()
