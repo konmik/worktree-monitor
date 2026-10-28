@@ -34,7 +34,7 @@ impl Coordinator {
             self.passes.changed.retain(|key, _| key.common != common || retained.contains(key));
             repo.worktrees = keys;
             if let Some(tree) = discovered.trees.iter().find(|tree| tree.error.is_none()) {
-                if let Ok(sources) = git::global_sources(&tree.path, &self.cancel) { repo.sources = sources; }
+                if let Ok(sources) = git::monitoring_sources(&tree.path, &self.cancel) { repo.sources = sources; }
             }
         }
         repo.discovered = Some(result);

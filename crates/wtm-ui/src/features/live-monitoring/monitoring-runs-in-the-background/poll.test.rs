@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "../filesystem-events-refresh-the-affected-targets/source-scope.test.rs"]
+mod source_scope;
+
 fn scan_fixture(count: usize) -> (tempfile::TempDir, Coordinator) {
     let directory = tempfile::tempdir().unwrap();
     let mut repos = Vec::new();
@@ -42,3 +45,9 @@ mod reading_passes_start_only_above_97_percent_idle;
 
 #[path = "../ignored-directories-do-not-cause-background-scans/coordinator.test.rs"]
 mod ignored_directories_do_not_cause_background_scans;
+
+#[path = "../filesystem-events-refresh-the-affected-targets/irrelevant-metadata.test.rs"]
+mod irrelevant_metadata;
+
+#[path = "../ignored-directories-do-not-cause-background-scans/ignored-lifecycle.test.rs"]
+mod ignored_lifecycle;

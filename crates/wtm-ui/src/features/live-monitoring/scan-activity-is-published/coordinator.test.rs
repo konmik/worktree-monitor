@@ -16,7 +16,7 @@ fn actual_scans_publish_starts_results_and_pending_descriptors() {
     assert!(discovery_end.snapshot.repos.is_empty());
     assert_eq!(discovery_end.scan_targets.len(), 2);
     assert!(discovery_end.scan_activities[0].finished_at.is_some());
-    assert!(!coordinator.repos.values().next().unwrap().sources.is_empty());
+    assert!(!coordinator.repos.values().next().unwrap().sources.global.is_empty());
     let tree_start = &updates[2];
     assert!(Arc::ptr_eq(&discovery_end.snapshot, &tree_start.snapshot));
     assert_eq!(tree_start.scan_activities.len(), 2);

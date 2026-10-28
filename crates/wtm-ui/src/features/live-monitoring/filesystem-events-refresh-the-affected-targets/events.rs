@@ -1,6 +1,5 @@
 use super::{Coordinator, PendingScan, normalize};
 use crate::watch;
-use notify::{EventKind, event::ModifyKind};
 use std::collections::HashSet;
 use std::time::Instant;
 
@@ -25,10 +24,9 @@ impl Coordinator {
         for key in batch.worktrees {
             let paths = batch.worktree_paths.get(&key);
             let candidate = !batch.force_worktrees.contains(&key) && paths.is_some_and(|paths| {
-                !paths.is_empty() && paths.iter().all(|(path, kind)| {
-                    matches!(kind, EventKind::Modify(ModifyKind::Any | ModifyKind::Data(_)))
-                        && path.is_file()
-                        && path.file_name().is_none_or(|name| name != ".gitignore" && name != ".gitattributes")
+                !paths.is_empty() && paths.keys().all(|path| {
+                    path.starts_with(&key.path) && path != &key.path
+                        && path.file_name().is_none_or(|name| name != ".git" && name != ".gitignore" && name != ".gitattributes")
                 })
             });
             let incoming = if candidate {

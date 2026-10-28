@@ -20,6 +20,10 @@ impl WatchBoundary {
         for path in event.paths {
             let path = absolute(&path);
             let path = normalize(&path);
+            if matches!(event.kind, EventKind::Modify(ModifyKind::Any | ModifyKind::Data(_)))
+                && std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink()) {
+                continue;
+            }
             if path.extension().is_some_and(|extension| extension == "lock")
                 && self.roots.values().flat_map(|registration| &registration.targets)
                     .any(|target| matches!(target, Target::Repository(common) if path.starts_with(normalize(common)))) {
@@ -43,19 +47,9 @@ impl WatchBoundary {
                             || normalize(common).starts_with(&path) && topology_event(&event.kind) {
                             let key = normalize(common);
                             repositories.insert(key.clone());
-                            let objects = key.join("objects");
-                            let object_write = path.starts_with(&objects)
-                                && !path.starts_with(objects.join("info"))
-                                && (path != objects || !topology_event(&event.kind))
-                                && matches!(event.kind, EventKind::Create(_)
-                                    | EventKind::Modify(ModifyKind::Data(_)
-                                        | ModifyKind::Metadata(_) | ModifyKind::Any));
-                            let directory_write = matches!(event.kind,
-                                EventKind::Modify(ModifyKind::Any | ModifyKind::Data(_))) && path.is_dir();
-                            if object_write || directory_write { continue; }
+                            if !repository_event(&path, &key, &event.kind) { continue; }
                             let admin = key.join("worktrees");
                             let linked_metadata = path == admin || path.starts_with(&admin);
-                            if linked_metadata { batch.discoveries.insert(key.clone()); }
                             if !linked_metadata && !metadata.iter().any(|tree| tree.common == key) {
                                 batch.repositories.insert(key.clone());
                             }
@@ -97,6 +91,17 @@ impl WatchBoundary {
                                 batch.topology = true;
                             }
                         }
+                        Target::RepositorySource(common, source) if global_exclude_event(&path, source, &event.kind) => {
+                            let keys: HashSet<_> = self.worktree_keys().into_iter()
+                                .filter(|key| key.common == normalize(common)).collect();
+                            for key in &keys { Self::mark_worktree(batch, key, &path, &event.kind, true); }
+                            self.plan_dirty.extend(keys.iter().cloned());
+                            batch.plans.extend(keys);
+                            batch.discoveries.insert(normalize(common));
+                            if normalize(source).starts_with(&path) && topology_event(&event.kind) {
+                                batch.topology = true;
+                            }
+                        }
                         Target::Launch(launch) if launch_event(&path, launch, &event.kind) => {
                             batch.launch = true;
                             batch.topology = true;
@@ -112,7 +117,11 @@ impl WatchBoundary {
                                 let tree_path = normalize(tree_path);
                                 let root_topology = worktree_topology
                                     && (path == tree_path || tree_path.starts_with(&path));
-                                Self::mark_worktree(batch, key, &path, &event.kind, false);
+                                let directory_topology = worktree_topology
+                                    && self.plans.get(key).is_some_and(|plan|
+                                        plan.known_directories.contains(&path) || plan.tracked_directories.contains(&path))
+                                    && !self.ignored_event(&path, key, &event.kind);
+                                Self::mark_worktree(batch, key, &path, &event.kind, root_topology || directory_topology);
                                 if self.plan_event(&path, key, &event.kind) {
                                     self.plan_dirty.insert(key.clone());
                                     batch.plans.insert(key.clone());
@@ -129,7 +138,7 @@ impl WatchBoundary {
                                 batch.plans.insert(key.clone());
                             }
                         }
-                        Target::Repository(_) | Target::Launch(_) | Target::GlobalExclude(_)
+                        Target::Repository(_) | Target::Launch(_) | Target::GlobalExclude(_) | Target::RepositorySource(_, _)
                             | Target::WorktreeMetadata(_, _) => {}
                     }
                 }
@@ -185,17 +194,27 @@ pub(super) fn global_exclude_event(path: &Path, exclude: &Path, kind: &EventKind
     config_event(path, exclude, kind)
 }
 
+fn repository_event(path: &Path, common: &Path, kind: &EventKind) -> bool {
+    if path == common || common.starts_with(path) { return topology_event(kind); }
+    if repository_topology(path, common, kind) { return true; }
+    let Ok(relative) = path.strip_prefix(common) else { return false; };
+    if relative.starts_with("refs") { return true; }
+    if relative == Path::new("objects") { return topology_event(kind); }
+    ["HEAD", "head", "index", "config", "config.worktree", "packed-refs", "shallow",
+        "info/exclude", "info/attributes", "info/grafts", "objects/info/alternates"]
+        .iter().any(|name| {
+            let relevant = Path::new(name);
+            relative == relevant || topology_event(kind) && relevant.starts_with(relative)
+        })
+}
+
 pub(super) fn metadata_event(path: &Path, directory: &Path, common: &Path, kind: &EventKind) -> bool {
     let directory = normalize(directory);
     if path == directory || directory.starts_with(path) { return topology_event(kind); }
     let Ok(relative) = path.strip_prefix(&directory) else { return false; };
-    if directory != normalize(common) { return true; }
-    relative.components().next().is_some_and(|part| {
-        matches!(part.as_os_str().to_string_lossy().to_ascii_lowercase().as_str(),
-            "head" | "index" | "index.lock" | "orig_head" | "config.worktree")
-            || relative == Path::new("logs/HEAD") || relative == Path::new("logs/head")
-            || relative == Path::new("info/exclude")
-    })
+    let name = relative.to_string_lossy().to_ascii_lowercase();
+    matches!(name.as_str(), "head" | "index" | "config.worktree")
+        || directory == normalize(common) && name == "info/exclude"
 }
 
 pub(super) fn metadata_plan_event(path: &Path, directory: &Path, common: &Path, kind: &EventKind) -> bool {
@@ -242,8 +261,11 @@ pub(super) fn repository_topology(path: &Path, common: &Path, kind: &EventKind) 
     let common = normalize(&absolute(common));
     if path == common || common.starts_with(&path) { return topology_event(kind); }
     let admin = common.join("worktrees");
-    (path == admin || path.starts_with(&admin)) && matches!(kind,
-        EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_)))
+    if path == admin { return topology_event(kind); }
+    let Ok(relative) = path.strip_prefix(&admin) else { return false; };
+    let parts: Vec<_> = relative.components().collect();
+    parts.len() == 1 && topology_event(kind)
+        || parts.len() == 2 && matches!(parts[1].as_os_str().to_string_lossy().as_ref(), "gitdir" | "commondir")
 }
 
 pub(super) fn repository_watch_root(path: &Path, common: &Path, kind: &EventKind) -> bool {

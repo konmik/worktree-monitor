@@ -135,7 +135,7 @@ struct RepoState {
     path: PathBuf,
     discovered: Option<Result<git::DiscoveredRepo, Error>>,
     worktrees: Vec<WorktreeKey>,
-    sources: Vec<PathBuf>,
+    sources: git::MonitoringSources,
     activity: Option<ScanActivity>,
 }
 

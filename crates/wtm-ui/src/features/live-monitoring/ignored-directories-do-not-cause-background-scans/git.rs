@@ -13,8 +13,18 @@ pub(crate) struct WatchPaths {
 
 pub(crate) fn relevant_watch_paths(tree: &Path, paths: &HashSet<PathBuf>, cancel: &Cancel) -> Result<bool, Error> {
     let mut input = Vec::new();
+    let mut queries = Vec::new();
     for path in paths {
-        input.extend(git_input_path(path)?);
+        let query = git_input_path(path)?;
+        queries.push(query.clone());
+        if std::fs::symlink_metadata(tree.join(path)).is_err() && !query.ends_with(b"/") {
+            let mut directory = query;
+            directory.push(b'/');
+            queries.push(directory);
+        }
+    }
+    for query in &queries {
+        input.extend(query);
         input.push(0);
     }
     let output = process::run_with_input(Some(tree), &args(&[
@@ -25,8 +35,9 @@ pub(crate) fn relevant_watch_paths(tree: &Path, paths: &HashSet<PathBuf>, cancel
         return Err(invalid("Git ignored path list is not NUL terminated"));
     }
     let ignored: HashSet<_> = output.split(|byte| *byte == 0)
-        .filter(|bytes| !bytes.is_empty()).map(relative_path).collect::<Result<_, _>>()?;
-    Ok(paths.iter().any(|path| !ignored.contains(path)))
+        .filter(|bytes| !bytes.is_empty()).map(|bytes| relative_path(bytes).map(|_| bytes.to_vec()))
+        .collect::<Result<_, _>>()?;
+    Ok(queries.iter().any(|query| !ignored.contains(query)))
 }
 
 pub(crate) fn watch_paths(tree: &Path, cancel: &Cancel) -> Result<WatchPaths, Error> {
@@ -111,53 +122,76 @@ fn git_input_path(path: &Path) -> Result<Vec<u8>, Error> {
     { Ok(std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()).to_vec()) }
 }
 
-pub(crate) fn global_sources(tree: &Path, cancel: &Cancel) -> Result<Vec<PathBuf>, Error> {
-    let mut sources = global_source_candidates();
+#[derive(Clone, Debug, Default)]
+pub(crate) struct MonitoringSources {
+    pub(crate) global: Vec<PathBuf>,
+    pub(crate) repository: Vec<PathBuf>,
+}
+
+pub(crate) fn monitoring_sources(tree: &Path, cancel: &Cancel) -> Result<MonitoringSources, Error> {
     let configuration = process::checked(Some(tree),
-        &args(&["config", "--null", "--show-origin", "--path", "--list"]), cancel)?;
+        &args(&["config", "--null", "--show-scope", "--show-origin", "--path", "--list"]), cancel)?;
+    let mut sources = configuration_sources(tree, &configuration)?;
+    let output = process::run(Some(tree),
+        &args(&["config", "--null", "--show-scope", "--show-origin", "--path", "--get", "core.excludesFile"]), cancel)?;
+    let code = output.code;
+    let stdout = process::success(output, &[0, 1])?;
+    if code == 1 && sources.global.is_empty() && sources.repository.is_empty() {
+        return Err(invalid("Could not locate Git monitoring sources"));
+    }
+    if code == 0 {
+        let fields: Vec<_> = stdout.split(|byte| *byte == 0).collect();
+        if fields.len() != 4 || !fields[3].is_empty() {
+            return Err(invalid("Git excludes configuration is malformed"));
+        }
+        let scoped = scoped_sources(&mut sources, fields[0])?;
+        if !fields[2].is_empty() { scoped.push(source_path(tree, path(fields[2])?)); }
+        if let Some(origin) = fields[1].strip_prefix(b"file:") {
+            scoped.push(source_path(tree, path(origin)?));
+        }
+    }
+    for scoped in [&mut sources.global, &mut sources.repository] {
+        scoped.sort();
+        scoped.dedup();
+    }
+    Ok(sources)
+}
+
+fn configuration_sources(tree: &Path, configuration: &[u8]) -> Result<MonitoringSources, Error> {
+    let mut sources = MonitoringSources { global: global_source_candidates(), repository: Vec::new() };
     if !configuration.is_empty() && !configuration.ends_with(b"\0") {
         return Err(invalid("Git configuration origins are not NUL terminated"));
     }
     let records: Vec<_> = configuration.split(|byte| *byte == 0).collect();
     let records = &records[..records.len() - 1];
-    if records.len() % 2 != 0 { return Err(invalid("Git configuration origins are incomplete")); }
-    for record in records.chunks_exact(2) {
-        if let Some(origin) = record[0].strip_prefix(b"file:") {
+    if records.len() % 3 != 0 { return Err(invalid("Git configuration origins are incomplete")); }
+    for record in records.chunks_exact(3) {
+        if let Some(origin) = record[1].strip_prefix(b"file:") {
             let origin = source_path(tree, path(origin)?);
-            let mut setting = record[1].splitn(2, |byte| *byte == b'\n');
+            let scoped = scoped_sources(&mut sources, record[0])?;
+            let mut setting = record[2].splitn(2, |byte| *byte == b'\n');
             let key = setting.next().unwrap();
             if key == b"include.path" || key.starts_with(b"includeif.") && key.ends_with(b".path") {
                 if let Some(value) = setting.next().filter(|value| !value.is_empty()) {
-                    sources.push(source_path(origin.parent().unwrap_or(tree), path(value)?));
+                    scoped.push(source_path(origin.parent().unwrap_or(tree), path(value)?));
                 }
             } else if key == b"core.attributesfile" {
                 if let Some(value) = setting.next().filter(|value| !value.is_empty()) {
-                    sources.push(source_path(tree, path(value)?));
+                    scoped.push(source_path(tree, path(value)?));
                 }
             }
-            sources.push(origin);
+            scoped.push(origin);
         }
     }
-    let output = process::run(Some(tree),
-        &args(&["config", "--null", "--show-origin", "--path", "--get", "core.excludesFile"]), cancel)?;
-    let code = output.code;
-    let stdout = process::success(output, &[0, 1])?;
-    if code == 1 && sources.is_empty() {
-        return Err(invalid("Could not locate the global Git excludes file"));
-    }
-    if code == 0 {
-        let fields: Vec<_> = stdout.split(|byte| *byte == 0).collect();
-        if fields.len() != 3 || !fields[2].is_empty() {
-            return Err(invalid("Git global excludes configuration is malformed"));
-        }
-        if !fields[1].is_empty() { sources.push(source_path(tree, path(fields[1])?)); }
-        if let Some(origin) = fields[0].strip_prefix(b"file:") {
-            sources.push(source_path(tree, path(origin)?));
-        }
-    }
-    sources.sort();
-    sources.dedup();
     Ok(sources)
+}
+
+fn scoped_sources<'a>(sources: &'a mut MonitoringSources, scope: &[u8]) -> Result<&'a mut Vec<PathBuf>, Error> {
+    match scope {
+        b"system" | b"global" => Ok(&mut sources.global),
+        b"local" | b"worktree" | b"command" => Ok(&mut sources.repository),
+        _ => Err(invalid("Git configuration scope is invalid")),
+    }
 }
 
 pub(crate) fn global_source_candidates() -> Vec<PathBuf> {

@@ -13,8 +13,8 @@ fn included_configuration_is_watched_before_it_sets_excludes() {
     let mut command = args(&["config", "include.path"]);
     command.push("included config".into());
     process::checked(Some(tree), &command, &cancel).unwrap();
-    let sources = global_sources(tree, &cancel).unwrap();
-    assert!(sources.iter().any(|source| crate::poll::normalize(source) == crate::poll::normalize(&included)));
+    let sources = monitoring_sources(tree, &cancel).unwrap();
+    assert!(sources.repository.iter().any(|source| crate::poll::normalize(source) == crate::poll::normalize(&included)));
 }
 
 #[test]
@@ -97,7 +97,50 @@ fn configured_attributes_are_retained_as_monitoring_sources() {
     let cancel = Cancel::new();
     process::checked(Some(tree), &args(&["init", "--quiet"]), &cancel).unwrap();
     process::checked(Some(tree), &args(&["config", "core.attributesFile", "ignored/rules"]), &cancel).unwrap();
-    let sources = global_sources(tree, &cancel).unwrap();
-    assert!(sources.iter().any(|source| crate::poll::normalize(source)
+    let sources = monitoring_sources(tree, &cancel).unwrap();
+    assert!(sources.repository.iter().any(|source| crate::poll::normalize(source)
         == crate::poll::normalize(&tree.join("ignored/rules"))));
+}
+
+#[test]
+fn git_configuration_scopes_keep_global_sources_shared() {
+    let directory = tempfile::tempdir().unwrap();
+    let tree = directory.path().join("repo");
+    let system = directory.path().join("system/config");
+    let global = directory.path().join("global/config");
+    let attributes = directory.path().join("global/attributes");
+    let mut bytes = Vec::new();
+    for (scope, origin, setting) in [
+        ("system", system.clone(), "include.path\nsystem-include".to_owned()),
+        ("global", global.clone(), format!("core.attributesfile\n{}", attributes.display())),
+        ("local", tree.join(".git/config"), "include.path\nrepository-include".to_owned()),
+        ("worktree", tree.join(".git/config.worktree"), "core.attributesfile\nrepository-attributes".to_owned()),
+    ] {
+        for field in [scope.to_owned(), format!("file:{}", origin.display()), setting] {
+            bytes.extend(field.as_bytes());
+            bytes.push(0);
+        }
+    }
+    let sources = configuration_sources(&tree, &bytes).unwrap();
+    for path in [system, global, directory.path().join("system/system-include"), attributes] {
+        assert!(sources.global.contains(&path), "{}", path.display());
+        assert!(!sources.repository.contains(&path));
+    }
+    for path in [tree.join(".git/config"), tree.join(".git/repository-include"),
+        tree.join(".git/config.worktree"), tree.join("repository-attributes")] {
+        assert!(sources.repository.contains(&path), "{}", path.display());
+        assert!(!sources.global.contains(&path));
+    }
+}
+
+#[test]
+fn configured_local_excludes_retain_repository_scope() {
+    let directory = tempfile::tempdir().unwrap();
+    let tree = directory.path();
+    let cancel = Cancel::new();
+    process::checked(Some(tree), &args(&["init", "--quiet"]), &cancel).unwrap();
+    process::checked(Some(tree), &args(&["config", "core.excludesFile", "local-ignore"]), &cancel).unwrap();
+    let sources = monitoring_sources(tree, &cancel).unwrap();
+    assert!(sources.repository.contains(&tree.join("local-ignore")));
+    assert!(!sources.global.contains(&tree.join("local-ignore")));
 }

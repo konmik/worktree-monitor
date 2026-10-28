@@ -45,6 +45,7 @@ fn deferred_plans_keep_nested_startup_events_without_git_planning() {
         config: directory.path().join("config.json"), launch: None,
         repositories: Vec::new(), worktrees: vec![(key.clone(), root.clone())],
         global_excludes: Vec::new(),
+        repository_sources: Vec::new(),
     };
     let mut boundary = WatchBoundary::new(Cancel::new());
     boundary.before_plan = Some(Box::new(|| panic!("detailed planning ran before initial counts")));
@@ -75,6 +76,7 @@ fn existing_repository_and_worktree_use_narrow_roots() {
         repositories: vec![common.clone()],
         worktrees: vec![(key.clone(), repo.clone())],
         global_excludes: vec![common.join("config")],
+        repository_sources: Vec::new(),
     });
     assert_eq!(roots[&normalize(directory.path())].mode, RecursiveMode::NonRecursive);
     #[cfg(windows)]
@@ -108,6 +110,7 @@ fn existing_launch_uses_an_exact_nonrecursive_root() {
         repositories: Vec::new(),
         worktrees: Vec::new(),
         global_excludes: Vec::new(),
+        repository_sources: Vec::new(),
     });
     let registration = &roots[&normalize(&launch)];
     assert_eq!(registration.mode, RecursiveMode::NonRecursive);
@@ -135,6 +138,7 @@ fn windows_merges_nested_registrations_onto_the_worktree_root() {
         repositories: vec![common.clone()],
         worktrees: vec![(key.clone(), repo.clone())],
         global_excludes: Vec::new(),
+        repository_sources: Vec::new(),
     }, Instant::now(), &HashSet::from([key.clone()]));
     assert!(!status.degraded);
     assert_eq!(boundary.roots[&normalize(&repo)].mode, RecursiveMode::Recursive);
@@ -164,6 +168,7 @@ fn windows_exact_worktree_registration_allows_replacement() {
         repositories: vec![common],
         worktrees: vec![(key.clone(), repo.clone())],
         global_excludes: Vec::new(),
+        repository_sources: Vec::new(),
     }, Instant::now(), &HashSet::from([key.clone()]));
     assert!(!status.degraded);
     boundary.watcher = None;

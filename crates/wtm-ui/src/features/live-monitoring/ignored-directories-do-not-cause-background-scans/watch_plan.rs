@@ -10,6 +10,7 @@ pub(super) struct WorktreeWatchPlan {
     pub(super) ignored_directories: HashSet<PathBuf>,
     pub(super) tracked_files: HashSet<PathBuf>,
     pub(super) tracked_directories: HashSet<PathBuf>,
+    pub(super) known_directories: HashSet<PathBuf>,
 }
 
 pub(super) fn plan_for(tree: &Path, paths: &git::WatchPaths) -> WorktreeWatchPlan {
@@ -38,6 +39,7 @@ pub(super) fn plan_for(tree: &Path, paths: &git::WatchPaths) -> WorktreeWatchPla
     let mut plan = WorktreeWatchPlan {
         recursive_roots: Vec::new(), directory_gates: Vec::new(), ignored_directories,
         tracked_files, tracked_directories: tracked_directories_absolute,
+        known_directories: paths.directories.iter().map(|directory| normalize(&tree.join(directory))).collect(),
     };
     plan.directory_gates.push(normalize(&tree));
     visit_permitted(Path::new(""), &children, ignored, &tracked_directories, &tree, &mut plan);
@@ -89,6 +91,7 @@ pub(super) fn fallback_plan(path: &Path) -> WorktreeWatchPlan {
     WorktreeWatchPlan {
         recursive_roots: vec![normalize(&root)], directory_gates: Vec::new(),
         ignored_directories: HashSet::new(), tracked_files: HashSet::new(), tracked_directories: HashSet::new(),
+        known_directories: HashSet::from([normalize(&root)]),
     }
 }
 

@@ -35,6 +35,10 @@ impl EventPolicy {
 }
 
 fn ignored_by_plan(path: &Path, kind: &EventKind, worktree: &WorktreeEventPolicy) -> bool {
+    if worktree.plan.ignored_directories.contains(path)
+        && (topology_event(kind) || std::fs::symlink_metadata(path).is_ok_and(|metadata| !metadata.is_dir())) {
+        return false;
+    }
     if worktree.protected.iter().any(|protected| {
         path == protected || path.starts_with(protected)
             || topology_event(kind) && protected.starts_with(path)
@@ -91,6 +95,7 @@ impl WatchBoundary {
             let mut protected = vec![normalize(&absolute(&path.join(".git"))), key.common.clone()];
             protected.extend(targets.repositories.iter().cloned());
             protected.extend(targets.global_excludes.iter().cloned());
+            protected.extend(targets.repository_sources.iter().map(|(_, path)| path.clone()));
             protected.push(targets.config.clone());
             if let Some(launch) = &targets.launch {
                 protected.extend(launch.ancestors().map(|ancestor| ancestor.join(".git")));
@@ -131,15 +136,23 @@ impl WatchBoundary {
     pub(super) fn plan_event(&self, path: &Path, key: &WorktreeKey, kind: &EventKind) -> bool {
         let tree = normalize(&key.path);
         if !path.starts_with(&tree) { return false; }
+        if topology_event(kind) && self.plans.get(key).is_some_and(|plan| plan.ignored_directories.contains(path)) {
+            return true;
+        }
         if self.ignored_event(path, key, kind) { return false; }
         if path.file_name().is_some_and(|name| name == ".gitignore") { return true; }
         topology_event(kind) && (self.roots.contains_key(path) || path.is_dir()
+            || self.plans.get(key).is_some_and(|plan| plan.known_directories.contains(path))
             || matches!(kind, EventKind::Create(notify::event::CreateKind::Folder)
                 | EventKind::Remove(notify::event::RemoveKind::Folder)))
     }
 
     pub(super) fn ignored_event(&self, path: &Path, key: &WorktreeKey, kind: &EventKind) -> bool {
         let Some(plan) = self.plans.get(key) else { return false; };
+        if plan.ignored_directories.contains(path)
+            && std::fs::symlink_metadata(path).is_ok_and(|metadata| !metadata.is_dir()) {
+            return false;
+        }
         if !plan.ignored_directories.iter().any(|directory| path == directory || path.starts_with(directory)) {
             return false;
         }

@@ -34,7 +34,7 @@ fn discovery_schedules_new_worktrees_once_without_file_events() {
     let mut coordinator = Coordinator::new(Service::at("config.json"), None, Cancel::new(), latest);
     coordinator.repos.insert(common.clone(), RepoState {
         common_dir, path: directory.path().to_path_buf(), discovered: None,
-        worktrees: Vec::new(), sources: Vec::new(),
+        worktrees: Vec::new(), sources: Default::default(),
         activity: None,
     });
     let mut discovered = git::DiscoveredRepo {

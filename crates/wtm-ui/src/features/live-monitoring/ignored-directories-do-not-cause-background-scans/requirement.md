@@ -1,2 +1,4 @@
 - Git-ignored updates, including modifications to shared hardlinked files, do not trigger monitoring scans.
+- Creating, removing, or renaming ignored files does not trigger count scans.
+- Replacing an ignored directory with a visible file and removing visible directories update counts.
 - Directory monitoring does not retain an inventory of every individual file path.

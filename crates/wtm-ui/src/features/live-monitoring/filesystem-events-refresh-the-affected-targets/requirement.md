@@ -2,3 +2,5 @@
 - Filesystem events queue affected worktrees, repository discovery, configuration reloads, or launch discovery.
 - Events received during scans remain queued for the next pass.
 - Unchanged worktrees are not scanned again until relevant events queue them.
+- Git fetch bookkeeping, commit messages, and editor metadata do not invalidate worktree counts.
+- Repository-specific configuration and exclude changes refresh only their subscribed repositories.

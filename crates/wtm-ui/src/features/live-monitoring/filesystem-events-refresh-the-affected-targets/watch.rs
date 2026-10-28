@@ -33,6 +33,7 @@ const MAX_DRAIN_EVENTS: usize = 128;
 enum Target {
     Config(PathBuf),
     GlobalExclude(PathBuf),
+    RepositorySource(PathBuf, PathBuf),
     Launch(PathBuf),
     Repository(PathBuf),
     Worktree(WorktreeKey),
@@ -75,6 +76,7 @@ pub(crate) struct WatchTargets {
     pub(crate) repositories: Vec<PathBuf>,
     pub(crate) worktrees: Vec<(WorktreeKey, PathBuf)>,
     pub(crate) global_excludes: Vec<PathBuf>,
+    pub(crate) repository_sources: Vec<(PathBuf, PathBuf)>,
 }
 
 pub(crate) struct WatchStatus {
@@ -273,6 +275,14 @@ fn registrations_with_plans(targets: &WatchTargets,
         };
         add_recovery_with_mode(&mut result, &exclude, target, mode);
     }
+    for (common, source) in &targets.repository_sources {
+        let source = absolute(source);
+        let mode = if nested_in_worktree(&source, targets) {
+            RecursiveMode::NonRecursive
+        } else { RecursiveMode::Recursive };
+        add_recovery_with_mode(&mut result, &source,
+            Target::RepositorySource(normalize(&absolute(common)), source.clone()), mode);
+    }
     if let Some(launch) = &targets.launch {
         let launch = absolute(launch);
         let target = Target::Launch(launch.clone());
@@ -295,7 +305,7 @@ fn registrations_with_plans(targets: &WatchTargets,
             add_existing_or_parent(&mut result, &directory, RecursiveMode::Recursive, repository.clone());
         }
         let exclude = common.join("info/exclude");
-        add_recovery(&mut result, &exclude, Target::GlobalExclude(exclude.clone()));
+        add_recovery(&mut result, &exclude, Target::RepositorySource(normalize(&common), exclude.clone()));
     }
     for (key, path) in &targets.worktrees {
         let path = absolute(path);

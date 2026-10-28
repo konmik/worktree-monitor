@@ -37,7 +37,7 @@ impl Coordinator {
                 self.discoveries.insert(key.clone());
                 self.repos.insert(key, RepoState {
                     path: display_path(&common_dir), common_dir,
-                    discovered: None, worktrees: Vec::new(), sources: Vec::new(),
+                    discovered: None, worktrees: Vec::new(), sources: Default::default(),
                     activity: None,
                 });
             }

@@ -9,7 +9,7 @@ fn metadata_events_survive_ignored_noise_in_the_same_batch() {
     let plan = Arc::new(WorktreeWatchPlan {
         recursive_roots: vec![normalize(&root)], directory_gates: Vec::new(),
         ignored_directories: HashSet::from([ignored]),
-        tracked_files: HashSet::new(), tracked_directories: HashSet::new(),
+        tracked_files: HashSet::new(), tracked_directories: HashSet::new(), known_directories: HashSet::new(),
     });
     let mut boundary = boundary_with(root.clone(), vec![
         Target::Worktree(key.clone()), Target::WorktreeMetadata(key.clone(), common.clone()),
@@ -37,6 +37,7 @@ fn full_recovery_reloads_ignore_rules_changed_while_disconnected() {
         config: directory.path().join("config.json"), launch: None,
         repositories: Vec::new(), worktrees: vec![(key.clone(), root.clone())],
         global_excludes: Vec::new(),
+        repository_sources: Vec::new(),
     };
     let mut boundary = WatchBoundary::new(cancel);
     boundary.rebuild_plans(&targets, Instant::now(), &HashSet::from([key.clone()]));
@@ -96,7 +97,7 @@ fn windows_callback_filters_ignored_events_before_waking_or_queuing() {
         recursive_roots: vec![root.clone()], directory_gates: Vec::new(),
         ignored_directories: HashSet::from([normalize(&ignored)]),
         tracked_files: HashSet::from([normalize(&tracked)]),
-        tracked_directories: HashSet::from([normalize(&ignored)]),
+        tracked_directories: HashSet::from([normalize(&ignored)]), known_directories: HashSet::new(),
     });
     let key = WorktreeKey::new(&root.join(".git"), &root);
     let mut boundary = WatchBoundary::new(Cancel::new());
@@ -105,6 +106,7 @@ fn windows_callback_filters_ignored_events_before_waking_or_queuing() {
         config: ignored.join("config.json"), launch: Some(root.clone()),
         repositories: vec![root.join(".git")], worktrees: vec![(key, root.clone())],
         global_excludes: Vec::new(),
+        repository_sources: Vec::new(),
     });
     let policy = boundary.event_policy.read().unwrap().clone();
     let cancel = Cancel::new();
@@ -148,6 +150,7 @@ fn failed_initial_plan_keeps_recursive_fallback_coverage() {
         config: directory.path().join("config.json"), launch: None,
         repositories: Vec::new(), worktrees: vec![(key.clone(), tree.clone())],
         global_excludes: Vec::new(),
+        repository_sources: Vec::new(),
     }, Instant::now(), &HashSet::from([key.clone()]));
     assert!(!status.degraded);
     assert_eq!(boundary.roots[&normalize(&tree)].mode, RecursiveMode::Recursive);
@@ -198,6 +201,7 @@ fn later_plan_failure_does_not_keep_stale_ignore_rules() {
     boundary.publish_policy(&WatchTargets {
         config: directory.path().join("config.json"), launch: Some(tree.clone()),
         repositories: Vec::new(), worktrees: vec![(key, tree)], global_excludes: Vec::new(),
+        repository_sources: Vec::new(),
     });
     let policy = boundary.event_policy.read().unwrap().clone();
     assert_eq!(policy.filter(Event::new(EventKind::Modify(ModifyKind::Any))
@@ -225,6 +229,7 @@ fn ignored_directories_use_gates_and_never_recursive_native_roots() {
         repositories: vec![common],
         worktrees: vec![(key.clone(), repo.clone())],
         global_excludes: Vec::new(),
+        repository_sources: Vec::new(),
     });
     #[cfg(not(windows))]
     let ignored = normalize(&repo.join("ignored"));

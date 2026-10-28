@@ -24,6 +24,7 @@ fn replacing_native_watch_mode_requests_full_recovery() {
     let status = boundary.rebuild_plans(&WatchTargets {
         config, launch: None, repositories: Vec::new(), worktrees: Vec::new(),
         global_excludes: Vec::new(),
+        repository_sources: Vec::new(),
     }, Instant::now(), &HashSet::new());
     assert!(status.full);
     assert!(!status.degraded);
@@ -41,6 +42,7 @@ fn forced_rebuild_reports_full_reconcile() {
         repositories: Vec::new(),
         worktrees: Vec::new(),
         global_excludes: Vec::new(),
+        repository_sources: Vec::new(),
     }, now, &HashSet::new());
     assert!(status.full);
     assert!(!status.degraded);
@@ -57,6 +59,7 @@ fn recovered_plans_clear_pending_work_without_changing_subscriptions() {
         config: directory.path().join("config.json"), launch: None,
         repositories: Vec::new(), worktrees: vec![(key.clone(), tree.clone())],
         global_excludes: Vec::new(),
+        repository_sources: Vec::new(),
     };
     let mut boundary = WatchBoundary::new(Cancel::new());
     let now = Instant::now();
@@ -89,6 +92,7 @@ fn failed_plans_stay_pending_without_native_repair_retries() {
         config: directory.path().join("config.json"), launch: None,
         repositories: Vec::new(), worktrees: vec![(key.clone(), tree.clone())],
         global_excludes: Vec::new(),
+        repository_sources: Vec::new(),
     };
     let mut boundary = WatchBoundary::new(Cancel::new());
     let now = Instant::now();
