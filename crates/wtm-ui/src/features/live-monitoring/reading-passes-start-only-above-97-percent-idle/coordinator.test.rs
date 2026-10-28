@@ -2,16 +2,15 @@ use super::*;
 
 #[test]
 fn reading_passes_use_the_displayed_idle_threshold() {
-    for (milliseconds, allowed) in [(1499, true), (1500, false), (2100, false)] {
+    for (milliseconds, percent, allowed) in [(1499, 98, true), (1500, 97, false), (2100, 96, false)] {
         let (_directory, mut coordinator) = scan_fixture(1);
         let now = Instant::now();
-        let work = Duration::from_millis(milliseconds);
-        coordinator.polling_time.record(now - work, now);
+        let idle = crate::IdlePercentage::from_percent(percent);
+        coordinator.polling_time.record(now - Duration::from_millis(milliseconds), now);
         let caption = crate::dashboard::DisplayItem::Status {
-            health: crate::dashboard::Health::Live, polling_time_last_minute: work,
+            health: crate::dashboard::Health::Live, idle,
         }.caption();
-        assert_eq!(caption, if milliseconds == 1499 { "[idle: 98%]" }
-            else if milliseconds == 1500 { "[idle: 97%]" } else { "[idle: 96%]" });
+        assert_eq!(caption, format!("[idle: {idle}]"));
         coordinator.try_scan_pass(now);
         assert_eq!(coordinator.scan_generation > 0, allowed);
         assert_eq!(coordinator.repos.values().all(|repo| repo.discovered.is_some()), allowed);
@@ -26,7 +25,7 @@ fn reading_passes_use_the_displayed_idle_threshold() {
 fn busy_reading_passes_recheck_every_five_seconds_without_losing_work() {
     let (_directory, mut coordinator) = scan_fixture(1);
     let now = Instant::now();
-    coordinator.polling_time.record(now - Duration::from_secs(2), now);
+    coordinator.polling_time.record(now - Duration::from_millis(2400), now);
     coordinator.launch_changed = true;
     let common = &coordinator.repo_order[0];
     let key = WorktreeKey::new(common, &coordinator.repos[common].path);
@@ -53,7 +52,7 @@ fn busy_reading_passes_recheck_every_five_seconds_without_losing_work() {
 fn recovery_waits_until_the_existing_retry_deadline() {
     let (_directory, mut coordinator) = scan_fixture(1);
     let now = Instant::now();
-    coordinator.polling_time.record(now - Duration::from_secs(59), now - Duration::from_millis(57500));
+    coordinator.polling_time.record(now - Duration::from_secs(59), now - Duration::from_millis(57200));
     coordinator.try_scan_pass(now);
     coordinator.try_scan_pass(now + Duration::from_secs(1));
     assert_eq!(coordinator.scan_generation, 0);
@@ -81,7 +80,7 @@ fn fresh_reading_passes_start_immediately_and_keep_the_normal_cooldown() {
 fn deferred_reading_passes_remain_cancellable() {
     let (_directory, coordinator) = scan_fixture(1);
     let now = Instant::now();
-    coordinator.polling_time.record(now - Duration::from_secs(2), now);
+    coordinator.polling_time.record(now - Duration::from_millis(2400), now);
     let latest = coordinator.latest.clone();
     let cancel = coordinator.cancel.clone();
     let (sender, receiver) = std::sync::mpsc::channel();
@@ -127,7 +126,7 @@ fn watch_plan_reads_wait_for_the_scheduled_pass() {
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     let now = Instant::now();
     coordinator.passes.changed.clear();
-    coordinator.polling_time.record(now - Duration::from_secs(2), now);
+    coordinator.polling_time.record(now - Duration::from_millis(2400), now);
     coordinator.passes.next = Some(now);
     coordinator.try_scan_pass(now);
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -147,7 +146,7 @@ fn native_watch_repair_does_not_read_git_while_idle_is_low() {
     coordinator.watch.before_plan = Some(Box::new(|| panic!("native watcher repair read Git")));
     coordinator.watch_dirty = true;
     let now = Instant::now();
-    coordinator.polling_time.record(now - Duration::from_secs(2), now);
+    coordinator.polling_time.record(now - Duration::from_millis(2400), now);
     coordinator.reconcile_watches();
     coordinator.passes.next = Some(now);
     coordinator.try_scan_pass(now);

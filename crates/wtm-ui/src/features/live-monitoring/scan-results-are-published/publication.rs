@@ -10,6 +10,7 @@ pub struct MonitorUpdate {
     pub scan_targets: Vec<ScanTarget>,
     pub scan_activities: Vec<ScanActivity>,
     pub launch_error: Option<Error>,
+    pub idle: crate::IdlePercentage,
     pub polling_time_last_minute: Duration,
 }
 
@@ -41,6 +42,7 @@ impl Coordinator {
         let update = MonitorUpdate {
             snapshot: self.snapshot.clone(), launch_error: self.launch_error.clone(),
             scan_targets, scan_activities,
+            idle: self.polling_time.idle(Instant::now()),
             polling_time_last_minute: self.polling_time.total(Instant::now()),
         };
         let update = Arc::new(update);

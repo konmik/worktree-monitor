@@ -38,32 +38,33 @@ fn scrolling_and_resizing_keep_the_frame_within_the_terminal() {
         snapshot: Arc::new(wtm_ui::Snapshot::default()), scan_targets: Vec::new(), scan_activities: Vec::new(),
         launch_error: Some(wtm_ui::Error { kind: wtm_ui::ErrorKind::Io, message: "long failure ".repeat(20) }),
         polling_time_last_minute: Duration::ZERO,
+        idle: wtm_ui::IdlePercentage::default(),
     };
     let mut view = View { latest: Some(Arc::new(update)), ..View::default() };
-    let first = view.frame(20, 6, Duration::ZERO);
+    let first = view.frame(20, 6, wtm_ui::IdlePercentage::default());
     assert!(first.content_rows > 4);
     assert_eq!(first.scroll_row, 0);
     assert!(!view.key(event::KeyEvent::new(KeyCode::End, KeyModifiers::NONE), 6));
-    let last = view.frame(20, 6, Duration::ZERO);
+    let last = view.frame(20, 6, wtm_ui::IdlePercentage::default());
     assert_eq!(last.scroll_row, last.content_rows - 4);
     assert_ne!(last.buffer, first.buffer);
-    let resized = view.frame(80, 40, Duration::ZERO);
+    let resized = view.frame(80, 40, wtm_ui::IdlePercentage::default());
     assert_eq!(resized.scroll_row, 0);
     assert_eq!((resized.buffer.columns(), resized.buffer.rows()), (80, 40));
     assert!(!view.key(event::KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), 40));
-    assert_eq!(view.frame(0, 0, Duration::ZERO).buffer.cells(), &[]);
+    assert_eq!(view.frame(0, 0, wtm_ui::IdlePercentage::default()).buffer.cells(), &[]);
 }
 
 #[test]
 fn idle_header_updates_before_the_first_snapshot() {
     let mut view = View::default();
-    let first = view.frame(40, 6, Duration::ZERO);
-    let second = view.frame(40, 6, Duration::from_secs(2));
+    let first = view.frame(40, 6, wtm_ui::IdlePercentage::default());
+    let second = view.frame(40, 6, wtm_ui::IdlePercentage::from_percent(92));
     let header = |frame: &DashboardFrame| -> String {
         frame.buffer.row(0).unwrap().iter().map(|cell| cell.text()).collect()
     };
     assert!(header(&first).contains("[idle: 100%]"));
-    assert!(header(&second).contains("[idle: 97%]"));
+    assert!(header(&second).contains("[idle: 92%]"));
     let text: String = second.buffer.cells().iter().map(|cell| cell.text()).collect();
     assert!(!text.contains("No registered repositories."));
 }

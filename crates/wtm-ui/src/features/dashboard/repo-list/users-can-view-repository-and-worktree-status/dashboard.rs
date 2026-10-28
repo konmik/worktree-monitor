@@ -7,7 +7,7 @@ mod idle;
 use std::path::{Path, PathBuf};
 use crate::order::identity;
 use crate::{Error, Head, Snapshot, WorktreeStats};
-use std::time::Duration;
+use crate::IdlePercentage;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Health { Scanning, Live, Errors }
@@ -26,7 +26,7 @@ pub enum ItemKey {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DisplayItem {
-    Status { health: Health, polling_time_last_minute: Duration },
+    Status { health: Health, idle: IdlePercentage },
     Repository { name: String, bare: bool },
     Worktree { path: PathBuf, result: Result<WorktreeStats, Error> },
     PendingWorktree { path: PathBuf },
@@ -46,7 +46,7 @@ impl DisplayItem {
 
     pub fn caption(&self) -> String {
         match self {
-            Self::Status { polling_time_last_minute, .. } => idle::caption(*polling_time_last_minute),
+            Self::Status { idle, .. } => idle::caption(*idle),
             Self::Repository { name, bare } => {
                 let mut text = name.clone();
                 if *bare { text.push_str("\nNo working trees (bare repository)."); }

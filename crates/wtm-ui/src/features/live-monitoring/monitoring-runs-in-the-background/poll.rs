@@ -38,7 +38,9 @@ use schedule::PASS_DELAY;
 #[path = "../monitoring-work-time-is-reported-for-the-last-minute/time.rs"]
 mod polling_time;
 use polling_time::PollingTime;
-pub(crate) use polling_time::idle_percent;
+#[path = "../idle-percentage-is-calculated-over-the-last-minute/idle.rs"]
+mod idle_time;
+pub use idle_time::IdlePercentage;
 
 #[path = "../registrations-reload-without-losing-valid-entries/registrations.rs"]
 mod registrations;
@@ -76,9 +78,12 @@ impl Monitor {
     pub fn latest(&self) -> Option<Arc<MonitorUpdate>> {
         let update = self.latest.lock().unwrap_or_else(|error| error.into_inner()).clone()?;
         let polling_time_last_minute = self.polling_time_last_minute();
-        if update.polling_time_last_minute == polling_time_last_minute { return Some(update); }
-        Some(Arc::new(MonitorUpdate { polling_time_last_minute, ..update.as_ref().clone() }))
+        let idle = self.idle();
+        if update.polling_time_last_minute == polling_time_last_minute && update.idle == idle { return Some(update); }
+        Some(Arc::new(MonitorUpdate { polling_time_last_minute, idle, ..update.as_ref().clone() }))
     }
+
+    pub fn idle(&self) -> IdlePercentage { self.polling_time.idle(Instant::now()) }
 
     pub fn polling_time_last_minute(&self) -> Duration {
         self.polling_time.total(Instant::now())

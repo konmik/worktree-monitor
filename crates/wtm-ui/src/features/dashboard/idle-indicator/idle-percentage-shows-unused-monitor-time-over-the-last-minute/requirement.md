@@ -1,3 +1,3 @@
-- The idle percentage is displayed on the status line.
-- The status indicator has the form [idle: N%].
-- The displayed percentage equals 100% minus the scan-time percentage over the last minute.
+- The status header displays the idle percentage over the last sixty seconds as a whole number.
+- The same idle value is displayed in every health state.
+- A narrow header preserves the percentage while space permits.

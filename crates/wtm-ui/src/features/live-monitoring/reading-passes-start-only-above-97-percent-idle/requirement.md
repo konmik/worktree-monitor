@@ -1,4 +1,4 @@
-- Reading passes start only when the displayed idle percentage over the last minute is above 97%.
+- Reading passes start only when the displayed recent idle percentage is above 97%.
 - When idle is 97% or lower, pending reading work waits five seconds before checking idle again.
 - Repeated deferrals retain queued changes, repository discoveries, and launch discovery.
 - File events do not bypass or extend the five-second delay.

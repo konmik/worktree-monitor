@@ -21,7 +21,7 @@ mod watch;
 mod monitoring_service;
 
 pub use model::{Counts, Error, ErrorKind, Head, LineCounts, RepoEntry, Snapshot, WorktreeEntry, WorktreeStats};
-pub use poll::{Monitor, MonitorUpdate, ScanActivity, ScanTarget};
+pub use poll::{IdlePercentage, Monitor, MonitorUpdate, ScanActivity, ScanTarget};
 pub use cancellation::Cancel;
 pub use monitoring_service::Service;
 
