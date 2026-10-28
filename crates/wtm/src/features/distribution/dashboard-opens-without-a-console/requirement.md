@@ -1,2 +1,4 @@
 - The Windows dashboard executable runs without opening a console.
 - Installed GUI commands launch the dashboard executable directly, without a command-file wrapper.
+- All three executables install in the user's normal LocalAppData Programs/WorktreeMonitor folder, outside package storage.
+- Executable links in the user's bin folder launch the installed executables.
