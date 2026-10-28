@@ -1,1 +1,2 @@
 - The Windows dashboard executable runs without opening a console.
+- Installed GUI commands launch the dashboard executable directly, without a command-file wrapper.
